@@ -11,6 +11,7 @@ pub const JxlError = error{
 	GenericError,
 	Unsupported,
 	NotEnoughBytes,
+	OutOfMemory,
 };
 
 /// Drop-in replacement for bool that carries an error code.
@@ -51,6 +52,7 @@ pub const Status = struct {
 			JxlError.GenericError => Status{ .code = .generic_error },
 			JxlError.Unsupported => Status{ .code = .unsupported },
 			JxlError.NotEnoughBytes => Status{ .code = .not_enough_bytes },
+			JxlError.OutOfMemory => Status{ .code = .generic_error },
 		};
 	}
 };

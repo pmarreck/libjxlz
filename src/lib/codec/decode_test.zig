@@ -34,6 +34,9 @@ test "parse lossless 4x4 codestream headers" {
     // Parse CustomTransformData
     const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
 
+    // Codestream headers are zero-padded to byte boundary before frame data
+    try br.jumpToByteBoundary();
+
     // Build CodecMetadata
     var codec_meta = image_metadata.CodecMetadata{};
     codec_meta.m = metadata;
@@ -67,6 +70,10 @@ test "decode lossless 4x4 modular global info" {
     const size = headers.SizeHeader.readFromBitStream(&br);
     const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
     const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+
+    // Codestream headers are zero-padded to byte boundary before frame data
+    try br.jumpToByteBoundary();
+
     var codec_meta = image_metadata.CodecMetadata{};
     codec_meta.m = metadata;
     codec_meta.size = size;
@@ -75,10 +82,10 @@ test "decode lossless 4x4 modular global info" {
     const fh = try frame_header_mod.FrameHeader.readFromBitStream(&br, &codec_meta, false);
     const frame_dim = fh.toFrameDimensions(&codec_meta, false);
 
-    // Single-section frame: skip TOC (1 entry = 1 section)
+    // Read TOC (always present, even for single-section frames)
     const num_toc = toc.numTocEntries(frame_dim.num_groups, frame_dim.num_dc_groups, fh.passes.num_passes);
-    _ = num_toc;
-    // For single-section frame, there is no TOC — all data is in one section
+    const toc_entries = try toc.readToc(allocator, num_toc, &br);
+    defer allocator.free(toc_entries);
 
     // Decode global modular info
     var mod_dec = dec_frame.ModularFrameDecoder.init(allocator);
@@ -142,6 +149,10 @@ test "decode lossless 16x16 modular" {
 
     const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
     const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+
+    // Codestream headers are zero-padded to byte boundary before frame data
+    try br.jumpToByteBoundary();
+
     var codec_meta = image_metadata.CodecMetadata{};
     codec_meta.m = metadata;
     codec_meta.size = size;
@@ -151,6 +162,11 @@ test "decode lossless 16x16 modular" {
     try testing.expectEqual(frame_header_mod.FrameEncoding.modular, fh.encoding);
 
     const frame_dim = fh.toFrameDimensions(&codec_meta, false);
+
+    // Read TOC
+    const num_toc = toc.numTocEntries(frame_dim.num_groups, frame_dim.num_dc_groups, fh.passes.num_passes);
+    const toc_entries = try toc.readToc(allocator, num_toc, &br);
+    defer allocator.free(toc_entries);
 
     var mod_dec = dec_frame.ModularFrameDecoder.init(allocator);
     defer mod_dec.deinit();
@@ -199,6 +215,10 @@ test "decode lossless 64x64 modular (may use squeeze)" {
 
     const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
     const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+
+    // Codestream headers are zero-padded to byte boundary before frame data
+    try br.jumpToByteBoundary();
+
     var codec_meta = image_metadata.CodecMetadata{};
     codec_meta.m = metadata;
     codec_meta.size = size;
@@ -208,6 +228,11 @@ test "decode lossless 64x64 modular (may use squeeze)" {
     try testing.expectEqual(frame_header_mod.FrameEncoding.modular, fh.encoding);
 
     const frame_dim = fh.toFrameDimensions(&codec_meta, false);
+
+    // Read TOC
+    const num_toc_entries = toc.numTocEntries(frame_dim.num_groups, frame_dim.num_dc_groups, fh.passes.num_passes);
+    const toc_entries = try toc.readToc(allocator, num_toc_entries, &br);
+    defer allocator.free(toc_entries);
 
     var mod_dec = dec_frame.ModularFrameDecoder.init(allocator);
     defer mod_dec.deinit();
@@ -248,6 +273,7 @@ test "decode lossless 300x200 multi-group" {
     const data = @embedFile("../testdata/lossless_300x200.jxl");
     const allocator = testing.allocator;
 
+    // Parse codestream headers to get CodecMetadata and frame header byte offset
     var br = BitReader.init(data[2..]);
 
     const size = headers.SizeHeader.readFromBitStream(&br);
@@ -256,42 +282,51 @@ test "decode lossless 300x200 multi-group" {
 
     const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
     const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+
+    // Codestream headers are zero-padded to byte boundary before frame data
+    try br.jumpToByteBoundary();
+
     var codec_meta = image_metadata.CodecMetadata{};
     codec_meta.m = metadata;
     codec_meta.size = size;
     codec_meta.transform_data = transform_data;
 
+    // Capture byte offset where frame header starts (before reading it)
+    const frame_header_byte_offset = br.totalBitsConsumed() / 8;
+
+    // Quick validation: parse frame header to check encoding
     const fh = try frame_header_mod.FrameHeader.readFromBitStream(&br, &codec_meta, false);
     try testing.expectEqual(frame_header_mod.FrameEncoding.modular, fh.encoding);
-
     const frame_dim = fh.toFrameDimensions(&codec_meta, false);
-    try testing.expectEqual(@as(usize, 300), frame_dim.xsize);
-    try testing.expectEqual(@as(usize, 200), frame_dim.ysize);
-
-    // Multi-group: should have >1 groups
     try testing.expect(frame_dim.num_groups >= 2);
 
-    // Read TOC
-    const num_toc = toc.numTocEntries(frame_dim.num_groups, frame_dim.num_dc_groups, fh.passes.num_passes);
-    try testing.expect(num_toc > 1);
+    // Full frame decode using FrameDecoder — pass data starting at frame header
+    const frame_data = data[2 + frame_header_byte_offset ..];
+    var frame_dec = dec_frame.FrameDecoder.init(allocator, &codec_meta);
+    defer frame_dec.deinit();
 
-    const toc_entries = try toc.readToc(allocator, num_toc, &br);
-    defer allocator.free(toc_entries);
+    try frame_dec.decodeFrame(frame_data);
 
-    // All TOC entries should have reasonable sizes
-    for (toc_entries) |entry| {
-        try testing.expect(entry.size < 100000);
-    }
+    const img = frame_dec.getDecodedImage();
+    try testing.expect(img.channels.items.len >= 3);
+    try testing.expectEqual(@as(usize, 300), img.w);
+    try testing.expectEqual(@as(usize, 200), img.h);
 
-    // Decode DC Global section (first section)
-    var mod_dec = dec_frame.ModularFrameDecoder.init(allocator);
-    defer mod_dec.deinit();
-    mod_dec.initFrame(frame_dim);
+    // Verify pixel (0,0) = (0, 0, 0)
+    const ch_r = &img.channels.items[0];
+    const ch_g = &img.channels.items[1];
+    const ch_b = &img.channels.items[2];
+    try testing.expectEqual(@as(i32, 0), ch_r.rowConst(0)[0]);
+    try testing.expectEqual(@as(i32, 0), ch_g.rowConst(0)[0]);
+    try testing.expectEqual(@as(i32, 0), ch_b.rowConst(0)[0]);
 
-    try mod_dec.decodeGlobalInfo(&br, &fh, &codec_meta);
+    // Verify pixel (150, 100) = (150, 100, (150*100)%256 = 216)
+    try testing.expectEqual(@as(i32, 150), ch_r.rowConst(100)[150]);
+    try testing.expectEqual(@as(i32, 100), ch_g.rowConst(100)[150]);
+    try testing.expectEqual(@as(i32, 216), ch_b.rowConst(100)[150]);
 
-    // After decoding global info, we should have the full image structure
-    try testing.expect(mod_dec.full_image.channels.items.len >= 3);
-    try testing.expectEqual(@as(usize, 300), mod_dec.full_image.w);
-    try testing.expectEqual(@as(usize, 200), mod_dec.full_image.h);
+    // Verify pixel (299, 199) = (43, 199, (299*199)%256 = 245)
+    try testing.expectEqual(@as(i32, 43), ch_r.rowConst(199)[299]);   // 299 % 256 = 43
+    try testing.expectEqual(@as(i32, 199), ch_g.rowConst(199)[299]);
+    try testing.expectEqual(@as(i32, 245), ch_b.rowConst(199)[299]);  // (299*199) % 256
 }

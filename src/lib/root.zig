@@ -46,5 +46,50 @@ pub const modular = struct {
 };
 
 test {
+	// Use refAllDecls to verify all declarations compile.
+	// Explicit test imports below ensure tests from all modules are discovered.
 	@import("std").testing.refAllDecls(@This());
+
+	// Base
+	_ = @import("base/status.zig");
+	_ = @import("base/bits.zig");
+	_ = @import("base/common.zig");
+	_ = @import("base/bit_reader.zig");
+	_ = @import("base/byte_order.zig");
+	_ = @import("base/random.zig");
+	_ = @import("base/rect.zig");
+	_ = @import("base/float.zig");
+	_ = @import("base/pack_signed.zig");
+
+	// Entropy
+	_ = @import("entropy/ans_params.zig");
+	_ = @import("entropy/ans_common.zig");
+	_ = @import("entropy/huffman.zig");
+	_ = @import("entropy/hybrid_uint.zig");
+	_ = @import("entropy/inverse_mtf.zig");
+	_ = @import("entropy/dec_ans.zig");
+	_ = @import("entropy/dec_context_map.zig");
+
+	// Codec
+	_ = @import("codec/field_coders.zig");
+	_ = @import("codec/frame_dimensions.zig");
+	_ = @import("codec/headers.zig");
+	_ = @import("codec/loop_filter.zig");
+	_ = @import("codec/image_metadata.zig");
+	_ = @import("codec/color_encoding.zig");
+	_ = @import("codec/frame_header.zig");
+	_ = @import("codec/toc.zig");
+	_ = @import("codec/dec_frame.zig");
+	_ = @import("codec/codestream_test.zig");
+	_ = @import("codec/decode_test.zig");
+
+	// Modular
+	_ = @import("modular/ma_common.zig");
+	_ = @import("modular/options.zig");
+	_ = @import("modular/weighted.zig");
+	_ = @import("modular/dec_ma.zig");
+	_ = @import("modular/context_predict.zig");
+	_ = @import("modular/transform.zig");
+	_ = @import("modular/modular_image.zig");
+	_ = @import("modular/encoding.zig");
 }

@@ -11,10 +11,9 @@ const JxlError = status_mod.JxlError;
 pub fn getPopulationCountPrecision(logcount: u32, shift: u32) u32 {
     const signed_shift: i32 = @intCast(shift);
     const signed_logcount: i32 = @intCast(logcount);
-    const ans_log: i32 = @intCast(params.ans_log_tab_size);
     const r = @min(
         signed_logcount,
-        signed_shift - @divTrunc(ans_log - signed_logcount, 2),
+        signed_shift - @as(i32, @intCast((shift -| logcount) >> 1)),
     );
     if (r < 0) return 0;
     return @intCast(r);

@@ -30,7 +30,7 @@ test "parse real JXL codestream headers" {
     try testing.expect(!metadata.have_animation);
     try testing.expectEqual(@as(u32, 8), metadata.bit_depth.bits_per_sample);
     try testing.expect(!metadata.bit_depth.floating_point_sample);
-    try testing.expect(metadata.xyb_encoded);
+    try testing.expect(!metadata.xyb_encoded);
     try testing.expectEqual(@as(u32, 1), metadata.orientation);
     try testing.expectEqual(@as(u32, 0), metadata.num_extra_channels);
 
@@ -40,6 +40,9 @@ test "parse real JXL codestream headers" {
 
     // Parse CustomTransformData (sits between ImageMetadata and FrameHeader in codestream)
     const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+
+    // Codestream headers are zero-padded to byte boundary before frame data
+    try br.jumpToByteBoundary();
 
     // Build CodecMetadata for FrameHeader parsing
     var codec_meta = image_metadata.CodecMetadata{};

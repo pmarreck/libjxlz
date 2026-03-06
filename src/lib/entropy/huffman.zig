@@ -240,7 +240,7 @@ pub const HuffmanDecodingData = struct {
         while (i < code_length_codes and space > 0) : (i += 1) {
             const code_len_idx = code_length_code_order[i];
             br.refill();
-            const p = &huff[br.peekFixedBits(4)];
+            const p = &huff[@as(usize, @intCast(br.peekBits(4)))];
             br.consume(p.bits);
             const v: u8 = @intCast(p.value);
             code_length_code_lengths_buf[code_len_idx] = v;
@@ -302,7 +302,7 @@ fn readHuffmanCodeLengths(
 
     while (symbol < num_symbols and space > 0) {
         br.refill();
-        const p = &table[br.peekFixedBits(5)];
+        const p = &table[@as(usize, @intCast(br.peekBits(5)))];
         br.consume(p.bits);
         const code_len: u8 = @intCast(p.value);
         if (code_len < code_length_repeat_code) {

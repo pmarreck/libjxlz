@@ -80,6 +80,14 @@ pub const YCbCrChromaSubsampling = struct {
         }
     }
 
+    pub fn hShift(self: YCbCrChromaSubsampling, c: usize) u8 {
+        return kHShift[self.channel_mode[c]];
+    }
+
+    pub fn vShift(self: YCbCrChromaSubsampling, c: usize) u8 {
+        return kVShift[self.channel_mode[c]];
+    }
+
     pub fn maxHShift(self: YCbCrChromaSubsampling) u8 {
         return self.maxhs;
     }

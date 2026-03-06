@@ -77,6 +77,7 @@ fn validateTree(tree: []const PropertyDecisionNode) JxlError!void {
 // ── Inner DecodeTree (with ANS reader) ──
 
 fn decodeTreeInner(
+    allocator: std.mem.Allocator,
     br: *BitReader,
     reader: *ANSSymbolReader,
     context_map: []const u8,
@@ -110,7 +111,7 @@ fn decodeTreeInner(
 
             const multiplier: u32 = (@as(u32, @intCast(mul_bits)) + 1) << @intCast(mul_log);
 
-            try tree.append(.{
+            try tree.append(allocator, .{
                 .property = -1,
                 .splitval = 0,
                 .lchild = leaf_id,
@@ -130,7 +131,7 @@ fn decodeTreeInner(
         const lchild: u32 = @intCast(tree.items.len + to_decode + 1);
         const rchild: u32 = @intCast(tree.items.len + to_decode + 2);
 
-        try tree.append(.{
+        try tree.append(allocator, .{
             .property = property,
             .splitval = splitval,
             .lchild = lchild,
@@ -178,7 +179,7 @@ pub fn decodeTree(
     defer reader.deinit();
 
     const limit = @min(tree_size_limit, ma_common.kMaxTreeSize);
-    try decodeTreeInner(br, &reader, tree_context_map, tree, limit);
+    try decodeTreeInner(allocator, br, &reader, tree_context_map, tree, limit);
 
     if (!reader.checkANSFinalState()) {
         return error.GenericError;

@@ -89,11 +89,11 @@ pub const ModularFrameDecoder = struct {
     pub fn init(allocator: std.mem.Allocator) ModularFrameDecoder {
         return .{
             .full_image = Image{
-                .channels = std.ArrayList(Channel).init(allocator),
-                .transforms = std.ArrayList(transform_mod.Transform).init(allocator),
+                .channels = .{},
+                .transforms = .{},
                 .allocator = allocator,
             },
-            .tree = dec_ma.Tree.init(allocator),
+            .tree = .{},
             .code = ANSCode.init(allocator),
             .allocator = allocator,
         };
@@ -102,7 +102,7 @@ pub const ModularFrameDecoder = struct {
     pub fn deinit(self: *ModularFrameDecoder) void {
         self.full_image.deinit();
         self.global_header.deinit();
-        self.tree.deinit();
+        self.tree.deinit(self.allocator);
         self.code.deinit();
         if (self.context_map.len > 0) {
             self.allocator.free(self.context_map);
@@ -156,7 +156,7 @@ pub const ModularFrameDecoder = struct {
             self.allocator,
             self.frame_dim.xsize,
             self.frame_dim.ysize,
-            metadata.m.bit_depth.bits_per_sample,
+            @intCast(metadata.m.bit_depth.bits_per_sample),
             nb_chans + nb_extra,
         );
 
@@ -251,7 +251,7 @@ pub const ModularFrameDecoder = struct {
             if (rw == 0 or rh == 0) continue;
             var gc = try Channel.create(self.allocator, rw, rh, fch.hshift, fch.vshift);
             _ = &gc;
-            try gi.channels.append(gc);
+            try gi.channels.append(self.allocator, gc);
         }
 
         if (gi.channels.items.len == 0) return;
@@ -331,7 +331,7 @@ pub const FrameDecoder = struct {
 
     /// Read frame header and TOC.
     pub fn initFrame(self: *FrameDecoder, br: *BitReader) JxlError!void {
-        self.frame_header = try FrameHeader.readFromBitStream(br, self.metadata);
+        self.frame_header = try FrameHeader.readFromBitStream(br, self.metadata, false);
         self.frame_dim = self.frame_header.toFrameDimensions(self.metadata, false);
         self.modular_decoder.initFrame(self.frame_dim);
 

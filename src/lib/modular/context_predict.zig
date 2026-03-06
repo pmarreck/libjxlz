@@ -154,12 +154,12 @@ pub fn filterTree(
     var has_non_wp = false;
     gradient_only.* = true;
 
-    var output = FlatTree.init(allocator);
+    var output: FlatTree = .{};
 
     // BFS queue
-    var queue = std.ArrayList(usize).init(allocator);
-    defer queue.deinit();
-    try queue.append(0);
+    var queue: std.ArrayList(usize) = .{};
+    defer queue.deinit(allocator);
+    try queue.append(allocator, 0);
 
     while (queue.items.len > 0) {
         var cur = queue.orderedRemove(0);
@@ -186,7 +186,7 @@ pub fn filterTree(
             gradient_only.* = gradient_only.* and (flat.predictor == .gradient);
             has_wp = has_wp or (flat.predictor == .weighted);
             has_non_wp = has_non_wp or (flat.predictor != .weighted);
-            try output.append(flat);
+            try output.append(allocator, flat);
             continue;
         }
 
@@ -213,13 +213,13 @@ pub fn filterTree(
             if (global_tree[cur_child].property == -1) {
                 flat.properties[i] = 0;
                 flat.splitvals[i] = 0;
-                try queue.append(cur_child);
-                try queue.append(cur_child); // duplicate leaf
+                try queue.append(allocator, cur_child);
+                try queue.append(allocator, cur_child); // duplicate leaf
             } else {
                 flat.properties[i] = global_tree[cur_child].property;
                 flat.splitvals[i] = global_tree[cur_child].splitval;
-                try queue.append(global_tree[cur_child].lchild);
-                try queue.append(global_tree[cur_child].rchild);
+                try queue.append(allocator, global_tree[cur_child].lchild);
+                try queue.append(allocator, global_tree[cur_child].rchild);
                 num_props.* = @max(@as(usize, @intCast(flat.properties[i])) + 1, num_props.*);
             }
         }
@@ -236,7 +236,7 @@ pub fn filterTree(
             }
         }
 
-        try output.append(flat);
+        try output.append(allocator, flat);
     }
 
     if (num_props.* > kNumNonrefProperties) {

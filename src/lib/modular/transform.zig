@@ -207,6 +207,7 @@ pub fn invRCT(image: *Image, begin_c: usize, rct_type: u32) JxlError!void {
                 const o2 = image.channels.items[m + 2].row(y);
                 switch (custom) {
                     inline 0, 1, 2, 3, 4, 5, 6 => |ct| invRCTRow(ct, in0, in1, in2, o0, o1, o2),
+                    else => unreachable,
                 }
             }
             continue;
@@ -214,6 +215,7 @@ pub fn invRCT(image: *Image, begin_c: usize, rct_type: u32) JxlError!void {
 
         switch (custom) {
             inline 0, 1, 2, 3, 4, 5, 6 => |ct| invRCTRow(ct, in0, in1, in2, buf0[0..w], buf1[0..w], buf2[0..w]),
+            else => unreachable,
         }
 
         // Apply permutation
@@ -383,8 +385,8 @@ pub fn invSqueeze(image: *Image, parameters: []const SqueezeParams) JxlError!voi
 const kMaxFirstPreviewSize: usize = 8;
 
 pub fn defaultSqueezeParameters(allocator: std.mem.Allocator, image: *const Image) ![]SqueezeParams {
-    var params = std.ArrayList(SqueezeParams).init(allocator);
-    errdefer params.deinit();
+    var params: std.ArrayList(SqueezeParams) = .{};
+    errdefer params.deinit(allocator);
 
     const nb_channels = image.channels.items.len - image.nb_meta_channels;
     var w = image.channels.items[image.nb_meta_channels].w;
@@ -397,13 +399,13 @@ pub fn defaultSqueezeParameters(allocator: std.mem.Allocator, image: *const Imag
         image.channels.items[image.nb_meta_channels + 1].w == w and
         image.channels.items[image.nb_meta_channels + 1].h == h)
     {
-        try params.append(.{
+        try params.append(allocator, .{
             .horizontal = true,
             .in_place = false,
             .begin_c = @intCast(image.nb_meta_channels + 1),
             .num_c = 2,
         });
-        try params.append(.{
+        try params.append(allocator, .{
             .horizontal = false,
             .in_place = false,
             .begin_c = @intCast(image.nb_meta_channels + 1),
@@ -421,24 +423,24 @@ pub fn defaultSqueezeParameters(allocator: std.mem.Allocator, image: *const Imag
     if (!wide) {
         if (h > kMaxFirstPreviewSize) {
             sp.horizontal = false;
-            try params.append(sp);
+            try params.append(allocator, sp);
             h = (h + 1) / 2;
         }
     }
     while (w > kMaxFirstPreviewSize or h > kMaxFirstPreviewSize) {
         if (w > kMaxFirstPreviewSize) {
             sp.horizontal = true;
-            try params.append(sp);
+            try params.append(allocator, sp);
             w = (w + 1) / 2;
         }
         if (h > kMaxFirstPreviewSize) {
             sp.horizontal = false;
-            try params.append(sp);
+            try params.append(allocator, sp);
             h = (h + 1) / 2;
         }
     }
 
-    return params.toOwnedSlice();
+    return params.toOwnedSlice(allocator);
 }
 
 fn checkMetaSqueezeParams(param: SqueezeParams, num_channels: usize) JxlError!void {
@@ -492,7 +494,7 @@ pub fn metaSqueeze(image: *Image, squeezes: *[]SqueezeParams, allocator: std.mem
 
             var placeholder = Channel.create(allocator, w, h, ch.hshift, ch.vshift) catch return error.GenericError;
             placeholder.component = ch.component;
-            image.channels.insert(offset + (c - beginc), placeholder) catch return error.GenericError;
+            image.channels.insert(allocator, offset + (c - beginc), placeholder) catch return error.GenericError;
         }
     }
 }
@@ -534,7 +536,7 @@ pub fn metaPalette(image: *Image, begin_c: u32, end_c: u32, nb_colors: u32, nb_d
     // Insert palette channel at front
     var pch = Channel.create(allocator, nb_colors + nb_deltas, nb, -1, -1) catch return error.GenericError;
     _ = &pch;
-    image.channels.insert(0, pch) catch return error.GenericError;
+    image.channels.insert(allocator, 0, pch) catch return error.GenericError;
 }
 
 // ── InvPalette ──
@@ -637,7 +639,7 @@ pub fn invPalette(image: *Image, begin_c: u32, nb_colors: u32, nb_deltas: u32, p
     while (i < nb) : (i += 1) {
         var ch = Channel.create(allocator, w, h, image.channels.items[c0].hshift, image.channels.items[c0].vshift) catch return error.GenericError;
         _ = &ch;
-        image.channels.insert(c0 + 1, ch) catch return error.GenericError;
+        image.channels.insert(allocator, c0 + 1, ch) catch return error.GenericError;
     }
 
     if (w == 0) {

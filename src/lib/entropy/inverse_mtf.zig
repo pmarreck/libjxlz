@@ -60,10 +60,16 @@ test "inverseMoveToFrontTransform known values" {
     // MTF: [0..255] initially
     // 'A'=65: index=65, MTF->A front. output[0]=65
     // 'B'=66: index=66, MTF->B front. output[1]=66
-    // 'R'=82: index=83, MTF->R front. output[2]=82
-    // 'A'=65: index=3, MTF->A front. output[3]=65
-    // etc.
-    var data = [_]u8{ 65, 66, 83, 3, 69, 3, 70, 3, 5, 6, 3 };
+    // 'R'=82: index=82, MTF->R front. output[2]=82
+    // 'A'=65: index=2, MTF->A front.  output[3]=65
+    // 'C'=67: index=68, MTF->C front. output[4]=67
+    // 'A'=65: index=1, MTF->A front.  output[5]=65
+    // 'D'=68: index=69, MTF->D front. output[6]=68
+    // 'A'=65: index=1, MTF->A front.  output[7]=65
+    // 'B'=66: index=4, MTF->B front.  output[8]=66
+    // 'R'=82: index=4, MTF->R front.  output[9]=82
+    // 'A'=65: index=2, MTF->A front.  output[10]=65
+    var data = [_]u8{ 65, 66, 82, 2, 68, 1, 69, 1, 4, 4, 2 };
     inverseMoveToFrontTransform(&data);
     try testing.expectEqualSlices(u8, "ABRACADABRA", &data);
 }

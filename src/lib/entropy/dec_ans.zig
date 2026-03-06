@@ -262,7 +262,7 @@ fn readHistogram(
         var i: usize = 0;
         while (i < length) : (i += 1) {
             br.refill();
-            const idx = br.peekFixedBits(7);
+            const idx: usize = @intCast(br.peekBits(7));
             br.consume(huff[idx][0]);
             logcounts[i] = @as(i32, huff[idx][1]) - 1;
             if (logcounts[i] == @as(i32, params.ans_log_tab_size)) {
@@ -413,7 +413,7 @@ pub const ANSSymbolReader = struct {
         }
     }
 
-    const undefined_entry_ptr: [*]const AliasTable.Entry = @ptrFromInt(0x1);
+    const undefined_entry_ptr: [*]const AliasTable.Entry = @ptrFromInt(@alignOf(AliasTable.Entry));
 
     pub fn readSymbolANSWithoutRefill(self: *ANSSymbolReader, histo_idx: usize, br: *BitReader) usize {
         const res = self.state & params.ans_tab_mask;
@@ -422,7 +422,7 @@ pub const ANSSymbolReader = struct {
         self.state = @intCast(@as(u64, symbol.freq) * @as(u64, self.state >> params.ans_log_tab_size) + symbol.offset);
 
         // Branchless normalization
-        const new_state = (self.state << 16) | @as(u32, @intCast(br.peekFixedBits(16)));
+        const new_state = (self.state << 16) | @as(u32, @intCast(br.peekBits(16)));
         const normalize = self.state < (1 << 16);
         self.state = if (normalize) new_state else self.state;
         br.consume(if (normalize) 16 else 0);
@@ -720,7 +720,7 @@ test "readHistogram simple single symbol" {
     // simple_code=1, num_symbols-1=0, symbol=0 (VarLenUint8: flag=0 => 0)
     // So: 1 bit (simple=1), 1 bit (num_symbols-1=0), 1 bit (varlen flag=0)
     // Binary: 1, 0, 0, ... = 0b001 = 0x01
-    var data = [_]u8{ 0b00000101, 0, 0, 0, 0, 0, 0, 0 };
+    var data = [_]u8{ 0b00000001, 0, 0, 0, 0, 0, 0, 0 };
     var br = BitReader.init(&data);
 
     const counts = try readHistogram(allocator, 12, &br);

@@ -47,7 +47,7 @@ pub fn decodeContextMap(
         // from DecodeHistograms.
         // TODO: Wire up the ANS-based context map decoding path.
         _ = use_mtf;
-        return error.NotSupported;
+        return error.Unsupported;
     }
 
     // Compute num_htrees = max + 1

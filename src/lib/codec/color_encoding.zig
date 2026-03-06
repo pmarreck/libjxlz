@@ -260,17 +260,16 @@ test "ColorEncoding gray no ICC" {
     // For srgb=13: selector=10, extra bits = 13-2 = 11 = 0b1011
     //
     // bit6=0 (have_gamma)
-    // bit7-8=10 (tf enum selector)
-    // bit9-12=1011 (value 11 -> 11+2=13=srgb)
+    // bit7-8=10 (tf enum selector -> BitsOffset(4,2))
+    // bit9-12: extra bits encode 13-2=11=0b1011, LSB first: bit9=1,bit10=1,bit11=0,bit12=1
     // rendering_intent=relative(1):
     // bit13-14=01 (enum selector -> Val(1)=relative)
     //
-    // byte0: bits0-7: 0,0,1,0,1,0,0,0 = 0b00010100 = wait...
-    // bit0=0, bit1=0, bit2=1, bit3=0, bit4=1, bit5=0, bit6=0, bit7=0
+    // byte0: bit0=0, bit1=0, bit2=1, bit3=0, bit4=1, bit5=0, bit6=0, bit7=0
     // byte0 = 0|(0<<1)|(1<<2)|(0<<3)|(1<<4)|(0<<5)|(0<<6)|(0<<7) = 0x14
-    // byte1: bit8=1, bit9=0, bit10=1, bit11=1, bit12=0, bit13=1, bit14=0
-    // byte1 = 1|(0<<1)|(1<<2)|(1<<3)|(0<<4)|(1<<5)|(0<<6)|(0<<7) = 0b00101101 = 0x2D
-    var data = [_]u8{ 0x14, 0x2D, 0, 0, 0, 0, 0, 0 };
+    // byte1: bit8=1, bit9=1, bit10=1, bit11=0, bit12=1, bit13=1, bit14=0, bit15=0
+    // byte1 = 1|(1<<1)|(1<<2)|(0<<3)|(1<<4)|(1<<5)|(0<<6)|(0<<7) = 0x37
+    var data = [_]u8{ 0x14, 0x37, 0, 0, 0, 0, 0, 0 };
     var br = BitReader.init(&data);
     const ce = try ColorEncoding.readFromBitStream(&br);
     try testing.expect(!ce.want_icc);

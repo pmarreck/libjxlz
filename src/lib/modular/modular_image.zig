@@ -101,8 +101,8 @@ pub const Image = struct {
 
     pub fn create(allocator: std.mem.Allocator, iw: usize, ih: usize, bitdepth: i32, nb_chans: usize) !Image {
         var img = Image{
-            .channels = std.ArrayList(Channel).init(allocator),
-            .transforms = std.ArrayList(Transform).init(allocator),
+            .channels = .{},
+            .transforms = .{},
             .w = iw,
             .h = ih,
             .bitdepth = bitdepth,
@@ -110,7 +110,7 @@ pub const Image = struct {
         };
         for (0..nb_chans) |_| {
             const ch = try Channel.create(allocator, iw, ih, 0, 0);
-            try img.channels.append(ch);
+            try img.channels.append(allocator, ch);
         }
         return img;
     }
@@ -119,11 +119,11 @@ pub const Image = struct {
         for (self.channels.items) |*ch| {
             ch.deinit();
         }
-        self.channels.deinit();
+        self.channels.deinit(self.allocator);
         for (self.transforms.items) |*t| {
             t.deinit();
         }
-        self.transforms.deinit();
+        self.transforms.deinit(self.allocator);
     }
 
     pub fn empty(self: *const Image) bool {

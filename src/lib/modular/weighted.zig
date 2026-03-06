@@ -115,7 +115,8 @@ pub const State = struct {
         _ = self;
         const shift_raw: i32 = @as(i32, @intCast(floorLog2Nonzero(x + 1))) - 5;
         const shift: u6 = if (shift_raw < 0) 0 else @intCast(shift_raw);
-        return 4 + ((maxweight * divlookup[x >> shift]) >> shift);
+        const shift5: u5 = @intCast(@min(shift, 31));
+        return 4 + ((maxweight * divlookup[x >> shift]) >> shift5);
     }
 
     fn weightedAverage(self: *const State, p: *const [kNumPredictors]pixel_type_w, w_in: [kNumPredictors]u32) pixel_type_w {

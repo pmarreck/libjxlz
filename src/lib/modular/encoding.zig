@@ -71,7 +71,9 @@ pub const GroupHeader = struct {
 
 inline fn makePixel(v: u32, multiplier: pixel_type, offset: pixel_type_w) pixel_type {
     const val: pixel_type_w = pack_signed.unpackSigned(v);
-    return @intCast(val * @as(pixel_type_w, multiplier) + offset);
+    // Use @truncate to match C++ static_cast<pixel_type>(uint32_t(a)+uint32_t(b))
+    // wrapping semantics — @intCast would panic on overflow.
+    return @truncate(val *% @as(pixel_type_w, multiplier) +% offset);
 }
 
 // ── Decode a single modular channel ──
@@ -106,7 +108,7 @@ fn decodeModularChannel(
         &wp_only,
         &gradient_only,
     ) catch return error.GenericError;
-    defer flat_tree.deinit();
+    defer flat_tree.deinit(allocator);
 
     // Map leaf childIDs through context_map for direct clustered reads
     for (flat_tree.items) |*node| {
@@ -260,7 +262,7 @@ pub fn modularDecode(
 
     // Move transforms to image for later undo (header gives up ownership)
     for (header.transforms) |t| {
-        try image.transforms.append(t);
+        try image.transforms.append(image.allocator, t);
     }
     // Clear header's transform slice so it doesn't double-free squeeze params
     if (header.allocator) |alloc| {
@@ -289,8 +291,8 @@ pub fn modularDecode(
     if (num_chans == 0) return;
 
     // Read or use global tree
-    var local_tree = dec_ma.Tree.init(allocator);
-    defer local_tree.deinit();
+    var local_tree: dec_ma.Tree = .{};
+    defer local_tree.deinit(allocator);
     var local_code = ANSCode.init(allocator);
     defer local_code.deinit();
     var local_ctx_map: []u8 = &.{};
