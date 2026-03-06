@@ -305,7 +305,7 @@ fn readHistogram(
             } else {
                 const bitcount = ans_common.getPopulationCountPrecision(@intCast(code), shift);
                 counts[i] = (@as(i32, 1) << @intCast(code)) +
-                    @as(i32, @intCast(br.readBits(@intCast(bitcount)))) << @intCast(@as(u32, @intCast(code)) - bitcount);
+                    (@as(i32, @intCast(br.readBits(@intCast(bitcount)))) << @intCast(@as(u32, @intCast(code)) - bitcount));
             }
         }
         total_count += counts[i];
@@ -555,7 +555,7 @@ pub fn decodeHistograms(
 
     var num_histograms: usize = 1;
     if (num_contexts > 1) {
-        dec_context_map.decodeContextMap(context_map, &num_histograms, br) catch return error.GenericError;
+        dec_context_map.decodeContextMapAlloc(context_map, &num_histograms, br, allocator) catch return error.GenericError;
     } else {
         @memset(context_map, 0);
     }

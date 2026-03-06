@@ -5,6 +5,9 @@ const std = @import("std");
 const BitReader = @import("../base/bit_reader.zig").BitReader;
 const JxlError = @import("../base/status.zig").JxlError;
 const inverse_mtf = @import("inverse_mtf.zig");
+const dec_ans = @import("dec_ans.zig");
+const ANSCode = dec_ans.ANSCode;
+const ANSSymbolReader = dec_ans.ANSSymbolReader;
 
 const max_clusters: usize = 256;
 
@@ -29,6 +32,16 @@ pub fn decodeContextMap(
     num_htrees: *usize,
     br: *BitReader,
 ) JxlError!void {
+    return decodeContextMapAlloc(context_map, num_htrees, br, null);
+}
+
+/// Same as decodeContextMap but accepts an allocator for the non-simple path.
+pub fn decodeContextMapAlloc(
+    context_map: []u8,
+    num_htrees: *usize,
+    br: *BitReader,
+    allocator_opt: ?std.mem.Allocator,
+) JxlError!void {
     const is_simple = br.readBits(1) != 0;
     if (is_simple) {
         const bits_per_entry: u5 = @intCast(br.readBits(2));
@@ -40,14 +53,37 @@ pub fn decodeContextMap(
             @memset(context_map, 0);
         }
     } else {
+        const allocator = allocator_opt orelse return error.GenericError;
         const use_mtf = br.readBits(1) != 0;
-        // For the non-simple case, we need a full ANS reader to decode the
-        // context map entries. This creates a circular dependency with dec_ans.
-        // For now, we expose this as a separate path that will be wired up
-        // from DecodeHistograms.
-        // TODO: Wire up the ANS-based context map decoding path.
-        _ = use_mtf;
-        return error.Unsupported;
+
+        // Decode histograms for context map entries (1 context).
+        // LZ77 is disallowed if context_map has <= 2 entries to prevent
+        // recursive context map explosion.
+        var code = ANSCode.init(allocator);
+        defer code.deinit();
+
+        const sink_ctx_map = dec_ans.decodeHistograms(
+            allocator,
+            br,
+            1,
+            &code,
+        ) catch return error.GenericError;
+        defer allocator.free(sink_ctx_map);
+
+        var reader = ANSSymbolReader.create(&code, br, 0, allocator) catch return error.GenericError;
+        defer reader.deinit();
+
+        for (context_map) |*entry| {
+            const sym = reader.readHybridUint(0, br, sink_ctx_map);
+            if (sym >= max_clusters) return error.GenericError;
+            entry.* = @intCast(sym);
+        }
+
+        if (!reader.checkANSFinalState()) return error.GenericError;
+
+        if (use_mtf) {
+            inverse_mtf.inverseMoveToFrontTransform(context_map);
+        }
     }
 
     // Compute num_htrees = max + 1
