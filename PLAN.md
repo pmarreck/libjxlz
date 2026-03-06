@@ -29,8 +29,10 @@
 - [x] field_coders.zig — U32Coder, U64Coder, F16Coder, BitsCoder, U32Enc/U32Distr
 - [x] frame_dimensions.zig — FrameDimensions with block/group constants
 - [x] headers.zig — SizeHeader, PreviewHeader, AnimationHeader readers
-- [ ] Frame header parsing (FrameHeader, enums, LoopFilter)
-- [ ] Image metadata (BitDepth, ExtraChannelInfo, ImageMetadata, CodecMetadata)
+- [x] Frame header parsing (FrameHeader, enums, LoopFilter)
+- [x] Image metadata (BitDepth, ExtraChannelInfo, ImageMetadata, CodecMetadata)
+- [x] pack_signed.zig — PackSigned/UnpackSigned for frame origin encoding
+- [ ] ColorEncoding reading (deferred — complex, needed for full ImageMetadata parsing)
 - [ ] Group decoding
 - [ ] Modular integer decoding (MA trees)
 

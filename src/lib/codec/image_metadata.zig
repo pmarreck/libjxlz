@@ -1,0 +1,316 @@
+// Image metadata: BitDepth, ExtraChannelInfo, ImageMetadata, CodecMetadata.
+// Transliterated from lib/jxl/image_metadata.h and lib/jxl/image_metadata.cc
+//
+// Note: ColorEncoding reading is deferred — it requires its own complex module.
+// For now, we stub it and skip those bits when encountered during full
+// ImageMetadata parsing. The basic structural types (BitDepth, ExtraChannelInfo,
+// CodecMetadata) are fully implemented for use by FrameHeader.
+
+const std = @import("std");
+const BitReader = @import("../base/bit_reader.zig").BitReader;
+const JxlError = @import("../base/status.zig").JxlError;
+const fc = @import("field_coders.zig");
+const headers = @import("headers.zig");
+
+// ── Orientation ──
+
+pub const Orientation = enum(u32) {
+    identity = 1,
+    flip_horizontal = 2,
+    rotate_180 = 3,
+    flip_vertical = 4,
+    transpose = 5,
+    rotate_90 = 6,
+    anti_transpose = 7,
+    rotate_270 = 8,
+};
+
+// ── ExtraChannel type ──
+
+pub const ExtraChannel = enum(u32) {
+    alpha = 0,
+    depth = 1,
+    spot_color = 2,
+    selection_mask = 3,
+    black = 4, // CMYK
+    cfa = 5,
+    thermal = 6,
+    reserved0 = 7,
+    reserved1 = 8,
+    reserved2 = 9,
+    reserved3 = 10,
+    reserved4 = 11,
+    reserved5 = 12,
+    reserved6 = 13,
+    reserved7 = 14,
+    unknown = 15,
+    optional = 16,
+};
+
+// ── BitDepth ──
+
+pub const BitDepth = struct {
+    floating_point_sample: bool = false,
+    bits_per_sample: u32 = 8,
+    exponent_bits_per_sample: u32 = 0,
+
+    pub fn readFromBitStream(br: *BitReader) JxlError!BitDepth {
+        var bd = BitDepth{};
+
+        bd.floating_point_sample = br.readBits(1) != 0;
+
+        if (!bd.floating_point_sample) {
+            // U32(Val(8), Val(10), Val(12), BitsOffset(6, 1))
+            const enc = fc.U32Enc.init(fc.val(8), fc.val(10), fc.val(12), fc.bitsOffset(6, 1));
+            bd.bits_per_sample = fc.U32Coder.read(enc, br);
+            bd.exponent_bits_per_sample = 0;
+        } else {
+            // U32(Val(32), Val(16), Val(24), BitsOffset(6, 1))
+            const enc = fc.U32Enc.init(fc.val(32), fc.val(16), fc.val(24), fc.bitsOffset(6, 1));
+            bd.bits_per_sample = fc.U32Coder.read(enc, br);
+            // Exponent bits: stored as (value - 1), in 4 bits, default 8-1=7
+            const raw: u32 = @intCast(br.readBits(4));
+            bd.exponent_bits_per_sample = raw + 1;
+        }
+
+        // Validation
+        if (bd.floating_point_sample) {
+            if (bd.exponent_bits_per_sample < 2 or bd.exponent_bits_per_sample > 8) {
+                return error.GenericError;
+            }
+            const mantissa_bits: i32 = @as(i32, @intCast(bd.bits_per_sample)) -
+                @as(i32, @intCast(bd.exponent_bits_per_sample)) - 1;
+            if (mantissa_bits < 2 or mantissa_bits > 23) {
+                return error.GenericError;
+            }
+        } else {
+            if (bd.bits_per_sample > 31) {
+                return error.GenericError;
+            }
+        }
+
+        return bd;
+    }
+};
+
+// ── ExtraChannelInfo ──
+
+pub const ExtraChannelInfo = struct {
+    type: ExtraChannel = .alpha,
+    bit_depth: BitDepth = .{},
+    dim_shift: u32 = 0,
+    name: []const u8 = &.{},
+
+    // Conditional fields
+    alpha_associated: bool = false,
+    spot_color: [4]f32 = .{ 0, 0, 0, 0 },
+    cfa_channel: u32 = 0,
+
+    // For reading, we store name bytes inline (up to 1071 bytes per spec)
+    name_buf: [1071]u8 = undefined,
+    name_len: u32 = 0,
+
+    pub fn readFromBitStream(br: *BitReader) JxlError!ExtraChannelInfo {
+        // AllDefault check
+        if (fc.readAllDefault(br)) {
+            return ExtraChannelInfo{};
+        }
+
+        var eci = ExtraChannelInfo{};
+
+        // Type (enum encoding)
+        const type_val = fc.readEnum(br);
+        if (type_val > @intFromEnum(ExtraChannel.optional)) {
+            return error.GenericError;
+        }
+        eci.type = @enumFromInt(type_val);
+
+        // BitDepth (nested)
+        eci.bit_depth = try BitDepth.readFromBitStream(br);
+
+        // dim_shift: U32(Val(0), Val(3), Val(4), BitsOffset(3, 1))
+        const ds_enc = fc.U32Enc.init(fc.val(0), fc.val(3), fc.val(4), fc.bitsOffset(3, 1));
+        eci.dim_shift = fc.U32Coder.read(ds_enc, br);
+        if ((@as(u32, 1) << @intCast(eci.dim_shift)) > 8) {
+            return error.GenericError;
+        }
+
+        // Name string: U32(Val(0), Bits(4), BitsOffset(5,16), BitsOffset(10,48))
+        const name_len_enc = fc.U32Enc.init(fc.val(0), fc.bits(4), fc.bitsOffset(5, 16), fc.bitsOffset(10, 48));
+        eci.name_len = fc.U32Coder.read(name_len_enc, br);
+        if (eci.name_len > 1071) return error.GenericError;
+        for (0..eci.name_len) |i| {
+            eci.name_buf[i] = @intCast(br.readBits(8));
+        }
+        eci.name = eci.name_buf[0..eci.name_len];
+
+        // Conditional: alpha_associated
+        if (eci.type == .alpha) {
+            eci.alpha_associated = br.readBits(1) != 0;
+        }
+
+        // Conditional: spot_color
+        if (eci.type == .spot_color) {
+            for (0..4) |i| {
+                eci.spot_color[i] = try fc.F16Coder.read(br);
+            }
+        }
+
+        // Conditional: cfa_channel
+        if (eci.type == .cfa) {
+            const cfa_enc = fc.U32Enc.init(fc.val(1), fc.bits(2), fc.bitsOffset(4, 3), fc.bitsOffset(8, 19));
+            eci.cfa_channel = fc.U32Coder.read(cfa_enc, br);
+        }
+
+        // Reject unknown/reserved types
+        if (eci.type == .unknown or
+            (@intFromEnum(eci.type) >= @intFromEnum(ExtraChannel.reserved0) and
+            @intFromEnum(eci.type) <= @intFromEnum(ExtraChannel.reserved7)))
+        {
+            return error.GenericError;
+        }
+
+        return eci;
+    }
+};
+
+// ── ToneMapping ──
+
+pub const ToneMapping = struct {
+    intensity_target: f32 = 255.0, // kDefaultIntensityTarget
+    min_nits: f32 = 0.0,
+    relative_to_max_display: bool = false,
+    linear_below: f32 = 0.0,
+
+    pub fn readFromBitStream(br: *BitReader) JxlError!ToneMapping {
+        if (fc.readAllDefault(br)) {
+            return ToneMapping{};
+        }
+
+        var tm = ToneMapping{};
+        tm.intensity_target = try fc.F16Coder.read(br);
+        if (tm.intensity_target <= 0.0) return error.GenericError;
+
+        tm.min_nits = try fc.F16Coder.read(br);
+        if (tm.min_nits < 0.0 or tm.min_nits > tm.intensity_target) return error.GenericError;
+
+        tm.relative_to_max_display = br.readBits(1) != 0;
+
+        tm.linear_below = try fc.F16Coder.read(br);
+        if (tm.linear_below < 0 or (tm.relative_to_max_display and tm.linear_below > 1.0)) {
+            return error.GenericError;
+        }
+
+        return tm;
+    }
+};
+
+// ── ImageMetadata (simplified for FrameHeader dependency) ──
+// Full ColorEncoding parsing is deferred; we skip those bits for now.
+
+pub const ImageMetadata = struct {
+    bit_depth: BitDepth = .{},
+    modular_16_bit_buffer_sufficient: bool = true,
+    xyb_encoded: bool = true,
+    orientation: u32 = 1,
+    have_preview: bool = false,
+    have_animation: bool = false,
+    have_intrinsic_size: bool = false,
+
+    intrinsic_size: headers.SizeHeader = .{},
+    preview_size: headers.PreviewHeader = .{},
+    animation: headers.AnimationHeader = .{},
+    tone_mapping: ToneMapping = .{},
+
+    num_extra_channels: u32 = 0,
+    extra_channel_info: [256]ExtraChannelInfo = undefined,
+    extra_channel_count: u32 = 0, // actual count of populated entries
+
+    extensions: u64 = 0,
+
+    pub fn getOrientation(self: ImageMetadata) Orientation {
+        return @enumFromInt(self.orientation);
+    }
+};
+
+// ── CodecMetadata ──
+
+pub const CodecMetadata = struct {
+    m: ImageMetadata = .{},
+    size: headers.SizeHeader = .{},
+
+    pub fn xsize(self: CodecMetadata) usize {
+        return self.size.xsize();
+    }
+
+    pub fn ysize(self: CodecMetadata) usize {
+        return self.size.ysize();
+    }
+};
+
+// ── Tests ──
+
+const testing = std.testing;
+
+test "BitDepth default (8-bit uint)" {
+    // floating_point=0, selector=00 -> Val(8)
+    // bits: 0, 00 = byte 0x00
+    var data = [_]u8{ 0x00, 0, 0, 0, 0, 0, 0, 0 };
+    var br = BitReader.init(&data);
+    const bd = try BitDepth.readFromBitStream(&br);
+    try testing.expect(!bd.floating_point_sample);
+    try testing.expectEqual(@as(u32, 8), bd.bits_per_sample);
+    try testing.expectEqual(@as(u32, 0), bd.exponent_bits_per_sample);
+}
+
+test "BitDepth 10-bit uint" {
+    // floating_point=0, selector=01 -> Val(10)
+    // bits: 0, 01 = 0b010 in bits 0-2
+    // byte0: 0b00000010 = 0x02
+    var data = [_]u8{ 0x02, 0, 0, 0, 0, 0, 0, 0 };
+    var br = BitReader.init(&data);
+    const bd = try BitDepth.readFromBitStream(&br);
+    try testing.expect(!bd.floating_point_sample);
+    try testing.expectEqual(@as(u32, 10), bd.bits_per_sample);
+}
+
+test "BitDepth float32" {
+    // floating_point=1, selector=00 -> Val(32), then 4 bits for exponent_bits-1
+    // default exponent_bits=8, so we encode 8-1=7 in 4 bits
+    // But the C++ says: default is (8-offset)=(8-1)=7
+    // bits: 1, 00, 0111 (=7 in 4 bits for exponent default)
+    // byte0: 1 | (0<<1) | (0<<2) | (1<<3) | (1<<4) | (1<<5) | 0 | 0 = 0b00111001 = 0x39
+    var data = [_]u8{ 0x39, 0, 0, 0, 0, 0, 0, 0 };
+    var br = BitReader.init(&data);
+    const bd = try BitDepth.readFromBitStream(&br);
+    try testing.expect(bd.floating_point_sample);
+    try testing.expectEqual(@as(u32, 32), bd.bits_per_sample);
+    try testing.expectEqual(@as(u32, 8), bd.exponent_bits_per_sample);
+}
+
+test "ExtraChannelInfo all default" {
+    // AllDefault bit = 1
+    var data = [_]u8{ 0x01, 0, 0, 0, 0, 0, 0, 0 };
+    var br = BitReader.init(&data);
+    const eci = try ExtraChannelInfo.readFromBitStream(&br);
+    try testing.expectEqual(ExtraChannel.alpha, eci.type);
+    try testing.expectEqual(@as(u32, 8), eci.bit_depth.bits_per_sample);
+    try testing.expectEqual(@as(u32, 0), eci.dim_shift);
+}
+
+test "ToneMapping all default" {
+    // AllDefault bit = 1
+    var data = [_]u8{ 0x01, 0, 0, 0, 0, 0, 0, 0 };
+    var br = BitReader.init(&data);
+    const tm = try ToneMapping.readFromBitStream(&br);
+    try testing.expectEqual(@as(f32, 255.0), tm.intensity_target);
+    try testing.expectEqual(@as(f32, 0.0), tm.min_nits);
+    try testing.expect(!tm.relative_to_max_display);
+}
+
+test "CodecMetadata basic" {
+    var cm = CodecMetadata{};
+    cm.size = .{ .small = true, .ysize_div8_minus_1 = 7, .xsize_div8_minus_1 = 7 };
+    try testing.expectEqual(@as(usize, 64), cm.xsize());
+    try testing.expectEqual(@as(usize, 64), cm.ysize());
+}

@@ -7,6 +7,7 @@ pub const base = struct {
 	pub const random = @import("base/random.zig");
 	pub const rect = @import("base/rect.zig");
 	pub const float16 = @import("base/float.zig");
+	pub const pack_signed = @import("base/pack_signed.zig");
 };
 
 pub const entropy = struct {
@@ -23,6 +24,9 @@ pub const codec = struct {
 	pub const field_coders = @import("codec/field_coders.zig");
 	pub const frame_dimensions = @import("codec/frame_dimensions.zig");
 	pub const headers = @import("codec/headers.zig");
+	pub const loop_filter = @import("codec/loop_filter.zig");
+	pub const image_metadata = @import("codec/image_metadata.zig");
+	pub const frame_header = @import("codec/frame_header.zig");
 };
 
 test {

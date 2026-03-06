@@ -147,6 +147,35 @@ pub fn readEnum(reader: *BitReader) u32 {
     return U32Coder.read(enc, reader);
 }
 
+// ── Extensions reader ──
+
+/// Reads the extensions field (U64 bitmask). If non-zero, reads per-extension
+/// size U64s and skips past all extension data. Returns the extensions bitmask.
+pub fn readExtensions(reader: *BitReader) u64 {
+    const extensions = U64Coder.read(reader);
+    if (extensions == 0) return 0;
+
+    // For each set bit, read a U64 giving the number of extension bits.
+    var total_bits: u64 = 0;
+    var remaining = extensions;
+    while (remaining != 0) {
+        const ext_bits = U64Coder.read(reader);
+        total_bits +|= ext_bits;
+        remaining &= remaining - 1;
+    }
+
+    // Skip all extension data bits.
+    if (total_bits > 0) {
+        reader.skipBits(@intCast(total_bits));
+    }
+    return extensions;
+}
+
+/// Reads the AllDefault bit. Returns true if all fields are default (caller should return defaults).
+pub fn readAllDefault(reader: *BitReader) bool {
+    return reader.readBits(1) != 0;
+}
+
 // ── Tests ──
 
 const testing = std.testing;

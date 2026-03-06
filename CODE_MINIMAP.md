@@ -19,6 +19,7 @@
 - `rect.zig` — Rect type for rectangular image regions with intersection/translate/shift
 - `float.zig` — IEEE 754 float16 to f32 conversion
 - `bit_reader.zig` — 64-bit buffered bitstream reader with deferred refill, bounds checking
+- `pack_signed.zig` — PackSigned/UnpackSigned for zigzag encoding of signed frame offsets
 
 ### src/lib/entropy/
 - `ans_params.zig` — ANS/prefix coding constants (tab size, max alphabet, signature)
@@ -30,9 +31,12 @@
 - `dec_context_map.zig` — DecodeContextMap (simple path), VerifyContextMap
 
 ### src/lib/codec/
-- `field_coders.zig` — U32Distr, U32Enc, U32Coder, U64Coder, F16Coder, BitsCoder read functions, readEnum
+- `field_coders.zig` — U32Distr, U32Enc, U32Coder, U64Coder, F16Coder, BitsCoder read functions, readEnum, readExtensions, readAllDefault
 - `frame_dimensions.zig` — Block/group constants (kBlockDim=8, kGroupDim=256), FrameDimensions struct with Set, GroupRect, BlockGroupRect, DCGroupRect
 - `headers.zig` — SizeHeader (compact image dimensions), PreviewHeader, AnimationHeader readers; aspect ratio table
+- `loop_filter.zig` — LoopFilter (Gaborish + EPF parameters) with full readFromBitStream, extension support
+- `image_metadata.zig` — BitDepth, ExtraChannel enum, ExtraChannelInfo, ToneMapping, Orientation, ImageMetadata, CodecMetadata (ColorEncoding reading deferred)
+- `frame_header.zig` — FrameEncoding, ColorTransform, FrameType, BlendMode, BlendingInfo, YCbCrChromaSubsampling, Passes, AnimationFrame, FrameHeader with full readFromBitStream
 
 ## docs/plans/
 - `2026-03-06-libjxlz-design.md` — Overall project design document
