@@ -31,6 +31,13 @@ pub const codec = struct {
 	pub const codestream_test = @import("codec/codestream_test.zig");
 };
 
+pub const modular = struct {
+	pub const ma_common = @import("modular/ma_common.zig");
+	pub const options = @import("modular/options.zig");
+	pub const weighted = @import("modular/weighted.zig");
+	pub const dec_ma = @import("modular/dec_ma.zig");
+};
+
 test {
 	@import("std").testing.refAllDecls(@This());
 }

@@ -527,6 +527,149 @@ pub const ANSSymbolReader = struct {
     }
 };
 
+// ── DecodeHistograms ──
+
+const dec_context_map = @import("dec_context_map.zig");
+
+/// Top-level function: reads LZ77 params, context map, uint configs,
+/// and per-histogram ANS/Huffman codes into an ANSCode.
+/// Returns the context map (caller must free).
+pub fn decodeHistograms(
+    allocator: std.mem.Allocator,
+    br: *BitReader,
+    num_contexts_in: usize,
+    code: *ANSCode,
+) JxlError![]u8 {
+    var num_contexts = num_contexts_in;
+
+    // Read LZ77 params
+    code.lz77 = LZ77Params.readFromBitStream(br);
+    if (code.lz77.enabled) {
+        num_contexts += 1;
+        code.lz77.length_uint_config = decodeUintConfig(8, br) catch return error.GenericError;
+    }
+
+    // Read context map
+    const context_map = try allocator.alloc(u8, num_contexts);
+    errdefer allocator.free(context_map);
+
+    var num_histograms: usize = 1;
+    if (num_contexts > 1) {
+        dec_context_map.decodeContextMap(context_map, &num_histograms, br) catch return error.GenericError;
+    } else {
+        @memset(context_map, 0);
+    }
+
+    // Distance context is the last entry
+    code.lz77.nonserialized_distance_context = context_map[num_contexts - 1];
+
+    // Prefix code flag
+    code.use_prefix_code = br.readBits(1) != 0;
+    if (code.use_prefix_code) {
+        code.log_alpha_size = params.prefix_max_bits;
+    } else {
+        code.log_alpha_size = @intCast(@as(u32, @intCast(br.readBits(2))) + 5);
+    }
+
+    // Read uint configs (one per histogram)
+    const uint_configs = try allocator.alloc(HybridUintConfig, num_histograms);
+    errdefer allocator.free(uint_configs);
+    decodeUintConfigs(code.log_alpha_size, uint_configs, br) catch return error.GenericError;
+    code.uint_config = uint_configs;
+
+    // Read per-histogram codes
+    const degenerate_syms = try allocator.alloc(i32, num_histograms);
+    errdefer allocator.free(degenerate_syms);
+    @memset(degenerate_syms, -1);
+    code.degenerate_symbols = degenerate_syms;
+
+    const max_alphabet_size: usize = @as(usize, 1) << code.log_alpha_size;
+
+    if (code.use_prefix_code) {
+        // Huffman mode
+        const huff_data = try allocator.alloc(HuffmanDecodingData, num_histograms);
+        errdefer allocator.free(huff_data);
+        for (huff_data) |*hd| {
+            hd.* = HuffmanDecodingData.init(allocator);
+        }
+
+        // Read alphabet sizes
+        var alphabet_sizes = try allocator.alloc(u16, num_histograms);
+        defer allocator.free(alphabet_sizes);
+        for (0..num_histograms) |c| {
+            br.refill();
+            alphabet_sizes[c] = @intCast(decodeVarLenUint16(br) + 1);
+            if (@as(usize, alphabet_sizes[c]) > max_alphabet_size) {
+                return error.GenericError;
+            }
+        }
+
+        // Read Huffman tables
+        for (0..num_histograms) |c| {
+            if (alphabet_sizes[c] > 1) {
+                const ok = huff_data[c].readFromBitStream(alphabet_sizes[c], br) catch return error.GenericError;
+                if (!ok) return error.GenericError;
+            }
+            // UpdateMaxNumBits for Huffman symbols
+            for (huff_data[c].table) |h| {
+                if (h.bits <= huffman_mod.huffman_table_bits) {
+                    code.updateMaxNumBits(c, h.value);
+                }
+            }
+        }
+        code.huffman_data = huff_data;
+    } else {
+        // ANS mode
+        const table_size = num_histograms * (@as(usize, 1) << code.log_alpha_size);
+        const alias_tables = try allocator.alloc(AliasTable.Entry, table_size);
+        errdefer allocator.free(alias_tables);
+
+        for (0..num_histograms) |c| {
+            br.refill();
+            var counts = readHistogram(allocator, params.ans_log_tab_size, br) catch return error.GenericError;
+            defer allocator.free(counts);
+
+            if (counts.len > max_alphabet_size) return error.GenericError;
+
+            // Trim trailing zeros
+            var trim_len = counts.len;
+            while (trim_len > 0 and counts[trim_len - 1] == 0) {
+                trim_len -= 1;
+            }
+
+            // UpdateMaxNumBits for non-zero symbols
+            for (0..trim_len) |s| {
+                if (counts[s] != 0) {
+                    code.updateMaxNumBits(c, s);
+                }
+            }
+
+            // Compute degenerate symbol
+            const degen: i32 = if (trim_len == 0) 0 else @intCast(trim_len - 1);
+            var is_degen = true;
+            for (0..@as(usize, @intCast(if (degen >= 0) degen else 0))) |s| {
+                if (counts[s] != 0) {
+                    is_degen = false;
+                    break;
+                }
+            }
+            degenerate_syms[c] = if (is_degen) degen else -1;
+
+            // Init alias table for this histogram
+            const offset = c * (@as(usize, 1) << code.log_alpha_size);
+            ans_common.initAliasTable(
+                counts[0..trim_len],
+                params.ans_log_tab_size,
+                code.log_alpha_size,
+                alias_tables.ptr + offset,
+            ) catch return error.GenericError;
+        }
+        code.alias_tables = alias_tables;
+    }
+
+    return context_map;
+}
+
 // ── Tests ──
 
 const testing = std.testing;
