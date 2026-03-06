@@ -186,3 +186,60 @@ test "decode lossless 16x16 modular" {
     try testing.expectEqual(@as(i32, 68), ch_g.rowConst(4)[8]);  // 4*17 = 68
     try testing.expectEqual(@as(i32, 96), ch_b.rowConst(4)[8]);  // (8+4)*8 % 256 = 96
 }
+
+test "decode lossless 64x64 modular (may use squeeze)" {
+    const data = @embedFile("../testdata/lossless_64x64.jxl");
+    const allocator = testing.allocator;
+
+    var br = BitReader.init(data[2..]);
+
+    const size = headers.SizeHeader.readFromBitStream(&br);
+    try testing.expectEqual(@as(usize, 64), size.xsize());
+    try testing.expectEqual(@as(usize, 64), size.ysize());
+
+    const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+    const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+    var codec_meta = image_metadata.CodecMetadata{};
+    codec_meta.m = metadata;
+    codec_meta.size = size;
+    codec_meta.transform_data = transform_data;
+
+    const fh = try frame_header_mod.FrameHeader.readFromBitStream(&br, &codec_meta, false);
+    try testing.expectEqual(frame_header_mod.FrameEncoding.modular, fh.encoding);
+
+    const frame_dim = fh.toFrameDimensions(&codec_meta, false);
+
+    var mod_dec = dec_frame.ModularFrameDecoder.init(allocator);
+    defer mod_dec.deinit();
+    mod_dec.initFrame(frame_dim);
+
+    try mod_dec.decodeGlobalInfo(&br, &fh, &codec_meta);
+
+    const weighted = @import("../modular/weighted.zig");
+    const wp_hdr = weighted.Header{};
+    const transform_zig = @import("../modular/transform.zig");
+    try transform_zig.undoTransforms(&mod_dec.full_image, &wp_hdr);
+
+    // Verify dimensions
+    try testing.expect(mod_dec.full_image.channels.items.len >= 3);
+    const ch_r = &mod_dec.full_image.channels.items[0];
+    const ch_g = &mod_dec.full_image.channels.items[1];
+    const ch_b = &mod_dec.full_image.channels.items[2];
+    try testing.expectEqual(@as(usize, 64), ch_r.w);
+    try testing.expectEqual(@as(usize, 64), ch_r.h);
+
+    // Verify pixel (0,0) = (0, 0, 0)
+    try testing.expectEqual(@as(i32, 0), ch_r.rowConst(0)[0]);
+    try testing.expectEqual(@as(i32, 0), ch_g.rowConst(0)[0]);
+    try testing.expectEqual(@as(i32, 0), ch_b.rowConst(0)[0]);
+
+    // Verify pixel (63,63) = (252, 252, 252)
+    try testing.expectEqual(@as(i32, 252), ch_r.rowConst(63)[63]); // 63*4 % 256 = 252
+    try testing.expectEqual(@as(i32, 252), ch_g.rowConst(63)[63]);
+    try testing.expectEqual(@as(i32, 252), ch_b.rowConst(63)[63]); // (63+63)*2 % 256 = 252
+
+    // Verify pixel (32,16) = (128, 64, 96)
+    try testing.expectEqual(@as(i32, 128), ch_r.rowConst(16)[32]); // 32*4 = 128
+    try testing.expectEqual(@as(i32, 64), ch_g.rowConst(16)[32]);  // 16*4 = 64
+    try testing.expectEqual(@as(i32, 96), ch_b.rowConst(16)[32]);  // (32+16)*2 = 96
+}
