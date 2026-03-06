@@ -36,8 +36,11 @@
 - [x] Integration test: real codestream header parsing (201x251 sRGB lossless)
 - [x] OpsinInverseMatrix + CustomTransformData + CodecMetadata wiring
 - [x] Modular integer decoding (MA trees): ma_common, options, weighted, dec_ma, context_predict, transform, modular_image, encoding
-- [ ] Group decoding (frame-level: TOC, global tree, group sections)
-- [ ] Inverse transforms (RCT, Palette, Squeeze)
+- [x] Inverse transforms (RCT, Palette, Squeeze) — InvRCT, InvHSqueeze, InvVSqueeze, InvPalette, MetaSqueeze, MetaPalette
+- [x] TOC reader + permutation decoding (Lehmer codes)
+- [x] Frame-level decoding: FrameDecoder, ModularFrameDecoder, ModularStreamId, section dispatch
+- [ ] End-to-end lossless decode test (real JXL → pixel data)
+- [ ] Multi-group frame decoding verification
 
 ## Phase 4: Render Pipeline
 - [ ] Inverse DCT (SIMD)

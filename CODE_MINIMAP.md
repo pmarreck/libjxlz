@@ -38,6 +38,8 @@
 - `image_metadata.zig` — BitDepth, ExtraChannel enum, ExtraChannelInfo, ToneMapping, Orientation, ImageMetadata, CodecMetadata, OpsinInverseMatrix, CustomTransformData
 - `color_encoding.zig` — ColorSpace, WhitePoint, Primaries, TransferFunction, RenderingIntent, Customxy, CustomTransferFunction, ColorEncoding with full readFromBitStream
 - `frame_header.zig` — FrameEncoding, ColorTransform, FrameType, BlendMode, BlendingInfo, YCbCrChromaSubsampling, Passes, AnimationFrame, FrameHeader with full readFromBitStream
+- `toc.zig` — TOC reading (section sizes + Lehmer-coded permutation via ANS), numTocEntries, acGroupIndex
+- `dec_frame.zig` — FrameDecoder (frame header + TOC + section dispatch), ModularFrameDecoder (global tree + per-group decode), ModularStreamId
 - `codestream_test.zig` — Integration test: parses real JXL codestream (SizeHeader + ImageMetadata + FrameHeader)
 
 ### src/lib/modular/
@@ -46,9 +48,9 @@
 - `weighted.zig` — Weighted predictor Header (7 coefficients + 4 weights) reading, State (predict + updateErrors with division-free approximation)
 - `dec_ma.zig` — PropertyDecisionNode, Tree, DecodeTree (reads own ANS histograms, decodes nodes, validates height/ranges)
 - `context_predict.zig` — ClampedGradient, Select, PredictOne (14 predictors), FlatDecisionNode, MATreeLookup, FilterTree (static property elimination + tree flattening)
-- `transform.zig` — TransformId (RCT/Palette/Squeeze), SqueezeParams, Transform reading with all conditional fields
-- `modular_image.zig` — Channel (2D pixel storage with row access), Image (multi-channel container with transforms)
-- `encoding.zig` — GroupHeader reading, ModularDecode (tree + ANS reader + per-channel decoding), ModularGenericDecompress
+- `transform.zig` — TransformId (RCT/Palette/Squeeze), SqueezeParams, Transform reading; InvRCT (42 variants), InvHSqueeze, InvVSqueeze, InvPalette, SmoothTendency; MetaSqueeze, MetaPalette, DefaultSqueezeParameters; undoTransforms, metaApply
+- `modular_image.zig` — Channel (2D pixel storage with row/shrink access), Image (multi-channel container with transforms)
+- `encoding.zig` — GroupHeader reading, ModularDecode (tree + ANS reader + per-channel decoding + MetaApply + transform undo), ModularGenericDecompress
 
 ## docs/plans/
 - `2026-03-06-libjxlz-design.md` — Overall project design document

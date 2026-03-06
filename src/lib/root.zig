@@ -31,6 +31,7 @@ pub const codec = struct {
 	pub const toc = @import("codec/toc.zig");
 	pub const dec_frame = @import("codec/dec_frame.zig");
 	pub const codestream_test = @import("codec/codestream_test.zig");
+	pub const decode_test = @import("codec/decode_test.zig");
 };
 
 pub const modular = struct {
