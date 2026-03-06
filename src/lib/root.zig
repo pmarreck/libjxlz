@@ -26,7 +26,9 @@ pub const codec = struct {
 	pub const headers = @import("codec/headers.zig");
 	pub const loop_filter = @import("codec/loop_filter.zig");
 	pub const image_metadata = @import("codec/image_metadata.zig");
+	pub const color_encoding = @import("codec/color_encoding.zig");
 	pub const frame_header = @import("codec/frame_header.zig");
+	pub const codestream_test = @import("codec/codestream_test.zig");
 };
 
 test {

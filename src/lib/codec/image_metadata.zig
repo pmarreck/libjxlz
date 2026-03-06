@@ -11,6 +11,7 @@ const BitReader = @import("../base/bit_reader.zig").BitReader;
 const JxlError = @import("../base/status.zig").JxlError;
 const fc = @import("field_coders.zig");
 const headers = @import("headers.zig");
+const color_encoding_mod = @import("color_encoding.zig");
 
 // ── Orientation ──
 
@@ -205,8 +206,7 @@ pub const ToneMapping = struct {
     }
 };
 
-// ── ImageMetadata (simplified for FrameHeader dependency) ──
-// Full ColorEncoding parsing is deferred; we skip those bits for now.
+// ── ImageMetadata ──
 
 pub const ImageMetadata = struct {
     bit_depth: BitDepth = .{},
@@ -221,12 +221,86 @@ pub const ImageMetadata = struct {
     preview_size: headers.PreviewHeader = .{},
     animation: headers.AnimationHeader = .{},
     tone_mapping: ToneMapping = .{},
+    color_encoding: color_encoding_mod.ColorEncoding = .{},
 
     num_extra_channels: u32 = 0,
     extra_channel_info: [256]ExtraChannelInfo = undefined,
     extra_channel_count: u32 = 0, // actual count of populated entries
 
     extensions: u64 = 0,
+
+    pub fn readFromBitStream(br: *BitReader) JxlError!ImageMetadata {
+        // AllDefault check
+        if (fc.readAllDefault(br)) {
+            return ImageMetadata{};
+        }
+
+        var m = ImageMetadata{};
+
+        // Extra fields flag
+        const extra_fields = br.readBits(1) != 0;
+        if (extra_fields) {
+            // Orientation: 3 bits, stored as (value - 1)
+            m.orientation = @as(u32, @intCast(br.readBits(3))) + 1;
+
+            // Intrinsic size
+            m.have_intrinsic_size = br.readBits(1) != 0;
+            if (m.have_intrinsic_size) {
+                m.intrinsic_size = headers.SizeHeader.readFromBitStream(br);
+            }
+
+            // Preview
+            m.have_preview = br.readBits(1) != 0;
+            if (m.have_preview) {
+                m.preview_size = headers.PreviewHeader.readFromBitStream(br);
+            }
+
+            // Animation
+            m.have_animation = br.readBits(1) != 0;
+            if (m.have_animation) {
+                m.animation = headers.AnimationHeader.readFromBitStream(br);
+            }
+        } else {
+            m.orientation = 1;
+            m.have_intrinsic_size = false;
+            m.have_preview = false;
+            m.have_animation = false;
+        }
+
+        // BitDepth (nested, no AllDefault)
+        m.bit_depth = try BitDepth.readFromBitStream(br);
+
+        // modular_16_bit_buffer_sufficient
+        m.modular_16_bit_buffer_sufficient = br.readBits(1) != 0;
+
+        // num_extra_channels: U32(Val(0), Val(1), BitsOffset(4,2), BitsOffset(12,1))
+        const ec_enc = fc.U32Enc.init(fc.val(0), fc.val(1), fc.bitsOffset(4, 2), fc.bitsOffset(12, 1));
+        m.num_extra_channels = fc.U32Coder.read(ec_enc, br);
+
+        if (m.num_extra_channels != 0) {
+            if (m.num_extra_channels > 256) return error.GenericError;
+            m.extra_channel_count = m.num_extra_channels;
+            for (0..m.num_extra_channels) |i| {
+                m.extra_channel_info[i] = try ExtraChannelInfo.readFromBitStream(br);
+            }
+        }
+
+        // xyb_encoded
+        m.xyb_encoded = br.readBits(1) != 0;
+
+        // ColorEncoding (nested with AllDefault)
+        m.color_encoding = try color_encoding_mod.ColorEncoding.readFromBitStream(br);
+
+        // ToneMapping (only if extra_fields)
+        if (extra_fields) {
+            m.tone_mapping = try ToneMapping.readFromBitStream(br);
+        }
+
+        // Extensions
+        m.extensions = fc.readExtensions(br);
+
+        return m;
+    }
 
     pub fn getOrientation(self: ImageMetadata) Orientation {
         return @enumFromInt(self.orientation);
@@ -306,6 +380,48 @@ test "ToneMapping all default" {
     try testing.expectEqual(@as(f32, 255.0), tm.intensity_target);
     try testing.expectEqual(@as(f32, 0.0), tm.min_nits);
     try testing.expect(!tm.relative_to_max_display);
+}
+
+test "ImageMetadata all default" {
+    // AllDefault bit = 1
+    var data = [_]u8{ 0x01, 0, 0, 0, 0, 0, 0, 0 };
+    var br = BitReader.init(&data);
+    const m = try ImageMetadata.readFromBitStream(&br);
+    try testing.expect(!m.have_preview);
+    try testing.expect(!m.have_animation);
+    try testing.expect(m.xyb_encoded);
+    try testing.expectEqual(@as(u32, 8), m.bit_depth.bits_per_sample);
+    try testing.expectEqual(@as(u32, 1), m.orientation);
+    try testing.expectEqual(@as(u32, 0), m.num_extra_channels);
+}
+
+test "ImageMetadata non-default 8-bit no extras" {
+    // AllDefault=0
+    // extra_fields=0
+    // BitDepth: float=0, selector=00 -> Val(8)
+    // modular_16=1
+    // num_extra=00 -> Val(0)
+    // xyb_encoded=1
+    // ColorEncoding: AllDefault=1
+    // extensions: U64 sel=00 -> 0
+    //
+    // bit0=0 (AllDefault)
+    // bit1=0 (extra_fields)
+    // bit2=0, bit3-4=00 (BitDepth: float=0, sel=00)
+    // bit5=1 (modular_16)
+    // bit6-7=00 (num_extra sel -> Val(0))
+    // byte0 = 0b00100000 = 0x20
+    // bit8=1 (xyb_encoded)
+    // bit9=1 (ColorEncoding AllDefault)
+    // bit10-11=00 (extensions sel -> 0)
+    // byte1 = 0b00000011 = 0x03
+    var data = [_]u8{ 0x20, 0x03, 0, 0, 0, 0, 0, 0 };
+    var br = BitReader.init(&data);
+    const m = try ImageMetadata.readFromBitStream(&br);
+    try testing.expect(m.xyb_encoded);
+    try testing.expectEqual(@as(u32, 8), m.bit_depth.bits_per_sample);
+    try testing.expect(m.modular_16_bit_buffer_sufficient);
+    try testing.expectEqual(@as(u32, 0), m.num_extra_channels);
 }
 
 test "CodecMetadata basic" {
