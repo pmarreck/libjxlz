@@ -611,7 +611,8 @@ fn getPaletteValue(palette_data: []const pixel_type, palette_w: usize, index_in:
     }
     // Normal palette lookup
     const row_idx: usize = @intCast(index);
-    if (c < palette_w and row_idx < palette_data.len / palette_w) {
+    const num_rows = palette_data.len / palette_w;
+    if (row_idx < palette_w and c < num_rows) {
         return palette_data[c * palette_w + row_idx];
     }
     return 0;

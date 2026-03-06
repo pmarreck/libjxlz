@@ -119,15 +119,15 @@ test "decode lossless 4x4 modular global info" {
         const ch_b = &mod_dec.full_image.channels.items[2];
 
         if (ch_r.w == 4 and ch_r.h == 4) {
-            const r00 = ch_r.rowConst(0)[0];
-            const g00 = ch_g.rowConst(0)[0];
-            const b00 = ch_b.rowConst(0)[0];
+            // Verify pixel (0,0) = (0, 0, 128)
+            try testing.expectEqual(@as(i32, 0), ch_r.rowConst(0)[0]);
+            try testing.expectEqual(@as(i32, 0), ch_g.rowConst(0)[0]);
+            try testing.expectEqual(@as(i32, 128), ch_b.rowConst(0)[0]);
 
-            // TODO: Pixel assertions disabled until palette/squeeze inverse transforms are fixed
-            // Expected pixel (0,0) = (0, 0, 128), pixel (3,3) = (255, 255, 128)
-            _ = r00;
-            _ = g00;
-            _ = b00;
+            // Verify pixel (3,3) = (255, 255, 128)
+            try testing.expectEqual(@as(i32, 255), ch_r.rowConst(3)[3]);
+            try testing.expectEqual(@as(i32, 255), ch_g.rowConst(3)[3]);
+            try testing.expectEqual(@as(i32, 128), ch_b.rowConst(3)[3]);
         }
     }
 }
@@ -192,8 +192,10 @@ test "decode lossless 16x16 modular" {
     try testing.expectEqual(@as(i32, 0), mod_dec.full_image.channels.items[1].rowConst(0)[0]);
     try testing.expectEqual(@as(i32, 0), mod_dec.full_image.channels.items[2].rowConst(0)[0]);
 
-    // TODO: Pixel assertions disabled until squeeze inverse transform is fixed
-    // Expected pixel (15,15) = (255, 255, 240)
+    // Verify pixel (15,15) = (255, 255, 240)
+    try testing.expectEqual(@as(i32, 255), ch_r.rowConst(15)[15]);
+    try testing.expectEqual(@as(i32, 255), mod_dec.full_image.channels.items[1].rowConst(15)[15]);
+    try testing.expectEqual(@as(i32, 240), mod_dec.full_image.channels.items[2].rowConst(15)[15]);
 }
 
 test "decode lossless 64x64 modular (may use squeeze)" {
@@ -255,8 +257,10 @@ test "decode lossless 64x64 modular (may use squeeze)" {
     try testing.expectEqual(@as(i32, 0), ch_g.rowConst(0)[0]);
     try testing.expectEqual(@as(i32, 0), ch_b.rowConst(0)[0]);
 
-    // TODO: Pixel assertions disabled until squeeze inverse transform is fixed
-    // Expected pixel (63,63) = (252, 252, 252)
+    // Verify pixel (63,63) = (252, 252, 252)
+    try testing.expectEqual(@as(i32, 252), ch_r.rowConst(63)[63]);
+    try testing.expectEqual(@as(i32, 252), ch_g.rowConst(63)[63]);
+    try testing.expectEqual(@as(i32, 252), ch_b.rowConst(63)[63]);
 }
 
 test "decode lossless 300x200 multi-group" {
