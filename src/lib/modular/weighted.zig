@@ -64,6 +64,7 @@ const divlookup: [64]u32 = .{
 pub const State = struct {
     prediction: [kNumPredictors]pixel_type_w = .{ 0, 0, 0, 0 },
     pred: pixel_type_w = 0,
+    wp_prop: pixel_type = 0, // WP prediction error property for tree lookup
     pred_errors: [kNumPredictors][]u32 = undefined,
     error_buf: [kNumPredictors][]i32 = undefined,
     errors: []i32 = undefined,
@@ -167,12 +168,15 @@ pub const State = struct {
         const sumWN: pixel_type_w = teN + teW;
         const teNE: pixel_type_w = self.errors[pos_NE];
 
-        if (properties) |props| {
+        {
             var p = teW;
             if (absW(teN) > absW(p)) p = teN;
             if (absW(teNW) > absW(p)) p = teNW;
             if (absW(teNE) > absW(p)) p = teNE;
-            props.items[offset] = @intCast(p);
+            self.wp_prop = @intCast(p);
+            if (properties) |props| {
+                props.items[offset] = self.wp_prop;
+            }
         }
 
         self.prediction[0] = W + NE - N;
@@ -196,6 +200,10 @@ pub const State = struct {
         const mn = @min(W, @min(NE, N));
         self.pred = @max(mn, @min(mx, self.pred));
         return @intCast(@divTrunc(self.pred + kPredictionRound, 1 << kPredExtraBits));
+    }
+
+    pub fn getWPProp(self: *const State) pixel_type {
+        return self.wp_prop;
     }
 
     pub fn updateErrors(self: *State, val_in: pixel_type_w, x: usize, y: usize, xsize: usize) void {

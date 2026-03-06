@@ -215,6 +215,10 @@ fn decodeModularChannel(
             var wp_pred: pixel_type_w = 0;
             if (wp_state) |*ws| {
                 wp_pred = ws.predict(x, y, channel.w, top, left, topright, topleft, toptop, null, 0);
+                // Set WP property (property kWPProp = 15) for tree lookup
+                if (properties.len > context_predict.kWPProp) {
+                    properties[context_predict.kWPProp] = ws.getWPProp();
+                }
             }
 
             // Tree lookup

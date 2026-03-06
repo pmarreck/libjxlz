@@ -27,6 +27,30 @@ const Image = modular_image.Image;
 const options_mod = @import("../modular/options.zig");
 const ModularOptions = options_mod.ModularOptions;
 const transform_mod = @import("../modular/transform.zig");
+const float_utils = @import("../base/float.zig");
+
+// ── DequantMatrices DC quantization ──
+// Transliterated from lib/jxl/quant_weights.cc DequantMatrices::DecodeDC
+
+pub const DequantMatrices = struct {
+    dc_quant: [3]f32 = .{ 1.0 / 4096.0, 1.0 / 512.0, 1.0 / 256.0 }, // defaults from C++
+
+    /// Read DC quantization parameters from the bitstream.
+    /// Must be called before DecodeGlobalInfo, matching C++ ProcessDCGlobal flow.
+    pub fn decodeDC(self: *DequantMatrices, br: *BitReader) JxlError!void {
+        const all_default = br.readBits(1);
+        if (all_default == 0) {
+            for (0..3) |c| {
+                const bits16: u16 = @intCast(br.readBits(16));
+                const biased_exp = (bits16 >> 10) & 0x1F;
+                if (biased_exp == 31) return error.GenericError; // infinity/NaN not allowed
+                const val = float_utils.loadFloat16(bits16);
+                self.dc_quant[c] = val * (1.0 / 128.0);
+                if (self.dc_quant[c] < 1.0e-8) return error.GenericError; // kAlmostZero
+            }
+        }
+    }
+};
 
 // ── ModularStreamId ──
 
@@ -348,7 +372,15 @@ pub const FrameDecoder = struct {
     }
 
     /// Process DC Global section (section ID 0).
+    /// Matches C++ FrameDecoder::ProcessDCGlobal: patches/splines/noise (conditional),
+    /// then DecodeDC (unconditional), then DecodeGlobalInfo.
     pub fn processDCGlobal(self: *FrameDecoder, br: *BitReader) JxlError!void {
+        // TODO: decode patches, splines, noise if frame_header.flags indicate them
+
+        // DequantMatrices::DecodeDC — always called, even for modular frames
+        var matrices = DequantMatrices{};
+        try matrices.decodeDC(br);
+
         // For modular frames: decode global modular info
         if (self.frame_header.encoding == .modular) {
             try self.modular_decoder.decodeGlobalInfo(br, &self.frame_header, self.metadata);

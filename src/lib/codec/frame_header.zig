@@ -296,7 +296,6 @@ pub const FrameHeader = struct {
         if (fc.readAllDefault(br)) {
             return FrameHeader{};
         }
-
         var fh = FrameHeader{};
 
         // FrameType: U32(Val(0), Val(1), Val(2), Val(3))
@@ -324,7 +323,6 @@ pub const FrameHeader = struct {
             const alternate = br.readBits(1) != 0;
             fh.color_transform = if (alternate) .ycbcr else .none;
         }
-
         // Chroma subsampling (YCbCr without DC frame)
         if (fh.color_transform == .ycbcr and (fh.flags & FrameFlags.use_dc_frame) == 0) {
             fh.chroma_subsampling = YCbCrChromaSubsampling.readFromBitStream(br);
@@ -363,7 +361,6 @@ pub const FrameHeader = struct {
         if (fh.encoding == .modular) {
             fh.group_size_shift = @intCast(br.readBits(2));
         }
-
         // VarDCT + XYB QM scales
         if (fh.encoding == .var_dct and fh.color_transform == .xyb) {
             fh.x_qm_scale = @intCast(br.readBits(3));
@@ -372,12 +369,10 @@ pub const FrameHeader = struct {
             fh.x_qm_scale = 2;
             fh.b_qm_scale = 2;
         }
-
         // Passes (not for kReferenceOnly)
         if (fh.frame_type != .reference_only) {
             fh.passes = try Passes.readFromBitStream(br);
         }
-
         // DC level (only for kDCFrame)
         if (fh.frame_type == .dc_frame) {
             const dc_enc = fc.U32Enc.init(fc.val(1), fc.val(2), fc.val(3), fc.val(4));
@@ -385,7 +380,6 @@ pub const FrameHeader = struct {
         } else {
             fh.dc_level = 0;
         }
-
         // Custom size/origin (not for kDCFrame)
         var is_partial_frame = false;
         if (fh.frame_type != .dc_frame) {
@@ -477,7 +471,8 @@ pub const FrameHeader = struct {
 
         // save_before_color_transform
         if (fh.frame_type != .dc_frame) {
-            if (fh.canBeReferenced() and
+            const can_ref = fh.canBeReferenced();
+            if (can_ref and
                 fh.blending_info.mode == .replace and
                 !is_partial_frame and
                 (fh.frame_type == .regular_frame or fh.frame_type == .skip_progressive))

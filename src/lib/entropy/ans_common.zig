@@ -9,11 +9,13 @@ const JxlError = status_mod.JxlError;
 /// Returns the precision (number of bits) that should be used to store
 /// a histogram count such that Log2Floor(count) == logcount.
 pub fn getPopulationCountPrecision(logcount: u32, shift: u32) u32 {
+    // C++: std::min<int>(logcount, (int)shift - (int)((ANS_LOG_TAB_SIZE - logcount) >> 1))
     const signed_shift: i32 = @intCast(shift);
     const signed_logcount: i32 = @intCast(logcount);
+    const ans_log: u32 = @as(u32, params.ans_log_tab_size);
     const r = @min(
         signed_logcount,
-        signed_shift - @as(i32, @intCast((shift -| logcount) >> 1)),
+        signed_shift - @as(i32, @intCast((ans_log -| logcount) >> 1)),
     );
     if (r < 0) return 0;
     return @intCast(r);
@@ -200,8 +202,14 @@ test "getPopulationCountPrecision basic values" {
     try testing.expectEqual(@as(u32, 0), getPopulationCountPrecision(0, 0));
 
     // Some known cases from the C++ implementation
+    // getPopulationCountPrecision(0, 3) = min(0, 3 - (12-0)>>1) = min(0, 3-6) = min(0,-3) -> 0
     try testing.expectEqual(@as(u32, 0), getPopulationCountPrecision(0, 3));
-    try testing.expectEqual(@as(u32, 1), getPopulationCountPrecision(1, 3));
+    // getPopulationCountPrecision(1, 3) = min(1, 3 - (12-1)>>1) = min(1, 3-5) = min(1,-2) -> 0
+    try testing.expectEqual(@as(u32, 0), getPopulationCountPrecision(1, 3));
+    // getPopulationCountPrecision(10, 12) = min(10, 12 - (12-10)>>1) = min(10, 12-1) = 10
+    try testing.expectEqual(@as(u32, 10), getPopulationCountPrecision(10, 12));
+    // getPopulationCountPrecision(5, 7) = min(5, 7 - (12-5)>>1) = min(5, 7-3) = min(5,4) = 4
+    try testing.expectEqual(@as(u32, 4), getPopulationCountPrecision(5, 7));
 }
 
 test "createFlatHistogram" {

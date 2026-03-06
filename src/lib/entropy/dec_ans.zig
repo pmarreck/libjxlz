@@ -559,7 +559,6 @@ pub fn decodeHistograms(
     } else {
         @memset(context_map, 0);
     }
-
     // Distance context is the last entry
     code.lz77.nonserialized_distance_context = context_map[num_contexts - 1];
 
