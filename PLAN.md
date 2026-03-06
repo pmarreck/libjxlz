@@ -32,7 +32,8 @@
 - [x] Frame header parsing (FrameHeader, enums, LoopFilter)
 - [x] Image metadata (BitDepth, ExtraChannelInfo, ImageMetadata, CodecMetadata)
 - [x] pack_signed.zig — PackSigned/UnpackSigned for frame origin encoding
-- [ ] ColorEncoding reading (deferred — complex, needed for full ImageMetadata parsing)
+- [x] ColorEncoding reading + ImageMetadata.readFromBitStream
+- [x] Integration test: real codestream header parsing (201x251 sRGB lossless)
 - [ ] Group decoding
 - [ ] Modular integer decoding (MA trees)
 
