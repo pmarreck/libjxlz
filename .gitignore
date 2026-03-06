@@ -1,6 +1,10 @@
 # Build output directories
-/build
-/build*
+/build/
+/build-*
+# Zig build files (not ignored)
+!/build
+!/build.zig
+!/build.zig.zon
 /bazel*
 
 # clangd
@@ -22,5 +26,15 @@ tools/conformance/__pycache__
 # Editor configuration
 *.code-workspace
 
+# Zig build artifacts
+.zig-cache/
+zig-out/
+
+# Codescan index
+.codescan/
+
 # macOS Finder state files
 .DS_Store
+jj_cheatsheet.md
+ZIG_RECENT_API_CHANGES.md
+AGENTS.md

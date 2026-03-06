@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -u
+
+MODE=""
+for arg in "$@"; do
+	case "$arg" in
+		--test) MODE="test" ;;
+		--debug) MODE="debug" ;;
+	esac
+done
+
+case "$MODE" in
+	test)
+		exec nix develop -c zig build test -Doptimize=Debug
+		;;
+	debug)
+		exec nix develop -c zig build -Doptimize=Debug
+		;;
+	*)
+		exec nix develop -c zig build -Doptimize=ReleaseFast
+		;;
+esac

@@ -1,0 +1,10 @@
+.{
+	.name = .libjxlz,
+	.version = "0.1.0",
+	.fingerprint = 0x6a9211569b30ef1f,
+	.paths = .{
+		"build.zig",
+		"build.zig.zon",
+		"src",
+	},
+}

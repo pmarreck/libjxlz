@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -u
+
+ERRORS=0
+
+echo "=== Zig unit tests ==="
+if ! nix develop -c zig build test -Doptimize=Debug 2>&1; then
+	ERRORS=$((ERRORS + 1))
+fi
+
+if [ -d tests/cli ]; then
+	echo "=== CLI tests ==="
+	for t in tests/cli/*.sh; do
+		if ! bash "$t"; then
+			ERRORS=$((ERRORS + 1))
+		fi
+	done
+fi
+
+if [ "$ERRORS" -gt 0 ]; then
+	echo "FAILED: $ERRORS test suite(s) failed"
+fi
+exit "$ERRORS"
