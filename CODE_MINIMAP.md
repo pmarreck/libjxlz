@@ -27,7 +27,7 @@
 - `huffman.zig` — HuffmanCode struct, BuildHuffmanTable (2-level), HuffmanDecodingData with ReadFromBitStream/ReadSymbol, ReadSimpleCode
 - `hybrid_uint.zig` — HybridUintConfig: split-exponent scheme for variable-length integers, encode/decode
 - `inverse_mtf.zig` — Inverse move-to-front transform (scalar implementation)
-- `dec_ans.zig` — ANSCode, ANSSymbolReader (ANS + Huffman + LZ77 + hybrid uint), LZ77Params, ReadHistogram, DecodeUintConfig, special distance table
+- `dec_ans.zig` — ANSCode, ANSSymbolReader (ANS + Huffman + LZ77 + hybrid uint), LZ77Params, ReadHistogram, DecodeUintConfig, special distance table, decodeHistograms (top-level)
 - `dec_context_map.zig` — DecodeContextMap (simple path), VerifyContextMap
 
 ### src/lib/codec/
@@ -35,10 +35,20 @@
 - `frame_dimensions.zig` — Block/group constants (kBlockDim=8, kGroupDim=256), FrameDimensions struct with Set, GroupRect, BlockGroupRect, DCGroupRect
 - `headers.zig` — SizeHeader (compact image dimensions), PreviewHeader, AnimationHeader readers; aspect ratio table
 - `loop_filter.zig` — LoopFilter (Gaborish + EPF parameters) with full readFromBitStream, extension support
-- `image_metadata.zig` — BitDepth, ExtraChannel enum, ExtraChannelInfo, ToneMapping, Orientation, ImageMetadata, CodecMetadata (ColorEncoding reading deferred)
+- `image_metadata.zig` — BitDepth, ExtraChannel enum, ExtraChannelInfo, ToneMapping, Orientation, ImageMetadata, CodecMetadata, OpsinInverseMatrix, CustomTransformData
 - `color_encoding.zig` — ColorSpace, WhitePoint, Primaries, TransferFunction, RenderingIntent, Customxy, CustomTransferFunction, ColorEncoding with full readFromBitStream
 - `frame_header.zig` — FrameEncoding, ColorTransform, FrameType, BlendMode, BlendingInfo, YCbCrChromaSubsampling, Passes, AnimationFrame, FrameHeader with full readFromBitStream
 - `codestream_test.zig` — Integration test: parses real JXL codestream (SizeHeader + ImageMetadata + FrameHeader)
+
+### src/lib/modular/
+- `ma_common.zig` — MATreeContext enum (6 contexts), kMaxTreeSize, kNumTreeContexts
+- `options.zig` — Predictor enum (14 decoders + 2 encoder-only), pixel_type, PropertyVal, ModularOptions
+- `weighted.zig` — Weighted predictor Header (7 coefficients + 4 weights) reading, State (predict + updateErrors with division-free approximation)
+- `dec_ma.zig` — PropertyDecisionNode, Tree, DecodeTree (reads own ANS histograms, decodes nodes, validates height/ranges)
+- `context_predict.zig` — ClampedGradient, Select, PredictOne (14 predictors), FlatDecisionNode, MATreeLookup, FilterTree (static property elimination + tree flattening)
+- `transform.zig` — TransformId (RCT/Palette/Squeeze), SqueezeParams, Transform reading with all conditional fields
+- `modular_image.zig` — Channel (2D pixel storage with row access), Image (multi-channel container with transforms)
+- `encoding.zig` — GroupHeader reading, ModularDecode (tree + ANS reader + per-channel decoding), ModularGenericDecompress
 
 ## docs/plans/
 - `2026-03-06-libjxlz-design.md` — Overall project design document

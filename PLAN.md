@@ -21,7 +21,7 @@
 - [x] huffman.zig — HuffmanCode, BuildHuffmanTable, HuffmanDecodingData, ReadFromBitStream
 - [x] hybrid_uint.zig — HybridUintConfig encode/decode with roundtrip tests
 - [x] inverse_mtf.zig — Inverse move-to-front transform (scalar, SIMD noted for later)
-- [x] dec_ans.zig — ANSCode, ANSSymbolReader, LZ77Params, ReadHistogram, DecodeUintConfig
+- [x] dec_ans.zig — ANSCode, ANSSymbolReader, LZ77Params, ReadHistogram, DecodeUintConfig, decodeHistograms
 - [x] dec_context_map.zig — DecodeContextMap (simple path; ANS-based path stubbed)
 - [ ] Brotli integration (C FFI) — deferred to when needed by frame decoding
 
@@ -34,8 +34,10 @@
 - [x] pack_signed.zig — PackSigned/UnpackSigned for frame origin encoding
 - [x] ColorEncoding reading + ImageMetadata.readFromBitStream
 - [x] Integration test: real codestream header parsing (201x251 sRGB lossless)
-- [ ] Group decoding
-- [ ] Modular integer decoding (MA trees)
+- [x] OpsinInverseMatrix + CustomTransformData + CodecMetadata wiring
+- [x] Modular integer decoding (MA trees): ma_common, options, weighted, dec_ma, context_predict, transform, modular_image, encoding
+- [ ] Group decoding (frame-level: TOC, global tree, group sections)
+- [ ] Inverse transforms (RCT, Palette, Squeeze)
 
 ## Phase 4: Render Pipeline
 - [ ] Inverse DCT (SIMD)
