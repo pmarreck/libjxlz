@@ -243,3 +243,55 @@ test "decode lossless 64x64 modular (may use squeeze)" {
     try testing.expectEqual(@as(i32, 64), ch_g.rowConst(16)[32]);  // 16*4 = 64
     try testing.expectEqual(@as(i32, 96), ch_b.rowConst(16)[32]);  // (32+16)*2 = 96
 }
+
+test "decode lossless 300x200 multi-group" {
+    const data = @embedFile("../testdata/lossless_300x200.jxl");
+    const allocator = testing.allocator;
+
+    var br = BitReader.init(data[2..]);
+
+    const size = headers.SizeHeader.readFromBitStream(&br);
+    try testing.expectEqual(@as(usize, 300), size.xsize());
+    try testing.expectEqual(@as(usize, 200), size.ysize());
+
+    const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+    const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+    var codec_meta = image_metadata.CodecMetadata{};
+    codec_meta.m = metadata;
+    codec_meta.size = size;
+    codec_meta.transform_data = transform_data;
+
+    const fh = try frame_header_mod.FrameHeader.readFromBitStream(&br, &codec_meta, false);
+    try testing.expectEqual(frame_header_mod.FrameEncoding.modular, fh.encoding);
+
+    const frame_dim = fh.toFrameDimensions(&codec_meta, false);
+    try testing.expectEqual(@as(usize, 300), frame_dim.xsize);
+    try testing.expectEqual(@as(usize, 200), frame_dim.ysize);
+
+    // Multi-group: should have >1 groups
+    try testing.expect(frame_dim.num_groups >= 2);
+
+    // Read TOC
+    const num_toc = toc.numTocEntries(frame_dim.num_groups, frame_dim.num_dc_groups, fh.passes.num_passes);
+    try testing.expect(num_toc > 1);
+
+    const toc_entries = try toc.readToc(allocator, num_toc, &br);
+    defer allocator.free(toc_entries);
+
+    // All TOC entries should have reasonable sizes
+    for (toc_entries) |entry| {
+        try testing.expect(entry.size < 100000);
+    }
+
+    // Decode DC Global section (first section)
+    var mod_dec = dec_frame.ModularFrameDecoder.init(allocator);
+    defer mod_dec.deinit();
+    mod_dec.initFrame(frame_dim);
+
+    try mod_dec.decodeGlobalInfo(&br, &fh, &codec_meta);
+
+    // After decoding global info, we should have the full image structure
+    try testing.expect(mod_dec.full_image.channels.items.len >= 3);
+    try testing.expectEqual(@as(usize, 300), mod_dec.full_image.w);
+    try testing.expectEqual(@as(usize, 200), mod_dec.full_image.h);
+}
