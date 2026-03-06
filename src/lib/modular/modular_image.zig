@@ -56,6 +56,37 @@ pub const Channel = struct {
     pub fn zeroFill(self: *Channel) void {
         @memset(self.data, 0);
     }
+
+    /// Shrink channel data to match current w/h (used by MetaSqueeze).
+    pub fn shrink(self: *Channel) !void {
+        const new_size = self.w * self.h;
+        if (new_size == 0) {
+            if (self.allocator) |alloc| {
+                if (self.data.len > 0) {
+                    alloc.free(self.data);
+                    self.data = &.{};
+                }
+            }
+            self.row_stride = 0;
+            return;
+        }
+        if (new_size < self.data.len) {
+            // Just update stride — data is over-allocated but that's fine
+            self.row_stride = self.w;
+            // Realloc to exact size
+            if (self.allocator) |alloc| {
+                const new_data = try alloc.alloc(pixel_type, new_size);
+                // Copy rows from old layout
+                const old_stride = if (self.data.len > 0 and self.h > 0) self.data.len / self.h else self.w;
+                _ = old_stride;
+                // For shrink, just copy linearly (w got smaller, stride was w before)
+                @memcpy(new_data[0..new_size], self.data[0..new_size]);
+                alloc.free(self.data);
+                self.data = new_data;
+                self.row_stride = self.w;
+            }
+        }
+    }
 };
 
 pub const Image = struct {

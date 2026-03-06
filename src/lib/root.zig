@@ -28,6 +28,8 @@ pub const codec = struct {
 	pub const image_metadata = @import("codec/image_metadata.zig");
 	pub const color_encoding = @import("codec/color_encoding.zig");
 	pub const frame_header = @import("codec/frame_header.zig");
+	pub const toc = @import("codec/toc.zig");
+	pub const dec_frame = @import("codec/dec_frame.zig");
 	pub const codestream_test = @import("codec/codestream_test.zig");
 };
 

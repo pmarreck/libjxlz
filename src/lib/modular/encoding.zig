@@ -251,9 +251,24 @@ pub fn modularDecode(
     // Read group header (transforms, WP header, use_global_tree)
     header.* = try GroupHeader.readFromBitStream(br, allocator);
 
-    // Apply transform metadata
-    // (For now, transforms are stored but MetaApply is deferred to full implementation)
-    // TODO: Apply transforms to modify channel structure
+    // Apply forward transform metadata (modifies channel structure)
+    for (header.transforms) |*t| {
+        var tm = @as(Transform, t.*);
+        try transform_mod.metaApply(image, &tm, allocator);
+        t.* = tm;
+    }
+
+    // Move transforms to image for later undo (header gives up ownership)
+    for (header.transforms) |t| {
+        try image.transforms.append(t);
+    }
+    // Clear header's transform slice so it doesn't double-free squeeze params
+    if (header.allocator) |alloc| {
+        if (header.transforms.len > 0) {
+            alloc.free(header.transforms);
+        }
+    }
+    header.transforms = &.{};
 
     const nb_channels = image.channels.items.len;
 
@@ -373,7 +388,7 @@ pub fn modularGenericDecompress(
     try modularDecode(br, image, &header, group_id, opts, tree, code, ctx_map, allocator);
 
     if (undo_transforms) {
-        // TODO: Apply inverse transforms (RCT, Palette, Squeeze)
+        try transform_mod.undoTransforms(image, &header.wp_header);
     }
 }
 
