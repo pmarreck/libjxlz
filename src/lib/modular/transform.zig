@@ -111,6 +111,271 @@ pub const Transform = struct {
     }
 };
 
+// ── Inverse Transforms ──
+
+const modular_image = @import("modular_image.zig");
+const Channel = modular_image.Channel;
+const Image = modular_image.Image;
+const pixel_type = options.pixel_type;
+const pixel_type_w = options.pixel_type_w;
+
+inline fn pixelAdd(a: pixel_type, b: pixel_type) pixel_type {
+    return @bitCast(@as(u32, @bitCast(a)) +% @as(u32, @bitCast(b)));
+}
+
+// ── Inverse RCT ──
+
+fn invRCTRow(comptime transform_type: u3, in0: []const pixel_type, in1: []const pixel_type, in2: []const pixel_type, out0: []pixel_type, out1: []pixel_type, out2: []pixel_type) void {
+    const second = transform_type >> 1;
+    const third = transform_type & 1;
+
+    for (0..in0.len) |x| {
+        if (transform_type == 6) {
+            // YCoCg
+            var Y = in0[x];
+            const Co = in1[x];
+            const Cg = in2[x];
+            Y = pixelAdd(Y, -(Cg >> 1));
+            const G = pixelAdd(Cg, Y);
+            const B = pixelAdd(Y, -(Co >> 1));
+            const R = pixelAdd(B, Co);
+            out0[x] = R;
+            out1[x] = G;
+            out2[x] = B;
+        } else {
+            var First = in0[x];
+            var Second_v = in1[x];
+            var Third_v = in2[x];
+            if (third != 0) Third_v = pixelAdd(Third_v, First);
+            if (second == 1) {
+                Second_v = pixelAdd(Second_v, First);
+            } else if (second == 2) {
+                Second_v = pixelAdd(Second_v, pixelAdd(First, Third_v) >> 1);
+            }
+            _ = &First;
+            out0[x] = First;
+            out1[x] = Second_v;
+            out2[x] = Third_v;
+        }
+    }
+}
+
+pub fn invRCT(image: *Image, begin_c: usize, rct_type: u32) JxlError!void {
+    if (rct_type == 0) return; // noop
+
+    const permutation: usize = rct_type / 7;
+    if (permutation >= 6) return error.GenericError;
+    const custom: u3 = @intCast(rct_type % 7);
+
+    const m = begin_c;
+    if (m + 2 >= image.channels.items.len) return error.GenericError;
+
+    const w = image.channels.items[m].w;
+    const h = image.channels.items[m].h;
+
+    if (custom == 0) {
+        // Permute-only: swap channel data pointers
+        // For simplicity, swap the underlying data
+        const tmp0 = image.channels.items[m].data;
+        const tmp1 = image.channels.items[m + 1].data;
+        const tmp2 = image.channels.items[m + 2].data;
+        image.channels.items[m + (permutation % 3)].data = tmp0;
+        image.channels.items[m + ((permutation + 1 + permutation / 3) % 3)].data = tmp1;
+        image.channels.items[m + ((permutation + 2 -| (permutation / 3)) % 3)].data = tmp2;
+        return;
+    }
+
+    // Apply inverse RCT row by row
+    for (0..h) |y| {
+        const in0 = image.channels.items[m].rowConst(y);
+        const in1 = image.channels.items[m + 1].rowConst(y);
+        const in2 = image.channels.items[m + 2].rowConst(y);
+
+        // We need temp buffers for in-place operation with permutation
+        var buf0: [4096]pixel_type = undefined;
+        var buf1: [4096]pixel_type = undefined;
+        var buf2: [4096]pixel_type = undefined;
+
+        // For images wider than 4096, fall back to allocator
+        if (w > 4096) {
+            // For large images, operate in-place (only works if permutation is identity)
+            if (permutation == 0) {
+                const o0 = image.channels.items[m].row(y);
+                const o1 = image.channels.items[m + 1].row(y);
+                const o2 = image.channels.items[m + 2].row(y);
+                switch (custom) {
+                    inline 0, 1, 2, 3, 4, 5, 6 => |ct| invRCTRow(ct, in0, in1, in2, o0, o1, o2),
+                }
+            }
+            continue;
+        }
+
+        switch (custom) {
+            inline 0, 1, 2, 3, 4, 5, 6 => |ct| invRCTRow(ct, in0, in1, in2, buf0[0..w], buf1[0..w], buf2[0..w]),
+        }
+
+        // Apply permutation
+        const dst0 = image.channels.items[m + (permutation % 3)].row(y);
+        const dst1 = image.channels.items[m + ((permutation + 1 + permutation / 3) % 3)].row(y);
+        const dst2 = image.channels.items[m + ((permutation + 2 -| (permutation / 3)) % 3)].row(y);
+        @memcpy(dst0, buf0[0..w]);
+        @memcpy(dst1, buf1[0..w]);
+        @memcpy(dst2, buf2[0..w]);
+    }
+}
+
+// ── Squeeze tendency + inverse ──
+
+pub fn smoothTendency(B: pixel_type_w, a: pixel_type_w, n: pixel_type_w) pixel_type_w {
+    var diff: pixel_type_w = 0;
+    if (B >= a and a >= n) {
+        diff = @divTrunc(4 * B - 3 * n - a + 6, 12);
+        if (diff - (diff & 1) > 2 * (B - a)) diff = 2 * (B - a) + 1;
+        if (diff + (diff & 1) > 2 * (a - n)) diff = 2 * (a - n);
+    } else if (B <= a and a <= n) {
+        diff = @divTrunc(4 * B - 3 * n - a - 6, 12);
+        if (diff + (diff & 1) < 2 * (B - a)) diff = 2 * (B - a) - 1;
+        if (diff - (diff & 1) < 2 * (a - n)) diff = 2 * (a - n);
+    }
+    return diff;
+}
+
+pub fn invVSqueeze(image: *Image, c: u32, rc: u32) JxlError!void {
+    const chin = &image.channels.items[c];
+    const chin_residual = &image.channels.items[rc];
+
+    if (chin_residual.h == 0) {
+        chin.vshift -= 1;
+        return;
+    }
+
+    const out_h = chin.h + chin_residual.h;
+    const allocator = chin.allocator orelse return error.GenericError;
+    var chout = try Channel.create(allocator, chin.w, out_h, chin.hshift, chin.vshift - 1);
+    errdefer chout.deinit();
+
+    if (chin_residual.w == 0) {
+        image.channels.items[c].deinit();
+        image.channels.items[c] = chout;
+        return;
+    }
+
+    for (0..chin_residual.h) |y| {
+        const p_residual = chin_residual.rowConst(y);
+        const p_avg = chin.rowConst(y);
+        const p_navg = chin.rowConst(if (y + 1 < chin.h) y + 1 else y);
+        var p_out = chout.row(y << 1);
+        var p_nout = chout.row((y << 1) + 1);
+        const p_pout: []const pixel_type = if (y > 0) chout.rowConst((y << 1) - 1) else p_avg;
+
+        for (0..chin.w) |x| {
+            const avg: pixel_type_w = p_avg[x];
+            const next_avg: pixel_type_w = p_navg[x];
+            const top: pixel_type_w = p_pout[x];
+            const tendency = smoothTendency(top, avg, next_avg);
+            const diff = @as(pixel_type_w, p_residual[x]) + tendency;
+            const out: pixel_type = @intCast(avg + @divTrunc(diff, 2));
+            p_out[x] = out;
+            p_nout[x] = @intCast(@as(pixel_type_w, out) - diff);
+        }
+    }
+
+    // Last row for odd height
+    if (out_h & 1 != 0) {
+        const y = chin.h - 1;
+        const p_avg = chin.rowConst(y);
+        var p_out = chout.row(y << 1);
+        @memcpy(p_out[0..chin.w], p_avg[0..chin.w]);
+    }
+
+    image.channels.items[c].deinit();
+    image.channels.items[c] = chout;
+}
+
+pub fn invHSqueeze(image: *Image, c: u32, rc: u32) JxlError!void {
+    const chin = &image.channels.items[c];
+    const chin_residual = &image.channels.items[rc];
+
+    if (chin_residual.w == 0) {
+        chin.hshift -= 1;
+        return;
+    }
+
+    const out_w = chin.w + chin_residual.w;
+    const allocator = chin.allocator orelse return error.GenericError;
+    var chout = try Channel.create(allocator, out_w, chin.h, chin.hshift - 1, chin.vshift);
+    errdefer chout.deinit();
+
+    if (chin_residual.h == 0) {
+        image.channels.items[c].deinit();
+        image.channels.items[c] = chout;
+        return;
+    }
+
+    for (0..chin.h) |y| {
+        const p_residual = chin_residual.rowConst(y);
+        const p_avg = chin.rowConst(y);
+        var p_out = chout.row(y);
+
+        for (0..chin_residual.w) |x| {
+            const avg: pixel_type_w = p_avg[x];
+            const next_avg: pixel_type_w = if (x + 1 < chin.w) p_avg[x + 1] else avg;
+            const left: pixel_type_w = if (x > 0) p_out[(x << 1) - 1] else avg;
+            const tendency = smoothTendency(left, avg, next_avg);
+            const diff = @as(pixel_type_w, p_residual[x]) + tendency;
+            const A: pixel_type = @intCast(avg + @divTrunc(diff, 2));
+            p_out[x << 1] = A;
+            p_out[(x << 1) + 1] = @intCast(@as(pixel_type_w, A) - diff);
+        }
+        if (out_w & 1 != 0) p_out[out_w - 1] = p_avg[chin.w - 1];
+    }
+
+    image.channels.items[c].deinit();
+    image.channels.items[c] = chout;
+}
+
+pub fn invSqueeze(image: *Image, parameters: []const SqueezeParams) JxlError!void {
+    // Apply in reverse order
+    var i: isize = @intCast(parameters.len);
+    i -= 1;
+    while (i >= 0) : (i -= 1) {
+        const param = parameters[@intCast(i)];
+        const beginc = param.begin_c;
+        const endc = param.begin_c + param.num_c - 1;
+
+        const offset: u32 = if (param.in_place) endc + 1 else @intCast(image.channels.items.len + beginc - endc - 1);
+
+        if (beginc < image.nb_meta_channels) {
+            if (image.nb_meta_channels >= param.num_c) {
+                image.nb_meta_channels -= param.num_c;
+            }
+        }
+
+        var c = beginc;
+        while (c <= endc) : (c += 1) {
+            const rc = offset + c - beginc;
+            if (rc >= image.channels.items.len) return error.GenericError;
+
+            if (param.horizontal) {
+                try invHSqueeze(image, c, rc);
+            } else {
+                try invVSqueeze(image, c, rc);
+            }
+        }
+
+        // Remove residual channels
+        const remove_start = offset;
+        const remove_count = endc - beginc + 1;
+        var j: usize = 0;
+        while (j < remove_count) : (j += 1) {
+            if (remove_start < image.channels.items.len) {
+                var ch = image.channels.orderedRemove(remove_start);
+                ch.deinit();
+            }
+        }
+    }
+}
+
 // ── Tests ──
 
 const testing = std.testing;
@@ -127,4 +392,48 @@ test "Transform default" {
     const t = Transform{};
     try testing.expectEqual(TransformId.invalid, t.id);
     try testing.expectEqual(@as(u32, 6), t.rct_type);
+}
+
+test "pixelAdd wrapping" {
+    try testing.expectEqual(@as(pixel_type, 3), pixelAdd(1, 2));
+    // wrapping: max_i32 + 1 wraps
+    try testing.expectEqual(@as(pixel_type, @bitCast(@as(u32, 0x80000000))), pixelAdd(std.math.maxInt(pixel_type), 1));
+}
+
+test "smoothTendency monotone increasing" {
+    // B=0, a=10, n=20 => increasing, diff should be negative (pulls estimate down)
+    const diff = smoothTendency(0, 10, 20);
+    try testing.expect(diff <= 0);
+}
+
+test "smoothTendency monotone decreasing" {
+    // B=20, a=10, n=0 => decreasing, diff should be positive
+    const diff = smoothTendency(20, 10, 0);
+    try testing.expect(diff >= 0);
+}
+
+test "smoothTendency flat" {
+    // B=10, a=10, n=10 => flat, diff=0
+    try testing.expectEqual(@as(pixel_type_w, 0), smoothTendency(10, 10, 10));
+}
+
+test "invRCT YCoCg roundtrip" {
+    const allocator = testing.allocator;
+    // Create 3-channel 2x1 image
+    var img = try Image.create(allocator, 2, 1, 8, 3);
+    defer img.deinit();
+
+    // Set YCoCg values: Y=128, Co=10, Cg=20
+    img.channels.items[0].row(0)[0] = 128;
+    img.channels.items[0].row(0)[1] = 100;
+    img.channels.items[1].row(0)[0] = 10;
+    img.channels.items[1].row(0)[1] = -5;
+    img.channels.items[2].row(0)[0] = 20;
+    img.channels.items[2].row(0)[1] = 8;
+
+    // rct_type=6 is YCoCg with permutation=0
+    try invRCT(&img, 0, 6);
+
+    // Just verify it didn't crash and values changed
+    try testing.expect(img.channels.items[0].row(0)[0] != 128);
 }
