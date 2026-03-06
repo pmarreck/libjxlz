@@ -20,6 +20,15 @@
 - `float.zig` — IEEE 754 float16 to f32 conversion
 - `bit_reader.zig` — 64-bit buffered bitstream reader with deferred refill, bounds checking
 
+### src/lib/entropy/
+- `ans_params.zig` — ANS/prefix coding constants (tab size, max alphabet, signature)
+- `ans_common.zig` — AliasTable struct with packed Entry, branchless Lookup, InitAliasTable, GetPopulationCountPrecision, CreateFlatHistogram
+- `huffman.zig` — HuffmanCode struct, BuildHuffmanTable (2-level), HuffmanDecodingData with ReadFromBitStream/ReadSymbol, ReadSimpleCode
+- `hybrid_uint.zig` — HybridUintConfig: split-exponent scheme for variable-length integers, encode/decode
+- `inverse_mtf.zig` — Inverse move-to-front transform (scalar implementation)
+- `dec_ans.zig` — ANSCode, ANSSymbolReader (ANS + Huffman + LZ77 + hybrid uint), LZ77Params, ReadHistogram, DecodeUintConfig, special distance table
+- `dec_context_map.zig` — DecodeContextMap (simple path), VerifyContextMap
+
 ## docs/plans/
 - `2026-03-06-libjxlz-design.md` — Overall project design document
 - `2026-03-06-phase1-foundation.md` — Phase 1 implementation plan

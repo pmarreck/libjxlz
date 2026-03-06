@@ -1,6 +1,6 @@
 # libjxlz Plan
 
-## Phase 1: Foundation (current)
+## Phase 1: Foundation (complete)
 - [x] build.zig + build.zig.zon — 2026-03-06 ~3:00 PM EST
 - [x] ./build and ./test scripts — 2026-03-06 ~3:00 PM EST
 - [x] flake.nix with Zig + Garnix — 2026-03-06 ~3:00 PM EST
@@ -13,12 +13,17 @@
 - [x] float.zig — 2026-03-06 ~3:30 PM EST
 - [x] bit_reader.zig — 2026-03-06 ~3:45 PM EST
 - [x] Project scaffolding (PLAN.md, IMPROVEMENTS.md, etc.) — 2026-03-06 ~3:50 PM EST
-- [ ] Final verification and commit
+- [x] Final verification and commit
 
-## Phase 2: Entropy Decoding
-- [ ] ANS decoder
-- [ ] Huffman decoder
-- [ ] Brotli integration (C FFI)
+## Phase 2: Entropy Decoding (complete)
+- [x] ans_params.zig — ANS/prefix coding constants
+- [x] ans_common.zig — AliasTable, InitAliasTable, GetPopulationCountPrecision, CreateFlatHistogram
+- [x] huffman.zig — HuffmanCode, BuildHuffmanTable, HuffmanDecodingData, ReadFromBitStream
+- [x] hybrid_uint.zig — HybridUintConfig encode/decode with roundtrip tests
+- [x] inverse_mtf.zig — Inverse move-to-front transform (scalar, SIMD noted for later)
+- [x] dec_ans.zig — ANSCode, ANSSymbolReader, LZ77Params, ReadHistogram, DecodeUintConfig
+- [x] dec_context_map.zig — DecodeContextMap (simple path; ANS-based path stubbed)
+- [ ] Brotli integration (C FFI) — deferred to when needed by frame decoding
 
 ## Phase 3: Core Decoder
 - [ ] Frame header parsing
