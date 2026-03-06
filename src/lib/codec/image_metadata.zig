@@ -312,6 +312,7 @@ pub const ImageMetadata = struct {
 pub const CodecMetadata = struct {
     m: ImageMetadata = .{},
     size: headers.SizeHeader = .{},
+    transform_data: CustomTransformData = .{},
 
     pub fn xsize(self: CodecMetadata) usize {
         return self.size.xsize();
@@ -319,6 +320,87 @@ pub const CodecMetadata = struct {
 
     pub fn ysize(self: CodecMetadata) usize {
         return self.size.ysize();
+    }
+};
+
+// ── OpsinInverseMatrix ──
+
+pub const OpsinInverseMatrix = struct {
+    inverse_matrix: [3][3]f32 = .{
+        .{ 0, 0, 0 },
+        .{ 0, 0, 0 },
+        .{ 0, 0, 0 },
+    },
+    opsin_biases: [3]f32 = .{ 0, 0, 0 },
+    quant_biases: [4]f32 = .{ 0, 0, 0, 0 },
+
+    pub fn readFromBitStream(br: *BitReader) JxlError!OpsinInverseMatrix {
+        if (fc.readAllDefault(br)) {
+            return OpsinInverseMatrix{};
+        }
+
+        var m = OpsinInverseMatrix{};
+        for (0..3) |j| {
+            for (0..3) |i| {
+                m.inverse_matrix[j][i] = try fc.F16Coder.read(br);
+            }
+        }
+        for (0..3) |i| {
+            m.opsin_biases[i] = try fc.F16Coder.read(br);
+        }
+        for (0..4) |i| {
+            m.quant_biases[i] = try fc.F16Coder.read(br);
+        }
+        return m;
+    }
+};
+
+// ── CustomTransformData ──
+
+pub const CustomTransformData = struct {
+    opsin_inverse_matrix: OpsinInverseMatrix = .{},
+    custom_weights_mask: u32 = 0,
+    upsampling2_weights: [15]f32 = [_]f32{0} ** 15,
+    upsampling4_weights: [55]f32 = [_]f32{0} ** 55,
+    upsampling8_weights: [210]f32 = [_]f32{0} ** 210,
+
+    pub fn readFromBitStream(br: *BitReader, xyb_encoded: bool) JxlError!CustomTransformData {
+        if (fc.readAllDefault(br)) {
+            return CustomTransformData{};
+        }
+
+        var ctd = CustomTransformData{};
+
+        // OpsinInverseMatrix (only if xyb_encoded)
+        if (xyb_encoded) {
+            ctd.opsin_inverse_matrix = try OpsinInverseMatrix.readFromBitStream(br);
+        }
+
+        // Custom weights mask (3 bits)
+        ctd.custom_weights_mask = @intCast(br.readBits(3));
+
+        // Upsampling 2x weights (15 values)
+        if ((ctd.custom_weights_mask & 0x1) != 0) {
+            for (0..15) |i| {
+                ctd.upsampling2_weights[i] = try fc.F16Coder.read(br);
+            }
+        }
+
+        // Upsampling 4x weights (55 values)
+        if ((ctd.custom_weights_mask & 0x2) != 0) {
+            for (0..55) |i| {
+                ctd.upsampling4_weights[i] = try fc.F16Coder.read(br);
+            }
+        }
+
+        // Upsampling 8x weights (210 values)
+        if ((ctd.custom_weights_mask & 0x4) != 0) {
+            for (0..210) |i| {
+                ctd.upsampling8_weights[i] = try fc.F16Coder.read(br);
+            }
+        }
+
+        return ctd;
     }
 };
 

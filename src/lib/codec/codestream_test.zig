@@ -38,10 +38,14 @@ test "parse real JXL codestream headers" {
     try testing.expect(!metadata.color_encoding.want_icc);
     try testing.expectEqual(color_encoding.ColorSpace.rgb, metadata.color_encoding.color_space);
 
+    // Parse CustomTransformData (sits between ImageMetadata and FrameHeader in codestream)
+    const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+
     // Build CodecMetadata for FrameHeader parsing
     var codec_meta = image_metadata.CodecMetadata{};
     codec_meta.m = metadata;
     codec_meta.size = size;
+    codec_meta.transform_data = transform_data;
 
     // Parse FrameHeader
     const fh = try frame_header_mod.FrameHeader.readFromBitStream(&br, &codec_meta, false);
