@@ -19,6 +19,12 @@ pub const entropy = struct {
 	pub const dec_context_map = @import("entropy/dec_context_map.zig");
 };
 
+pub const codec = struct {
+	pub const field_coders = @import("codec/field_coders.zig");
+	pub const frame_dimensions = @import("codec/frame_dimensions.zig");
+	pub const headers = @import("codec/headers.zig");
+};
+
 test {
 	@import("std").testing.refAllDecls(@This());
 }

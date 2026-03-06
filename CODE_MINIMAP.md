@@ -29,6 +29,11 @@
 - `dec_ans.zig` — ANSCode, ANSSymbolReader (ANS + Huffman + LZ77 + hybrid uint), LZ77Params, ReadHistogram, DecodeUintConfig, special distance table
 - `dec_context_map.zig` — DecodeContextMap (simple path), VerifyContextMap
 
+### src/lib/codec/
+- `field_coders.zig` — U32Distr, U32Enc, U32Coder, U64Coder, F16Coder, BitsCoder read functions, readEnum
+- `frame_dimensions.zig` — Block/group constants (kBlockDim=8, kGroupDim=256), FrameDimensions struct with Set, GroupRect, BlockGroupRect, DCGroupRect
+- `headers.zig` — SizeHeader (compact image dimensions), PreviewHeader, AnimationHeader readers; aspect ratio table
+
 ## docs/plans/
 - `2026-03-06-libjxlz-design.md` — Overall project design document
 - `2026-03-06-phase1-foundation.md` — Phase 1 implementation plan

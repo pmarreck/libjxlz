@@ -25,11 +25,14 @@
 - [x] dec_context_map.zig — DecodeContextMap (simple path; ANS-based path stubbed)
 - [ ] Brotli integration (C FFI) — deferred to when needed by frame decoding
 
-## Phase 3: Core Decoder
-- [ ] Frame header parsing
+## Phase 3: Core Decoder (in progress)
+- [x] field_coders.zig — U32Coder, U64Coder, F16Coder, BitsCoder, U32Enc/U32Distr
+- [x] frame_dimensions.zig — FrameDimensions with block/group constants
+- [x] headers.zig — SizeHeader, PreviewHeader, AnimationHeader readers
+- [ ] Frame header parsing (FrameHeader, enums, LoopFilter)
+- [ ] Image metadata (BitDepth, ExtraChannelInfo, ImageMetadata, CodecMetadata)
 - [ ] Group decoding
 - [ ] Modular integer decoding (MA trees)
-- [ ] Context map decoding
 
 ## Phase 4: Render Pipeline
 - [ ] Inverse DCT (SIMD)
