@@ -126,3 +126,63 @@ test "decode lossless 4x4 modular global info" {
         }
     }
 }
+
+test "decode lossless 16x16 modular" {
+    const data = @embedFile("../testdata/lossless_16x16.jxl");
+    const allocator = testing.allocator;
+
+    try testing.expectEqual(@as(u8, 0xFF), data[0]);
+    try testing.expectEqual(@as(u8, 0x0A), data[1]);
+
+    var br = BitReader.init(data[2..]);
+
+    const size = headers.SizeHeader.readFromBitStream(&br);
+    try testing.expectEqual(@as(usize, 16), size.xsize());
+    try testing.expectEqual(@as(usize, 16), size.ysize());
+
+    const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+    const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+    var codec_meta = image_metadata.CodecMetadata{};
+    codec_meta.m = metadata;
+    codec_meta.size = size;
+    codec_meta.transform_data = transform_data;
+
+    const fh = try frame_header_mod.FrameHeader.readFromBitStream(&br, &codec_meta, false);
+    try testing.expectEqual(frame_header_mod.FrameEncoding.modular, fh.encoding);
+
+    const frame_dim = fh.toFrameDimensions(&codec_meta, false);
+
+    var mod_dec = dec_frame.ModularFrameDecoder.init(allocator);
+    defer mod_dec.deinit();
+    mod_dec.initFrame(frame_dim);
+
+    try mod_dec.decodeGlobalInfo(&br, &fh, &codec_meta);
+
+    const weighted = @import("../modular/weighted.zig");
+    const wp_hdr = weighted.Header{};
+    const transform_zig = @import("../modular/transform.zig");
+    try transform_zig.undoTransforms(&mod_dec.full_image, &wp_hdr);
+
+    // Verify dimensions
+    try testing.expect(mod_dec.full_image.channels.items.len >= 3);
+    const ch_r = &mod_dec.full_image.channels.items[0];
+    try testing.expectEqual(@as(usize, 16), ch_r.w);
+    try testing.expectEqual(@as(usize, 16), ch_r.h);
+
+    // Verify pixel (0,0) = (0, 0, 0)
+    try testing.expectEqual(@as(i32, 0), ch_r.rowConst(0)[0]);
+    try testing.expectEqual(@as(i32, 0), mod_dec.full_image.channels.items[1].rowConst(0)[0]);
+    try testing.expectEqual(@as(i32, 0), mod_dec.full_image.channels.items[2].rowConst(0)[0]);
+
+    // Verify pixel (15,15) = (255, 255, 240)
+    const ch_g = &mod_dec.full_image.channels.items[1];
+    const ch_b = &mod_dec.full_image.channels.items[2];
+    try testing.expectEqual(@as(i32, 255), ch_r.rowConst(15)[15]);
+    try testing.expectEqual(@as(i32, 255), ch_g.rowConst(15)[15]);
+    try testing.expectEqual(@as(i32, 240), ch_b.rowConst(15)[15]); // (15+15)*8 % 256 = 240
+
+    // Verify pixel (8,4) = (136, 68, 96)
+    try testing.expectEqual(@as(i32, 136), ch_r.rowConst(4)[8]); // 8*17 = 136
+    try testing.expectEqual(@as(i32, 68), ch_g.rowConst(4)[8]);  // 4*17 = 68
+    try testing.expectEqual(@as(i32, 96), ch_b.rowConst(4)[8]);  // (8+4)*8 % 256 = 96
+}
