@@ -36,6 +36,9 @@ pub const modular = struct {
 	pub const options = @import("modular/options.zig");
 	pub const weighted = @import("modular/weighted.zig");
 	pub const dec_ma = @import("modular/dec_ma.zig");
+	pub const context_predict = @import("modular/context_predict.zig");
+	pub const transform = @import("modular/transform.zig");
+	pub const modular_image = @import("modular/modular_image.zig");
 };
 
 test {
