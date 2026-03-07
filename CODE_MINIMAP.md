@@ -2,7 +2,7 @@
 
 ## Build Infrastructure
 - `README.md` — top-level project status, current measured wins vs upstream `libjxl`, threading status, build/benchmark entrypoints, and links to upstream-facing optimization notes
-- `.github/workflows/libjxlz_ci.yml` — repo-specific GitHub Actions workflow running Linux `x86_64` flake/full-suite checks plus native `aarch64` test runs on Linux and macOS, matching the README CI badge
+- `.github/workflows/libjxlz_ci.yml` — repo-specific GitHub Actions workflow running Linux `x86_64` flake/full-suite checks plus native `aarch64` test runs on Linux and macOS, matching the README CI badge; this is intentionally the only checked-in GitHub Actions workflow so fork CI reflects `libjxlz`, not upstream `libjxl`
 - `build.zig` — Zig build config: core static lib (`lib`), C-FFI static lib (`capi`), ReleaseFast default; `zig build test` now runs the core library tests, both benchmark harness tests, and the C-FFI unit tests
 - `build.zig.zon` — Package manifest
 - `flake.nix` — Nix dev shell, Garnix CI checks, package definition
