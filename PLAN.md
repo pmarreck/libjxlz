@@ -96,7 +96,7 @@
 - [ ] C FFI encode API
 - [ ] cjxlz CLI
 - [x] Encoder perf follow-up option 1: extend `bench_weighted_predict.zig` with explicit `generic_null_props` vs `no_props` modes, add parity + stable-checksum coverage for the encoder-side `predictNoProps` path, and benchmark the two callsites; the longer `600x300 repeat=256` run came out essentially at parity, so the real win here is cleaner measurement rather than a kept speedup — 2026-03-07 ~12:45 PM EST
-- [ ] Encoder perf follow-up option 2: make benchmark-only checksum/profile bookkeeping optional on the fast path so the scaffold better approximates eventual encoder cost
+- [x] Encoder perf follow-up option 2: add `instrumented|minimal` bookkeeping modes to `bench_modular_encode_prep.zig`, keep the fully checked path for regression tests, log both scenarios in `./bm`, and keep it because the new `modular_encode_prep_minimal` scenario measured about `1.20x` faster than the instrumented path on `1024x768x3 repeat=24` while preserving identical sample and bit-count totals — 2026-03-07 ~1:30 PM EST
 - [ ] Encoder perf follow-up option 3: start the first real modular writer slice and shift future optimization work from the synthetic scaffold to true bitstream-writing hot paths
 
 ## Phase 7: Extras

@@ -118,12 +118,17 @@ benchmark_scenario() {
 }
 
 benchmark_encode_prep() {
-	SCENARIO_NAME="modular_encode_prep_best"
+	SCENARIO_NAME="$1"
+	BOOKKEEPING_MODE="$2"
 	REPEAT_COUNT=24
 	WIDTH=1024
 	HEIGHT=768
 	CHANNELS=3
 	SEED=7
+	BOOKKEEPING_ARGS=()
+	if [ "${BOOKKEEPING_MODE}" = "minimal" ]; then
+		BOOKKEEPING_ARGS=(--bookkeeping minimal)
+	fi
 
 	hyperfine \
 		--style basic \
@@ -132,7 +137,7 @@ benchmark_encode_prep() {
 		--export-csv "${ENCODE_CSV_OUT}" \
 		-N \
 		-n modular_encode_prep \
-		"${ENCODE_BIN} --repeat ${REPEAT_COUNT} --width ${WIDTH} --height ${HEIGHT} --channels ${CHANNELS} --seed ${SEED}"
+		"${ENCODE_BIN} --repeat ${REPEAT_COUNT} --width ${WIDTH} --height ${HEIGHT} --channels ${CHANNELS} --seed ${SEED} ${BOOKKEEPING_ARGS[*]}"
 
 	OUR_MEAN="$(awk -F, 'NR==2 { gsub(/"/, "", $2); print $2 }' "${ENCODE_CSV_OUT}")"
 	STAMP="$(TZ=America/New_York date '+%Y-%m-%d %I:%M:%S %p EST')"
@@ -177,4 +182,5 @@ LARGE_FILE=(src/lib/testdata/lossless_600x300_multigroup_rgb.jxl)
 
 benchmark_scenario full_corpus "${FULL_REPEAT}" "${FULL_FILES[@]}"
 benchmark_scenario large_multigroup_rgb "${LARGE_REPEAT}" "${LARGE_FILE[@]}"
-benchmark_encode_prep
+benchmark_encode_prep modular_encode_prep_best instrumented
+benchmark_encode_prep modular_encode_prep_minimal minimal

@@ -1,2 +1,7 @@
 timestamp_est	scenario	repeat	width	height	channels	seed	our_mean_s
 2026-03-07 11:17:28 AM EST	modular_encode_prep_best	24	1024	768	3	7	1.1987202292499999
+2026-03-07 01:29:13 PM EST	modular_encode_prep_best	24	1024	768	3	7	1.130590057375
+2026-03-07 01:30:01 PM EST	modular_encode_prep_best	24	1024	768	3	7	1.11862728675
+2026-03-07 01:30:10 PM EST	modular_encode_prep_minimal	24	1024	768	3	7	0.9305159168750001
+2026-03-07 01:33:42 PM EST	modular_encode_prep_best	24	1024	768	3	7	1.122861776125
+2026-03-07 01:33:51 PM EST	modular_encode_prep_minimal	24	1024	768	3	7	0.940400849125
