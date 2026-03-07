@@ -1,16 +1,22 @@
 # Code Minimap
 
 ## Build Infrastructure
-- `build.zig` — Zig build config: static lib + `test` step, ReleaseFast default; `zig build test` now runs both `src/lib/root.zig` and `bench_decode_runtime.zig` tests
+- `build.zig` — Zig build config: core static lib (`lib`), C-FFI static lib (`capi`), ReleaseFast default; `zig build test` now runs the core library tests, both benchmark harness tests, and the C-FFI unit tests
 - `build.zig.zon` — Package manifest
 - `flake.nix` — Nix dev shell, Garnix CI checks, package definition
 - `build` — Bash: `nix develop -c zig build` with --test/--debug flags
 - `test` — Bash: runs Zig unit tests + CLI tests, accumulates errors
+- `include/jxl/jxl_export.h` / `include/jxl/version.h` — generated-support compatibility headers so the upstream public `jxl/*.h` headers in `lib/include` can be used directly by external C consumers and tests
 - `bench_decode_runtime.zig` — Runtime decode benchmark harness (`--repeat`, `--reader reference|specialized`, preloaded inputs, full frame decode) with sampled image fingerprints plus known-fixture checksum verification (`--no-verify-known`, `--print-checksum`) so benchmarking catches partial/zero decodes instead of timing them
 - `bench_weighted_predict.zig` — Synthetic weighted-predictor microbenchmark (`--repeat`, `--width`, `--height`) that isolates `weighted.State.predict` + `updateErrors` with a stable checksum, for measuring predictor-only changes before they are tried in full-frame decode
+- `tests/cli/capi_decode.c` / `tests/cli/capi_decode.sh` — external C smoke test that compiles against the real upstream `jxl/decode.h`, links `libjxlz_capi.a`, and decodes the 4x4 fixture through the public `JxlDecoder` flow
+
+## src/
+- `root.zig` — package root for the pure Zig library, re-exporting the core `src/lib` modules plus the C-FFI module for test discovery
+- `capi_root.zig` — `libjxl`-shaped decoder compatibility layer exporting the first public C decoder slice (`JxlSignatureCheck`, `JxlDecoder*` create/input/basic-info/output/decode flow) by reusing the existing Zig decode pipeline and converting into caller-owned interleaved buffers
 
 ## src/lib/
-- `root.zig` — Module root, re-exports all submodules via refAllDecls
+- `lib/root.zig` — core module root, re-exports all submodules via refAllDecls
 - `testdata/` — Committed raw codestream fixtures used by decode integration tests, including a real 3-group grayscale frame (`lossless_600x10_multisection.jxl`) for validated multi-section dispatch/truncation coverage and a real 6-group RGB frame (`lossless_600x300_multigroup_rgb.jxl`) for large multi-group boundary/pixel coverage
 
 ### src/lib/base/

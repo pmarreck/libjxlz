@@ -92,4 +92,5 @@ test {
 	_ = @import("modular/transform.zig");
 	_ = @import("modular/modular_image.zig");
 	_ = @import("modular/encoding.zig");
+
 }
