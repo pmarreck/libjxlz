@@ -16,6 +16,8 @@ Current status is decoder-first:
 - pure Zig lossless/modular decode core
 - first `libjxl`-shaped decoder C API slice
 - `djxlz`, a C CLI that talks only through that C API
+- CI coverage for Linux `x86_64`/`aarch64`, macOS `aarch64`, and Windows
+  `x86_64` cross-compilation
 - checked-in public-API benchmark harness against upstream `libjxl`
 - first encoder-side modular prepass benchmark/profiling scaffold
 

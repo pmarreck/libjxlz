@@ -82,6 +82,7 @@
 - [x] Add a `NOTICE` file plus README attribution note clarifying that `libjxlz` is a derived Zig rewrite of `libjxl`, not a clean-room implementation, and that upstream/new material keep their respective credit — 2026-03-07 ~11:20 AM EST
 - [x] Add the first encoder-side benchmark/profiling scaffold (`bench_modular_encode_prep.zig`) for modular predictor selection plus hybrid-uint tokenization, wire it into `zig build test`, `./test`, and `./bm`, and log the initial baseline (`1024x768x3`, repeat `24`: `1.1987 s`) — 2026-03-07 ~11:20 AM EST
 - [x] Fix Linux CI for the encoder scaffold by keeping it pure-library (no `capi_root` import leak) and adding an `x86_64-linux` compile-only smoke check so `./test` catches libc-linkage regressions before push — 2026-03-07 ~11:30 AM EST
+- [x] Add `x86_64-windows-gnu` compile-only coverage via a checked-in smoke test, wire it into `./test`, and expose it through the Linux flake checks so both GitHub Actions and Garnix catch Windows portability regressions early — 2026-03-07 ~12:05 PM EST
 - [ ] Conformance tests
 
 ## Phase 6: Encoder

@@ -59,6 +59,24 @@
                 echo "tests passed" > $out/result
               '';
             };
+          } // lib.optionalAttrs (stdenv.isLinux && stdenv.hostPlatform.isx86_64) {
+            windows-x86_64-cross = stdenv.mkDerivation {
+              pname = "${pname}-windows-x86_64-cross";
+              inherit version;
+              src = ./.;
+              nativeBuildInputs = [ bash zig ];
+              dontConfigure = true;
+              dontFixup = true;
+              buildPhase = ''
+                export HOME=$TMPDIR
+                export XDG_CACHE_HOME=$TMPDIR/cache
+                bash tests/cli/windows_cross_compile_smoke.sh
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "windows cross-compile passed" > $out/result
+              '';
+            };
           };
 
           devShells.default = mkShell {

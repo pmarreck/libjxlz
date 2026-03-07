@@ -3,10 +3,10 @@
 ## Build Infrastructure
 - `README.md` — top-level project status, current measured wins vs upstream `libjxl`, threading status, build/benchmark entrypoints, encoder scaffold status, attribution note, and links to upstream-facing optimization notes
 - `NOTICE` — non-clean-room derivative-work attribution note describing upstream `libjxl` lineage, mixed copyright ownership, and the BSD-3-Clause + PATENTS licensing surface for this fork
-- `.github/workflows/libjxlz_ci.yml` — repo-specific GitHub Actions workflow running Linux `x86_64` flake/full-suite checks plus native `aarch64` test runs on Linux and macOS, matching the README CI badge; this is intentionally the only checked-in GitHub Actions workflow so fork CI reflects `libjxlz`, not upstream `libjxl`
+- `.github/workflows/libjxlz_ci.yml` — repo-specific GitHub Actions workflow running Linux `x86_64` flake/full-suite checks plus native `aarch64` test runs on Linux and macOS, with the Linux flake checks now also covering `x86_64-windows-gnu` cross-compilation; this is intentionally the only checked-in GitHub Actions workflow so fork CI reflects `libjxlz`, not upstream `libjxl`
 - `build.zig` — Zig build config: core static lib (`lib`), C-FFI static lib (`capi`), ReleaseFast default; `zig build test` now runs the core library tests, both benchmark harness tests, and the C-FFI unit tests
 - `build.zig.zon` — Package manifest
-- `flake.nix` — Nix dev shell, Garnix CI checks, package definition
+- `flake.nix` — Nix dev shell, Garnix CI checks, package definition; Linux `x86_64` flake checks now include a dedicated `windows-x86_64-cross` derivation that reuses the checked-in smoke script so Garnix catches Windows portability regressions too
 - `build` — Bash: `nix develop -c zig build` with --test/--debug flags
 - `test` — Bash: runs Zig unit tests + CLI tests, including the encoder-prepass smoke compile/run, and accumulates errors
 - `bm` — Bash: builds the public-API decode benchmark harness against both `libjxlz_capi` and upstream `libjxl`, builds the synthetic encoder-prepass harness in ReleaseFast, runs `hyperfine` on both decode and encoder scenarios, appends results to the source-controlled history TSVs, and fails loudly on >5% shifts from the previous logged run
@@ -20,6 +20,7 @@
 - `tests/benchmark/modular_encode_prep_history.tsv` — source-controlled timing history for the synthetic encoder prepass benchmark run by `./bm`
 - `tests/cli/capi_bench_smoke.sh` — checksum smoke test proving the checked-in public-API benchmark harness compiles and decodes deterministically against `libjxlz_capi`
 - `tests/cli/encode_prep_bench_smoke.sh` — checksum smoke test proving the encoder prepass harness compiles in ReleaseFast, also cross-compiles cleanly for `x86_64-linux`, and produces the expected deterministic checksum
+- `tests/cli/windows_cross_compile_smoke.sh` — compile-only portability smoke test for `x86_64-windows-gnu`; cross-builds the pure Zig library, C API, `djxlz`, and encoder scaffold so `./test`, Linux Actions, and Garnix all catch Windows regressions before runtime support exists
 
 ## src/
 - `root.zig` — package root for the pure Zig library, re-exporting the core `src/lib` modules plus the C-FFI module for test discovery
