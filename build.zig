@@ -19,6 +19,7 @@ pub fn build(b: *std.Build) void {
 		.linkage = .static,
 		.root_module = root_module,
 	});
+	lib.linkLibC();
 
 	const install_lib = b.addInstallArtifact(lib, .{});
 
@@ -31,6 +32,7 @@ pub fn build(b: *std.Build) void {
 			.optimize = optimize,
 		}),
 	});
+	capi_lib.linkLibC();
 
 	const install_capi = b.addInstallArtifact(capi_lib, .{});
 
@@ -71,6 +73,7 @@ pub fn build(b: *std.Build) void {
 			.optimize = optimize,
 		}),
 	});
+	unit_tests.linkLibC();
 
 	const run_unit_tests = b.addRunArtifact(unit_tests);
 
@@ -99,6 +102,7 @@ pub fn build(b: *std.Build) void {
 			.optimize = optimize,
 		}),
 	});
+	capi_tests.linkLibC();
 
 	const run_capi_tests = b.addRunArtifact(capi_tests);
 	const test_step = b.step("test", "Run unit tests");
