@@ -44,6 +44,7 @@ pub const modular = struct {
 	pub const context_predict = @import("modular/context_predict.zig");
 	pub const transform = @import("modular/transform.zig");
 	pub const modular_image = @import("modular/modular_image.zig");
+	pub const enc_encoding = @import("modular/enc_encoding.zig");
 	pub const encoding = @import("modular/encoding.zig");
 };
 
@@ -95,6 +96,7 @@ test {
 	_ = @import("modular/context_predict.zig");
 	_ = @import("modular/transform.zig");
 	_ = @import("modular/modular_image.zig");
+	_ = @import("modular/enc_encoding.zig");
 	_ = @import("modular/encoding.zig");
 
 }

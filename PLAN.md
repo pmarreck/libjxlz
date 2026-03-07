@@ -95,6 +95,7 @@
 - [x] ANS encoder foundation: add `SizeWriter` and make the current metadata writers generic over counting vs real output, with tests proving its bit counts match `BitWriter` exactly for varlen integers and uint-config metadata — 2026-03-07 ~2:30 PM EST
 - [x] ANS encoder foundation: add `Token`, `ANSEncSymbolInfo`, an alias-table-backed info-table builder, and `ANSCoder.putSymbol`, with tests that compare the reciprocal fast path against a direct division-based reference step and cover the empty-stream fallback symbol — 2026-03-07 ~2:40 PM EST
 - [x] ANS encoder slice: add a minimal single-histogram token-stream writer that emits real ANS state + reversed bit payloads, with decoder roundtrip tests covering both direct-token and extra-bit `HybridUintConfig` cases — 2026-03-07 ~2:50 PM EST
+- [x] Modular encoder slice: add single-channel single-node grayscale tokenization for non-weighted predictors, with exact token assertions for `zero` and `gradient` paths so modular residual generation is proven before bitstream assembly — 2026-03-07 ~3:00 PM EST
 - [ ] Modular encoder
 - [x] Encoder bit-writer foundation: add `src/lib/base/bit_writer.zig` with LSB-first write + byte-pad semantics and roundtrip it against the existing `BitReader`, so future ANS/modular writer work has a real writable primitive instead of the synthetic prepass scaffold alone — 2026-03-07 ~1:55 PM EST
 - [ ] Replace synthetic encoder-prepass scaffold with real modular encoder profiling once the first writable bitstream slice exists
