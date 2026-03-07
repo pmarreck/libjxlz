@@ -40,6 +40,7 @@
 - `rect.zig` — Rect type for rectangular image regions with intersection/translate/shift
 - `float.zig` — IEEE 754 float16 to f32 conversion
 - `bit_reader.zig` — 64-bit buffered bitstream reader with deferred refill, bounds checking
+- `bit_writer.zig` — first encoder-side writable primitive: LSB-first bit packing with byte-padding semantics matching `BitReader`, proven by direct roundtrip tests and intended as the foundation for upcoming ANS/modular writer work
 - `pack_signed.zig` — PackSigned/UnpackSigned for zigzag encoding of signed frame offsets
 
 ### src/lib/entropy/

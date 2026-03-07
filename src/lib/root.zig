@@ -3,6 +3,7 @@ pub const base = struct {
 	pub const bits = @import("base/bits.zig");
 	pub const common = @import("base/common.zig");
 	pub const bit_reader = @import("base/bit_reader.zig");
+	pub const bit_writer = @import("base/bit_writer.zig");
 	pub const byte_order = @import("base/byte_order.zig");
 	pub const random = @import("base/random.zig");
 	pub const rect = @import("base/rect.zig");
@@ -55,6 +56,7 @@ test {
 	_ = @import("base/bits.zig");
 	_ = @import("base/common.zig");
 	_ = @import("base/bit_reader.zig");
+	_ = @import("base/bit_writer.zig");
 	_ = @import("base/byte_order.zig");
 	_ = @import("base/random.zig");
 	_ = @import("base/rect.zig");

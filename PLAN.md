@@ -90,6 +90,7 @@
 - [ ] Forward DCT + quantization
 - [ ] ANS encoder
 - [ ] Modular encoder
+- [x] Encoder bit-writer foundation: add `src/lib/base/bit_writer.zig` with LSB-first write + byte-pad semantics and roundtrip it against the existing `BitReader`, so future ANS/modular writer work has a real writable primitive instead of the synthetic prepass scaffold alone — 2026-03-07 ~1:55 PM EST
 - [ ] Replace synthetic encoder-prepass scaffold with real modular encoder profiling once the first writable bitstream slice exists
 - [ ] Frame encoder
 - [ ] Fast lossless encoder
