@@ -141,7 +141,21 @@ pub const State = struct {
         return @intCast((@as(i128, sum) * @as(i128, divlookup[weight_sum -% 1])) >> 24);
     }
 
-    pub fn predict(self: *State, x: usize, y: usize, xsize: usize, N_in: pixel_type_w, W_in: pixel_type_w, NE_in: pixel_type_w, NW_in: pixel_type_w, NN_in: pixel_type_w, properties: ?*std.ArrayList(pixel_type), offset: usize) pixel_type_w {
+    inline fn predictImpl(
+        self: *State,
+        comptime compute_properties: bool,
+        comptime track_wp_prop: bool,
+        x: usize,
+        y: usize,
+        xsize: usize,
+        N_in: pixel_type_w,
+        W_in: pixel_type_w,
+        NE_in: pixel_type_w,
+        NW_in: pixel_type_w,
+        NN_in: pixel_type_w,
+        properties: ?*std.ArrayList(pixel_type),
+        offset: usize,
+    ) pixel_type_w {
         const cur_row: usize = if (y & 1 != 0) 0 else (xsize + 2);
         const prev_row: usize = if (y & 1 != 0) (xsize + 2) else 0;
         const pos_N = prev_row + x;
@@ -168,13 +182,14 @@ pub const State = struct {
         const sumWN: pixel_type_w = teN + teW;
         const teNE: pixel_type_w = self.errors[pos_NE];
 
-        {
+        if (comptime track_wp_prop) {
             var p = teW;
             if (absW(teN) > absW(p)) p = teN;
             if (absW(teNW) > absW(p)) p = teNW;
             if (absW(teNE) > absW(p)) p = teNE;
             self.wp_prop = @intCast(p);
-            if (properties) |props| {
+            if (comptime compute_properties) {
+                const props = properties.?;
                 props.items[offset] = self.wp_prop;
             }
         }
@@ -200,6 +215,53 @@ pub const State = struct {
         const mn = @min(W, @min(NE, N));
         self.pred = @max(mn, @min(mx, self.pred));
         return @intCast((self.pred + kPredictionRound) >> @as(u6, @intCast(kPredExtraBits)));
+    }
+
+    pub inline fn predict(
+        self: *State,
+        x: usize,
+        y: usize,
+        xsize: usize,
+        N_in: pixel_type_w,
+        W_in: pixel_type_w,
+        NE_in: pixel_type_w,
+        NW_in: pixel_type_w,
+        NN_in: pixel_type_w,
+        properties: ?*std.ArrayList(pixel_type),
+        offset: usize,
+    ) pixel_type_w {
+        if (properties != null) {
+            return self.predictImpl(true, true, x, y, xsize, N_in, W_in, NE_in, NW_in, NN_in, properties, offset);
+        }
+        return self.predictImpl(false, true, x, y, xsize, N_in, W_in, NE_in, NW_in, NN_in, null, 0);
+    }
+
+    pub inline fn predictNoProps(
+        self: *State,
+        x: usize,
+        y: usize,
+        xsize: usize,
+        N_in: pixel_type_w,
+        W_in: pixel_type_w,
+        NE_in: pixel_type_w,
+        NW_in: pixel_type_w,
+        NN_in: pixel_type_w,
+    ) pixel_type_w {
+        return self.predictImpl(false, true, x, y, xsize, N_in, W_in, NE_in, NW_in, NN_in, null, 0);
+    }
+
+    pub inline fn predictNoWPProp(
+        self: *State,
+        x: usize,
+        y: usize,
+        xsize: usize,
+        N_in: pixel_type_w,
+        W_in: pixel_type_w,
+        NE_in: pixel_type_w,
+        NW_in: pixel_type_w,
+        NN_in: pixel_type_w,
+    ) pixel_type_w {
+        return self.predictImpl(false, false, x, y, xsize, N_in, W_in, NE_in, NW_in, NN_in, null, 0);
     }
 
     pub fn getWPProp(self: *const State) pixel_type {
@@ -255,4 +317,68 @@ test "Header non-default" {
     try testing.expectEqual(@as(u32, 11), h.w[1]);
     try testing.expectEqual(@as(u32, 13), h.w[2]);
     try testing.expectEqual(@as(u32, 12), h.w[3]);
+}
+
+test "predictNoProps matches null-properties path" {
+    const allocator = testing.allocator;
+    var state = try State.init(allocator, Header{}, 4, 2);
+    defer state.deinit();
+
+    const xsize: usize = 4;
+    const x: usize = 2;
+    const y: usize = 1;
+    const cur_row: usize = 0;
+    const prev_row: usize = xsize + 2;
+
+    state.errors[cur_row + x - 1] = -5;
+    state.errors[prev_row + x] = 3;
+    state.errors[prev_row + x - 1] = -7;
+    state.errors[prev_row + x + 1] = 9;
+
+    inline for (0..kNumPredictors) |i| {
+        const base: u32 = @intCast((i + 1) * 3);
+        state.pred_errors[i][prev_row + x] = base;
+        state.pred_errors[i][prev_row + x - 1] = base + 1;
+        state.pred_errors[i][prev_row + x + 1] = base + 2;
+    }
+
+    const via_optional = state.predict(x, y, xsize, 10, 11, 12, 13, 14, null, 0);
+    const wp_prop_via_optional = state.getWPProp();
+    const via_specialized = state.predictNoProps(x, y, xsize, 10, 11, 12, 13, 14);
+    const wp_prop_via_specialized = state.getWPProp();
+
+    try testing.expectEqual(via_optional, via_specialized);
+    try testing.expectEqual(wp_prop_via_optional, wp_prop_via_specialized);
+}
+
+test "predictNoWPProp matches prediction without mutating wp property" {
+    const allocator = testing.allocator;
+    var state = try State.init(allocator, Header{}, 4, 2);
+    defer state.deinit();
+
+    const xsize: usize = 4;
+    const x: usize = 1;
+    const y: usize = 1;
+    const cur_row: usize = 0;
+    const prev_row: usize = xsize + 2;
+
+    state.wp_prop = 123;
+    state.errors[cur_row + x - 1] = 8;
+    state.errors[prev_row + x] = -4;
+    state.errors[prev_row + x - 1] = 6;
+    state.errors[prev_row + x + 1] = -3;
+
+    inline for (0..kNumPredictors) |i| {
+        const base: u32 = @intCast((i + 2) * 5);
+        state.pred_errors[i][prev_row + x] = base;
+        state.pred_errors[i][prev_row + x - 1] = base + 2;
+        state.pred_errors[i][prev_row + x + 1] = base + 4;
+    }
+
+    const with_wp_prop = state.predictNoProps(x, y, xsize, 21, 17, 25, 13, 11);
+    state.wp_prop = 123;
+    const without_wp_prop = state.predictNoWPProp(x, y, xsize, 21, 17, 25, 13, 11);
+
+    try testing.expectEqual(with_wp_prop, without_wp_prop);
+    try testing.expectEqual(@as(pixel_type, 123), state.getWPProp());
 }

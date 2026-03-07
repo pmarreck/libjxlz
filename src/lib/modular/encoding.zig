@@ -349,9 +349,11 @@ fn decodeModularChannelImpl(
 
             var wp_pred: pixel_type_w = 0;
             if (wp_state) |*ws| {
-                wp_pred = ws.predict(x, y, channel.w, top, left, topright, topleft, toptop, null, 0);
                 if (use_prop_wp) {
+                    wp_pred = ws.predictNoProps(x, y, channel.w, top, left, topright, topleft, toptop);
                     properties[context_predict.kWPProp] = ws.getWPProp();
+                } else {
+                    wp_pred = ws.predictNoWPProp(x, y, channel.w, top, left, topright, topleft, toptop);
                 }
             }
 
