@@ -79,12 +79,15 @@
 - [x] Optimize the common C-API `UINT8` output path (RGB and grayscale expansion) and fix correct 8-bit scaling for high-bit-depth input; public-API benchmarks improved from `80.8 ms -> 76.2 ms` on the full corpus and `1.294 s -> 1.206 s` on the large multigroup case, reaching parity/slight lead vs upstream in the checked-in harness — 2026-03-07 ~7:40 AM EST
 - [x] Add a repo-specific GitHub Actions workflow (`libjxlz_ci.yml`), keep Garnix on the existing flake checks, and update the README with repo-owned CI badges plus an upstream-facing optimization note and honest current project status — 2026-03-07 ~10:20 AM EST
 - [x] Remove inherited upstream GitHub workflows so Actions only reports repo-owned `libjxlz CI` plus Garnix for this fork, instead of unrelated upstream C++/Pages/CodeQL jobs failing on every push — 2026-03-07 ~11:15 AM EST
+- [x] Add a `NOTICE` file plus README attribution note clarifying that `libjxlz` is a derived Zig rewrite of `libjxl`, not a clean-room implementation, and that upstream/new material keep their respective credit — 2026-03-07 ~11:20 AM EST
+- [x] Add the first encoder-side benchmark/profiling scaffold (`bench_modular_encode_prep.zig`) for modular predictor selection plus hybrid-uint tokenization, wire it into `zig build test`, `./test`, and `./bm`, and log the initial baseline (`1024x768x3`, repeat `24`: `1.1987 s`) — 2026-03-07 ~11:20 AM EST
 - [ ] Conformance tests
 
 ## Phase 6: Encoder
 - [ ] Forward DCT + quantization
 - [ ] ANS encoder
 - [ ] Modular encoder
+- [ ] Replace synthetic encoder-prepass scaffold with real modular encoder profiling once the first writable bitstream slice exists
 - [ ] Frame encoder
 - [ ] Fast lossless encoder
 - [ ] C FFI encode API

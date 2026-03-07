@@ -9,11 +9,15 @@
 JPEG XL encoder/decoder while preserving a `libjxl`-shaped C FFI and dogfooded C
 CLI tooling.
 
+It is a derived rewrite, not a clean-room implementation. Upstream lineage,
+copyright split, and attribution notes are summarized in [`NOTICE`](NOTICE).
+
 Current status is decoder-first:
 - pure Zig lossless/modular decode core
 - first `libjxl`-shaped decoder C API slice
 - `djxlz`, a C CLI that talks only through that C API
 - checked-in public-API benchmark harness against upstream `libjxl`
+- first encoder-side modular prepass benchmark/profiling scaffold
 
 Recent optimization and documentation work in this repo was produced by Peter
 Marreck with Codex (`gpt-5.4-xhigh`, per session attribution request).
@@ -31,6 +35,11 @@ The benchmark harness is in
 and the history log is in
 [`tests/benchmark/public_api_decode_history.tsv`](tests/benchmark/public_api_decode_history.tsv).
 
+The first encoder-side benchmark scaffold is in
+[`bench_modular_encode_prep.zig`](bench_modular_encode_prep.zig), with history
+logged in
+[`tests/benchmark/modular_encode_prep_history.tsv`](tests/benchmark/modular_encode_prep_history.tsv).
+
 An upstream-facing summary of the kept optimizations, including which ones are
 portable back to C/C++ and where Zig helped or hurt, is in
 [`doc/upstream_optimization_notes.md`](doc/upstream_optimization_notes.md).
@@ -46,6 +55,8 @@ portable back to C/C++ and where Zig helped or hurt, is in
   `JxlDecoderProcessInput`.
 - Ships `djxlz`, a C CLI that uses only that public C API.
 - Runs strict correctness and benchmark checks via `./test` and `./bm`.
+- Exposes a first encoder profiling scaffold for modular predictor selection and
+  residual tokenization, with `--print-profile` support for predictor-hit mixes.
 
 ## Current Limitations
 
@@ -105,6 +116,7 @@ public C FFI. It is not yet intended to mirror every upstream `djxl` feature.
 - [`doc/upstream_optimization_notes.md`](doc/upstream_optimization_notes.md)
 - [`doc/benchmarking.md`](doc/benchmarking.md)
 - [`doc/building_and_testing.md`](doc/building_and_testing.md)
+- [`NOTICE`](NOTICE)
 - [`CODE_MINIMAP.md`](CODE_MINIMAP.md)
 - [`PLAN.md`](PLAN.md)
 
@@ -112,4 +124,5 @@ public C FFI. It is not yet intended to mirror every upstream `djxl` feature.
 
 This software is available under a 3-clause BSD license which can be found in
 the [LICENSE](LICENSE) file, with an "Additional IP Rights Grant" as outlined in
-the [PATENTS](PATENTS) file.
+the [PATENTS](PATENTS) file. The derivative-work attribution note for this fork
+is in [NOTICE](NOTICE).

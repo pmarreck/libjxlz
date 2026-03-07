@@ -1,21 +1,25 @@
 # Code Minimap
 
 ## Build Infrastructure
-- `README.md` — top-level project status, current measured wins vs upstream `libjxl`, threading status, build/benchmark entrypoints, and links to upstream-facing optimization notes
+- `README.md` — top-level project status, current measured wins vs upstream `libjxl`, threading status, build/benchmark entrypoints, encoder scaffold status, attribution note, and links to upstream-facing optimization notes
+- `NOTICE` — non-clean-room derivative-work attribution note describing upstream `libjxl` lineage, mixed copyright ownership, and the BSD-3-Clause + PATENTS licensing surface for this fork
 - `.github/workflows/libjxlz_ci.yml` — repo-specific GitHub Actions workflow running Linux `x86_64` flake/full-suite checks plus native `aarch64` test runs on Linux and macOS, matching the README CI badge; this is intentionally the only checked-in GitHub Actions workflow so fork CI reflects `libjxlz`, not upstream `libjxl`
 - `build.zig` — Zig build config: core static lib (`lib`), C-FFI static lib (`capi`), ReleaseFast default; `zig build test` now runs the core library tests, both benchmark harness tests, and the C-FFI unit tests
 - `build.zig.zon` — Package manifest
 - `flake.nix` — Nix dev shell, Garnix CI checks, package definition
 - `build` — Bash: `nix develop -c zig build` with --test/--debug flags
-- `test` — Bash: runs Zig unit tests + CLI tests, accumulates errors
-- `bm` — Bash: builds the public-API benchmark harness against both `libjxlz_capi` and upstream `libjxl`, runs `hyperfine` on the committed corpus and large multigroup case, appends results to `tests/benchmark/public_api_decode_history.tsv`, and fails loudly on >5% shifts from the previous logged run
+- `test` — Bash: runs Zig unit tests + CLI tests, including the encoder-prepass smoke compile/run, and accumulates errors
+- `bm` — Bash: builds the public-API decode benchmark harness against both `libjxlz_capi` and upstream `libjxl`, builds the synthetic encoder-prepass harness in ReleaseFast, runs `hyperfine` on both decode and encoder scenarios, appends results to the source-controlled history TSVs, and fails loudly on >5% shifts from the previous logged run
 - `include/jxl/jxl_export.h` / `include/jxl/version.h` — generated-support compatibility headers so the upstream public `jxl/*.h` headers in `lib/include` can be used directly by external C consumers and tests
 - `bench_decode_runtime.zig` — Runtime decode benchmark harness (`--repeat`, `--reader reference|specialized`, preloaded inputs, full frame decode) with sampled image fingerprints plus known-fixture checksum verification (`--no-verify-known`, `--print-checksum`) so benchmarking catches partial/zero decodes instead of timing them
 - `bench_weighted_predict.zig` — Synthetic weighted-predictor microbenchmark (`--repeat`, `--width`, `--height`) that isolates `weighted.State.predict` + `updateErrors` with a stable checksum, for measuring predictor-only changes before they are tried in full-frame decode
+- `bench_modular_encode_prep.zig` — Synthetic encoder-side modular prepass harness: generates deterministic image planes, sweeps predictors per pixel, picks the minimum-absolute-residual predictor, tokenizes packed residuals with `HybridUintConfig`, exposes `--print-profile`, and serves as the first encoder hot-path benchmark before a real modular writer exists
 - `tests/cli/capi_decode.c` / `tests/cli/capi_decode.sh` — external C smoke test that compiles against the real upstream `jxl/decode.h`, links `libjxlz_capi.a`, and decodes the 4x4 fixture through the public `JxlDecoder` flow
 - `tests/benchmark/decode_public_api.c` — checked-in in-memory public-API benchmark harness in C; loads inputs once, reuses `JxlDecoder` + output storage across repeats, decodes through `JxlDecoder` only, and hashes RGB output for deterministic correctness checks
 - `tests/benchmark/public_api_decode_history.tsv` — source-controlled benchmark history for the public-API harness (`./bm`)
+- `tests/benchmark/modular_encode_prep_history.tsv` — source-controlled timing history for the synthetic encoder prepass benchmark run by `./bm`
 - `tests/cli/capi_bench_smoke.sh` — checksum smoke test proving the checked-in public-API benchmark harness compiles and decodes deterministically against `libjxlz_capi`
+- `tests/cli/encode_prep_bench_smoke.sh` — checksum smoke test proving the encoder prepass harness compiles in ReleaseFast and produces the expected deterministic checksum
 
 ## src/
 - `root.zig` — package root for the pure Zig library, re-exporting the core `src/lib` modules plus the C-FFI module for test discovery

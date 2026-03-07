@@ -7,12 +7,16 @@ FULL_REPEAT=4
 LARGE_REPEAT=96
 THRESHOLD_PCT=5
 HISTORY="tests/benchmark/public_api_decode_history.tsv"
+ENCODE_HISTORY="tests/benchmark/modular_encode_prep_history.tsv"
 TMP_BM_DIR="${TMPDIR}/libjxlz-bm-public-api"
 OUR_BIN="${TMP_BM_DIR}/decode_public_api_libjxlz"
 REF_BIN="${TMP_BM_DIR}/decode_public_api_libjxl_ref"
+ENCODE_BIN="${TMP_BM_DIR}/bench_modular_encode_prep"
 CSV_OUT="${TMP_BM_DIR}/hyperfine.csv"
+ENCODE_CSV_OUT="${TMP_BM_DIR}/hyperfine_encode.csv"
 OUR_COMPILE_LOG="${TMP_BM_DIR}/compile_ours.log"
 REF_COMPILE_LOG="${TMP_BM_DIR}/compile_ref.log"
+ENCODE_COMPILE_LOG="${TMP_BM_DIR}/compile_encode.log"
 REF_BUILD_DIR="build-cpp-bm"
 
 mkdir -p "${TMP_BM_DIR}"
@@ -64,6 +68,13 @@ compile_ref() {
 	fi
 }
 
+compile_encode_prep() {
+	if ! zig build-exe bench_modular_encode_prep.zig -O ReleaseFast -femit-bin="${ENCODE_BIN}" >"${ENCODE_COMPILE_LOG}" 2>&1; then
+		cat "${ENCODE_COMPILE_LOG}"
+		exit 1
+	fi
+}
+
 benchmark_scenario() {
 	SCENARIO_NAME="$1"
 	REPEAT_COUNT="$2"
@@ -106,8 +117,53 @@ benchmark_scenario() {
 	fi
 }
 
+benchmark_encode_prep() {
+	SCENARIO_NAME="modular_encode_prep_best"
+	REPEAT_COUNT=24
+	WIDTH=1024
+	HEIGHT=768
+	CHANNELS=3
+	SEED=7
+
+	hyperfine \
+		--style basic \
+		--warmup "${WARMUP}" \
+		--runs "${RUNS}" \
+		--export-csv "${ENCODE_CSV_OUT}" \
+		-N \
+		-n modular_encode_prep \
+		"${ENCODE_BIN} --repeat ${REPEAT_COUNT} --width ${WIDTH} --height ${HEIGHT} --channels ${CHANNELS} --seed ${SEED}"
+
+	OUR_MEAN="$(awk -F, 'NR==2 { gsub(/"/, "", $2); print $2 }' "${ENCODE_CSV_OUT}")"
+	STAMP="$(TZ=America/New_York date '+%Y-%m-%d %I:%M:%S %p EST')"
+	PREV_LINE="$(awk -F '\t' -v scenario="${SCENARIO_NAME}" 'NR > 1 && $2 == scenario { last = $0 } END { print last }' "${ENCODE_HISTORY}")"
+
+	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+		"${STAMP}" \
+		"${SCENARIO_NAME}" \
+		"${REPEAT_COUNT}" \
+		"${WIDTH}" \
+		"${HEIGHT}" \
+		"${CHANNELS}" \
+		"${SEED}" \
+		"${OUR_MEAN}" >> "${ENCODE_HISTORY}"
+
+	printf '%s: modular_encode_prep=%ss\n' "${SCENARIO_NAME}" "${OUR_MEAN}"
+
+	if [ -n "${PREV_LINE}" ]; then
+		PREV_OUR="$(printf '%s\n' "${PREV_LINE}" | awk -F '\t' '{ print $8 }')"
+		DELTA_PCT="$(awk -v prev="${PREV_OUR}" -v cur="${OUR_MEAN}" 'BEGIN { if (prev == 0) print 0; else printf "%.2f", ((cur - prev) / prev) * 100.0 }')"
+		ABS_DELTA="$(awk -v delta="${DELTA_PCT}" 'BEGIN { if (delta < 0) delta = -delta; printf "%.2f", delta }')"
+		if awk -v delta="${ABS_DELTA}" -v threshold="${THRESHOLD_PCT}" 'BEGIN { exit !(delta >= threshold) }'; then
+			echo "PERF SHIFT: ${SCENARIO_NAME} changed by ${DELTA_PCT}% vs previous recorded run" >&2
+			exit 1
+		fi
+	fi
+}
+
 compile_ours
 compile_ref
+compile_encode_prep
 
 FULL_FILES=(
 	src/lib/testdata/lossless_4x4.jxl
@@ -121,3 +177,4 @@ LARGE_FILE=(src/lib/testdata/lossless_600x300_multigroup_rgb.jxl)
 
 benchmark_scenario full_corpus "${FULL_REPEAT}" "${FULL_FILES[@]}"
 benchmark_scenario large_multigroup_rgb "${LARGE_REPEAT}" "${LARGE_FILE[@]}"
+benchmark_encode_prep

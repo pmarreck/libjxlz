@@ -1,0 +1,25 @@
+libjxlz Notice
+
+`libjxlz` is a Zig rewrite derived from the JPEG XL Project's `libjxl`
+codebase. It is not a clean-room implementation.
+
+Upstream lineage:
+- Original JPEG XL codec design and the reference `libjxl` C/C++
+  implementation are credited to the JPEG XL Project Authors and other
+  upstream contributors.
+- This repository intentionally preserves that lineage in its documentation,
+  copied compatibility headers, carried test fixtures, and derivative/adapted
+  implementation work.
+
+Copyright and attribution:
+- Preexisting upstream material remains copyrighted by the JPEG XL Project
+  Authors and other original contributors.
+- New Zig source, benchmarks, documentation, workflow files, and glue code in
+  this repository are copyrighted by their respective authors, including Peter
+  Marreck and contributors to this fork.
+- Mixed/adapted files may contain both upstream-derived and `libjxlz`-authored
+  material.
+
+License:
+- This repository is distributed under the BSD 3-Clause license in `LICENSE`.
+- The additional patent grant in `PATENTS` is retained alongside that license.

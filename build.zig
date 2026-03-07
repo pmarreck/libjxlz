@@ -95,6 +95,15 @@ pub fn build(b: *std.Build) void {
 	});
 
 	const run_weighted_bench_tests = b.addRunArtifact(weighted_bench_tests);
+	const encode_prep_bench_tests = b.addTest(.{
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("bench_modular_encode_prep.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+
+	const run_encode_prep_bench_tests = b.addRunArtifact(encode_prep_bench_tests);
 	const capi_tests = b.addTest(.{
 		.root_module = b.createModule(.{
 			.root_source_file = b.path("src/capi_root.zig"),
@@ -109,5 +118,6 @@ pub fn build(b: *std.Build) void {
 	test_step.dependOn(&run_unit_tests.step);
 	test_step.dependOn(&run_bench_tests.step);
 	test_step.dependOn(&run_weighted_bench_tests.step);
+	test_step.dependOn(&run_encode_prep_bench_tests.step);
 	test_step.dependOn(&run_capi_tests.step);
 }
