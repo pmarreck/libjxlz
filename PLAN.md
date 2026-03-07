@@ -43,6 +43,8 @@
 - [x] Add `PrecomputeReferences` path in `decodeModularChannel` for trees using reference properties — 2026-03-06 ~7:05 PM EST
 - [x] Resolve 300x200 ANS final-state divergence in channel 0 (weighted predictor rounding parity via arithmetic right shift) — 2026-03-06 ~9:25 PM EST
 - [x] Add strict runtime decode benchmark harness (`bench_decode_runtime.zig`) and baseline-vs-`djxl` corpus benchmark — 2026-03-06 ~8:45 PM EST
+- [x] Improve benchmark harness for profiling fidelity (`--repeat`, preload inputs, `c_allocator`) and capture hotspot sample + LLVM IR dump — 2026-03-06 ~8:50 PM EST
+- [ ] Choose first hand-optimization target from hotspots (`modularDecode`, ANS read path, alias-table init) and keep original path side-by-side for A/B benchmarking
 - [ ] End-to-end lossless decode test (real JXL → pixel data)
 - [ ] Multi-group frame decoding verification
 

@@ -6,10 +6,7 @@ const image_metadata = @import("src/lib/codec/image_metadata.zig");
 const frame_header_mod = @import("src/lib/codec/frame_header.zig");
 const dec_frame = @import("src/lib/codec/dec_frame.zig");
 
-fn decodeOne(allocator: std.mem.Allocator, path: []const u8) !u64 {
-	const data = try std.fs.cwd().readFileAlloc(allocator, path, std.math.maxInt(usize));
-	defer allocator.free(data);
-
+fn decodeBytes(allocator: std.mem.Allocator, data: []const u8) !u64 {
 	if (data.len < 4 or data[0] != 0xFF or data[1] != 0x0A) {
 		return error.InvalidData;
 	}
@@ -49,25 +46,46 @@ fn decodeOne(allocator: std.mem.Allocator, path: []const u8) !u64 {
 }
 
 pub fn main() !void {
-	var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-	defer _ = gpa.deinit();
-	const allocator = gpa.allocator();
+	const allocator = std.heap.c_allocator;
 
 	const args = try std.process.argsAlloc(allocator);
 	defer std.process.argsFree(allocator, args);
 	if (args.len < 2) {
-		std.debug.print("usage: {s} <file.jxl> [more.jxl ...]\n", .{args[0]});
+		std.debug.print("usage: {s} [--repeat N] <file.jxl> [more.jxl ...]\n", .{args[0]});
 		return error.InvalidArgs;
 	}
 
+	var repeat: usize = 1;
+	var arg_i: usize = 1;
+	if (args.len >= 4 and std.mem.eql(u8, args[1], "--repeat")) {
+		repeat = try std.fmt.parseInt(usize, args[2], 10);
+		if (repeat == 0) return error.InvalidArgs;
+		arg_i = 3;
+	}
+	if (arg_i >= args.len) return error.InvalidArgs;
+
+	const file_count = args.len - arg_i;
+	const buffers = try allocator.alloc([]const u8, file_count);
+	defer allocator.free(buffers);
+	var b: usize = 0;
+	while (b < file_count) : (b += 1) {
+		buffers[b] = try std.fs.cwd().readFileAlloc(allocator, args[arg_i + b], std.math.maxInt(usize));
+	}
+	defer {
+		for (buffers) |buf| allocator.free(buf);
+	}
+
 	var combined: u64 = 0;
-	var i: usize = 1;
-	while (i < args.len) : (i += 1) {
-		const c = decodeOne(allocator, args[i]) catch |err| {
-			std.debug.print("decode failed: {s}: {s}\n", .{ args[i], @errorName(err) });
-			return err;
-		};
-		combined ^= c;
+	var r: usize = 0;
+	while (r < repeat) : (r += 1) {
+		var i: usize = 0;
+		while (i < file_count) : (i += 1) {
+			const c = decodeBytes(allocator, buffers[i]) catch |err| {
+				std.debug.print("decode failed: {s}: {s}\n", .{ args[arg_i + i], @errorName(err) });
+				return err;
+			};
+			combined ^= c;
+		}
 	}
 
 	if (combined == 0xDEADBEEFDEADBEEF) {
