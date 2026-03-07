@@ -253,6 +253,31 @@ pub fn writeSingleContextDegenerateHistogram(
 	try storeVarLenUint8(degenerate_symbol, writer);
 }
 
+/// Emits the smallest non-degenerate histogram bundle `decodeHistograms` can
+/// read: one context, ANS mode, one uint config, and a simple two-symbol code.
+pub fn writeSingleContextTwoSymbolHistogram(
+	symbol0: u8,
+	symbol1: u8,
+	count0: u16,
+	uint_config: HybridUintConfig,
+	log_alpha_size: u5,
+	writer: *BitWriter,
+) !void {
+	std.debug.assert(symbol0 != symbol1);
+	std.debug.assert(log_alpha_size >= 5 and log_alpha_size <= 8);
+	std.debug.assert(count0 > 0 and count0 < params.ans_tab_size);
+	try writer.write(1, 0); // LZ77 disabled
+	try writer.write(1, 0); // use_prefix_code = false (ANS mode)
+	try writer.write(2, log_alpha_size - 5);
+	try encodeUintConfig(uint_config, writer, log_alpha_size);
+
+	try writer.write(1, 1); // histogram simple_code = true
+	try writer.write(1, 1); // num_symbols = 2
+	try storeVarLenUint8(symbol0, writer);
+	try storeVarLenUint8(symbol1, writer);
+	try writer.write(params.ans_log_tab_size, count0);
+}
+
 const testing = std.testing;
 
 test "encodeUintConfigs round-trips a mixed config set" {
@@ -399,6 +424,46 @@ test "writeSingleContextDegenerateHistogram round-trips through decodeHistograms
 	try testing.expectEqual(want_cfg.lsb_in_token, code.uint_config[0].lsb_in_token);
 	try testing.expectEqual(@as(usize, 1), code.degenerate_symbols.len);
 	try testing.expectEqual(@as(i32, 5), code.degenerate_symbols[0]);
+	try br.jumpToByteBoundary();
+	try br.close();
+}
+
+test "writeSingleContextTwoSymbolHistogram round-trips exact recovered counts through decodeHistograms" {
+	const allocator = testing.allocator;
+	const want_cfg = HybridUintConfig.init(5, 0, 0);
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writeSingleContextTwoSymbolHistogram(0, 5, 2048, want_cfg, 5, &writer);
+	try writer.zeroPadToByte();
+
+	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+	var code = dec_ans.ANSCode.init(allocator);
+	defer code.deinit();
+	const context_map = try dec_ans.decodeHistograms(allocator, &br, 1, &code);
+	defer allocator.free(context_map);
+
+	try testing.expectEqual(@as(usize, 1), context_map.len);
+	try testing.expectEqual(@as(u8, 0), context_map[0]);
+	try testing.expect(!code.use_prefix_code);
+	try testing.expectEqual(@as(u5, 5), code.log_alpha_size);
+	try testing.expectEqual(@as(i32, -1), code.degenerate_symbols[0]);
+
+	var recovered = [_]usize{0} ** 6;
+	const table = code.alias_tables[0 .. (@as(usize, 1) << code.log_alpha_size)];
+	const log_entry_size = params.ans_log_tab_size - code.log_alpha_size;
+	const entry_size_minus_1 = (@as(usize, 1) << log_entry_size) - 1;
+	for (0..params.ans_tab_size) |i| {
+		const sym = AliasTable.lookup(table.ptr, i, log_entry_size, entry_size_minus_1);
+		recovered[sym.value] += 1;
+	}
+
+	try testing.expectEqual(@as(usize, 2048), recovered[0]);
+	try testing.expectEqual(@as(usize, 2048), recovered[5]);
+	try testing.expectEqual(@as(usize, 0), recovered[1]);
+	try testing.expectEqual(@as(usize, 0), recovered[2]);
+	try testing.expectEqual(@as(usize, 0), recovered[3]);
+	try testing.expectEqual(@as(usize, 0), recovered[4]);
 	try br.jumpToByteBoundary();
 	try br.close();
 }
