@@ -113,6 +113,36 @@ fn specializedPropertyMask(property_use: *const context_predict.PropertyUsePlan)
     return mask;
 }
 
+inline fn compactPropertySlot(comptime property_mask: u8, comptime property_bit: u8) usize {
+    if ((property_mask & property_bit) == 0) return 0;
+    return 1 + @as(usize, @popCount(@as(u8, property_mask & (property_bit - 1))));
+}
+
+inline fn remapPropertyIndex(comptime property_mask: u8, property_index: i32) i16 {
+    return switch (property_index) {
+        0 => 0,
+        9 => @intCast(compactPropertySlot(property_mask, kMaskProp9)),
+        10 => @intCast(compactPropertySlot(property_mask, kMaskProp10)),
+        11 => @intCast(compactPropertySlot(property_mask, kMaskProp11)),
+        12 => @intCast(compactPropertySlot(property_mask, kMaskProp12)),
+        13 => @intCast(compactPropertySlot(property_mask, kMaskProp13)),
+        context_predict.kWPProp => @intCast(compactPropertySlot(property_mask, kMaskProp15)),
+        else => unreachable,
+    };
+}
+
+/// Compacts a filtered no-reference tree into the local property-id space used by
+/// the hot mask-specialized loops, keeping slot zero as the always-zero sentinel.
+fn remapNoRefMaskTree(comptime property_mask: u8, flat_tree: []context_predict.FlatDecisionNode) void {
+    for (flat_tree) |*node| {
+        if (node.property0 < 0) continue;
+        node.property0 = remapPropertyIndex(property_mask, node.property0);
+        inline for (0..2) |i| {
+            node.properties[i] = remapPropertyIndex(property_mask, node.properties[i]);
+        }
+    }
+}
+
 /// Precompute per-x extra reference properties from prior decoded channels.
 /// Mirrors libjxl `PrecomputeReferences` and feeds properties >= kNumNonrefProperties.
 fn precomputeReferences(
@@ -215,7 +245,7 @@ fn decodeModularChannelNoRefsMask(
     comptime property_mask: u8,
     br: *BitReader,
     reader: *ANSSymbolReader,
-    flat_tree: []const context_predict.FlatDecisionNode,
+    flat_tree: []context_predict.FlatDecisionNode,
     wp_header: *const weighted.Header,
     channel: *Channel,
     allocator: std.mem.Allocator,
@@ -227,9 +257,17 @@ fn decodeModularChannelNoRefsMask(
     const use_prop_12 = (property_mask & kMaskProp12) != 0;
     const use_prop_13 = (property_mask & kMaskProp13) != 0;
     const use_prop_wp = (property_mask & kMaskProp15) != 0;
+    const slot_prop9 = compactPropertySlot(property_mask, kMaskProp9);
+    const slot_prop10 = compactPropertySlot(property_mask, kMaskProp10);
+    const slot_prop11 = compactPropertySlot(property_mask, kMaskProp11);
+    const slot_prop12 = compactPropertySlot(property_mask, kMaskProp12);
+    const slot_prop13 = compactPropertySlot(property_mask, kMaskProp13);
+    const slot_prop15 = compactPropertySlot(property_mask, kMaskProp15);
+    const compact_prop_count: usize = 1 + @as(usize, @popCount(property_mask));
 
+    remapNoRefMaskTree(property_mask, flat_tree);
     const tree_lookup = context_predict.MATreeLookup.init(flat_tree);
-    var properties = [_]pixel_type{0} ** context_predict.kNumNonrefProperties;
+    var properties = [_]pixel_type{0} ** compact_prop_count;
 
     var wp_state: ?weighted.State = null;
     if (use_wp) {
@@ -258,18 +296,18 @@ fn decodeModularChannelNoRefsMask(
 
             if (use_prop_9) {
                 local_gradient = left + top - topleft;
-                properties[9] = @intCast(local_gradient);
+                properties[slot_prop9] = @intCast(local_gradient);
             }
-            if (use_prop_10) properties[10] = @intCast(left - topleft);
-            if (use_prop_11) properties[11] = @intCast(topleft - top);
-            if (use_prop_12) properties[12] = @intCast(top - topright);
-            if (use_prop_13) properties[13] = @intCast(top - toptop);
+            if (use_prop_10) properties[slot_prop10] = @intCast(left - topleft);
+            if (use_prop_11) properties[slot_prop11] = @intCast(topleft - top);
+            if (use_prop_12) properties[slot_prop12] = @intCast(top - topright);
+            if (use_prop_13) properties[slot_prop13] = @intCast(top - toptop);
 
             var wp_pred: pixel_type_w = 0;
             if (wp_state) |*ws| {
                 if (use_prop_wp) {
                     wp_pred = ws.predictNoProps(x, y, channel.w, top, left, topright, topleft, toptop);
-                    properties[context_predict.kWPProp] = ws.getWPProp();
+                    properties[slot_prop15] = ws.getWPProp();
                 } else {
                     wp_pred = ws.predictNoWPProp(x, y, channel.w, top, left, topright, topleft, toptop);
                 }
@@ -908,4 +946,57 @@ test "specializedPropertyMask rejects reference and unsupported properties" {
     unsupported_props.mark(context_predict.kWPProp);
     unsupported_props.finalize();
     try testing.expectEqual(@as(?u8, null), specializedPropertyMask(&unsupported_props));
+}
+
+test "remapNoRefMaskTree preserves lookup for compact mask 13+15" {
+    const mask = kMaskProp13 | kMaskProp15;
+    const original = [_]context_predict.FlatDecisionNode{
+        .{
+            .property0 = 13,
+            .splitval0 = 4,
+            .properties = .{ 15, 0 },
+            .splitvals = .{ 7, 0 },
+            .childID = 1,
+        },
+        .{ .property0 = -1, .predictor = .gradient, .childID = 3, .multiplier = 1 },
+        .{ .property0 = -1, .predictor = .weighted, .childID = 5, .multiplier = 2 },
+        .{ .property0 = -1, .predictor = .gradient, .childID = 7, .multiplier = 3 },
+        .{ .property0 = -1, .predictor = .weighted, .childID = 9, .multiplier = 4 },
+    };
+    var remapped = original;
+    remapNoRefMaskTree(mask, &remapped);
+
+    var generic_props = [_]pixel_type{0} ** context_predict.kNumNonrefProperties;
+    generic_props[13] = 6;
+    generic_props[context_predict.kWPProp] = 2;
+
+    var compact_props = [_]pixel_type{0} ** 3;
+    compact_props[compactPropertySlot(mask, kMaskProp13)] = generic_props[13];
+    compact_props[compactPropertySlot(mask, kMaskProp15)] = generic_props[context_predict.kWPProp];
+
+    const expected = context_predict.MATreeLookup.init(&original).lookup(&generic_props);
+    const actual = context_predict.MATreeLookup.init(&remapped).lookup(&compact_props);
+    try testing.expectEqualDeep(expected, actual);
+}
+
+test "remapNoRefMaskTree keeps zero sentinel at local slot zero" {
+    const mask = kMaskProp9 | kMaskProp10 | kMaskProp11 | kMaskProp12 | kMaskProp13 | kMaskProp15;
+    var remapped = [_]context_predict.FlatDecisionNode{
+        .{
+            .property0 = 9,
+            .splitval0 = 6,
+            .properties = .{ 0, 15 },
+            .splitvals = .{ 0, 5 },
+            .childID = 1,
+        },
+        .{ .property0 = -1, .predictor = .gradient, .childID = 1, .multiplier = 1 },
+        .{ .property0 = -1, .predictor = .weighted, .childID = 2, .multiplier = 2 },
+        .{ .property0 = -1, .predictor = .gradient, .childID = 3, .multiplier = 3 },
+        .{ .property0 = -1, .predictor = .weighted, .childID = 4, .multiplier = 4 },
+    };
+    remapNoRefMaskTree(mask, &remapped);
+
+    try testing.expectEqual(@as(i16, 0), remapped[0].properties[0]);
+    try testing.expectEqual(@as(i32, compactPropertySlot(mask, kMaskProp9)), remapped[0].property0);
+    try testing.expectEqual(@as(i16, @intCast(compactPropertySlot(mask, kMaskProp15))), remapped[0].properties[1]);
 }
