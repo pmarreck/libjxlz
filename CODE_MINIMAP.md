@@ -6,6 +6,7 @@
 - `flake.nix` — Nix dev shell, Garnix CI checks, package definition
 - `build` — Bash: `nix develop -c zig build` with --test/--debug flags
 - `test` — Bash: runs Zig unit tests + CLI tests, accumulates errors
+- `bench_decode_runtime.zig` — Runtime decode benchmark harness (file-path input, full frame decode) for apples-to-apples corpus benchmarking vs `djxl`
 
 ## src/lib/
 - `root.zig` — Module root, re-exports all submodules via refAllDecls
