@@ -85,6 +85,23 @@ pub fn writeSingleNodeChannelTokens(
 	return enc_ans.writeSingleHistogramTokens(tokens, info, uint_config, writer);
 }
 
+/// Emits the smallest real modular group stream we can currently write:
+/// global-tree mode, default WP header, no transforms, then one single-node channel payload.
+pub fn writeSingleNodeGlobalTreeGroup(
+	allocator: std.mem.Allocator,
+	channel: *const Channel,
+	predictor: Predictor,
+	ctx_id: u32,
+	info: []const enc_ans.ANSEncSymbolInfo,
+	uint_config: HybridUintConfig,
+	writer: *BitWriter,
+) !usize {
+	try writer.write(1, 1); // use_global_tree = true
+	try writer.write(1, 1); // weighted header all-default
+	try writer.write(2, 0); // num_transforms = 0 via selector 0
+	return writeSingleNodeChannelTokens(allocator, channel, predictor, ctx_id, info, uint_config, writer);
+}
+
 const testing = std.testing;
 
 test "tokenizeSingleNodeChannel with zero predictor emits packed raw values" {
@@ -218,4 +235,83 @@ test "writeSingleNodeChannelTokens round-trips a grayscale gradient channel thro
 	try testing.expect(reader.checkANSFinalState());
 	try br.jumpToByteBoundary();
 	try br.close();
+}
+
+test "writeSingleNodeGlobalTreeGroup round-trips through modularDecode with injected global tree" {
+	const allocator = testing.allocator;
+	var channel = try Channel.create(allocator, 3, 3, 0, 0);
+	defer channel.deinit();
+
+	channel.row(0)[0] = 10;
+	channel.row(0)[1] = 12;
+	channel.row(0)[2] = 14;
+	channel.row(1)[0] = 11;
+	channel.row(1)[1] = 13;
+	channel.row(1)[2] = 15;
+	channel.row(2)[0] = 13;
+	channel.row(2)[1] = 14;
+	channel.row(2)[2] = 18;
+
+	const tokens = try tokenizeSingleNodeChannel(allocator, &channel, .gradient, 0);
+	defer allocator.free(tokens);
+
+	var max_token: u32 = 0;
+	for (tokens) |token| max_token = @max(max_token, token.value);
+	const alphabet_size = max_token + 1;
+	const counts = try ans_common.createFlatHistogram(allocator, alphabet_size, ans_params.ans_tab_size);
+	defer allocator.free(counts);
+
+	const info = try enc_ans.buildANSEncSymbolInfoTable(allocator, counts, 5);
+	defer enc_ans.freeANSEncSymbolInfoTable(allocator, info);
+	var code = blk: {
+		var built = dec_ans.ANSCode.init(allocator);
+		errdefer built.deinit();
+		built.use_prefix_code = false;
+		built.log_alpha_size = 5;
+		built.alias_tables = try allocator.alloc(ans_common.AliasTable.Entry, 1 << 5);
+		try ans_common.initAliasTable(counts, ans_params.ans_log_tab_size, 5, built.alias_tables.ptr);
+		built.uint_config = try allocator.alloc(HybridUintConfig, 1);
+		built.uint_config[0] = HybridUintConfig.init(5, 0, 0);
+		break :blk built;
+	};
+	defer code.deinit();
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try testing.expectEqual(@as(usize, 0), try writeSingleNodeGlobalTreeGroup(
+		allocator,
+		&channel,
+		.gradient,
+		0,
+		info,
+		HybridUintConfig.init(5, 0, 0),
+		&writer,
+	));
+	try writer.zeroPadToByte();
+
+	const global_tree = [_]@import("dec_ma.zig").PropertyDecisionNode{
+		@import("dec_ma.zig").PropertyDecisionNode.leaf(.gradient, 0, 1),
+	};
+	const context_map = [_]u8{0};
+
+	var image = try modular_image.Image.create(allocator, 3, 3, 8, 1);
+	defer image.deinit();
+	var header = @import("encoding.zig").GroupHeader{};
+	defer header.deinit();
+	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+	try @import("encoding.zig").modularDecode(
+		&br,
+		&image,
+		&header,
+		0,
+		&options.ModularOptions{},
+		global_tree[0..],
+		&code,
+		context_map[0..],
+		allocator,
+	);
+	try br.jumpToByteBoundary();
+	try br.close();
+
+	try testing.expectEqualSlices(i32, channel.data, image.channels.items[0].data);
 }
