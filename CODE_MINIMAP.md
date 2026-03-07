@@ -3,7 +3,7 @@
 ## Build Infrastructure
 - `README.md` — top-level project status, current measured wins vs upstream `libjxl`, threading status, build/benchmark entrypoints, encoder scaffold status, attribution note, and links to upstream-facing optimization notes
 - `NOTICE` — non-clean-room derivative-work attribution note describing upstream `libjxl` lineage, mixed copyright ownership, and the BSD-3-Clause + PATENTS licensing surface for this fork
-- `.github/workflows/libjxlz_ci.yml` — repo-specific GitHub Actions workflow running Linux `x86_64` flake/full-suite checks plus native `aarch64` test runs on Linux and macOS, with the Linux flake checks now also covering `x86_64-windows-gnu` cross-compilation; this is intentionally the only checked-in GitHub Actions workflow so fork CI reflects `libjxlz`, not upstream `libjxl`
+- `.github/workflows/libjxlz_ci.yml` — repo-specific GitHub Actions workflow running on pushes to `yolo` and pull requests, with Linux `x86_64` flake/full-suite checks plus native `aarch64` test runs on Linux and macOS; the Linux flake checks also cover `x86_64-windows-gnu` cross-compilation, and this is intentionally the only checked-in GitHub Actions workflow so fork CI reflects `libjxlz`, not upstream `libjxl`
 - `build.zig` — Zig build config: core static lib (`lib`), C-FFI static lib (`capi`), ReleaseFast default; `zig build test` now runs the core library tests, both benchmark harness tests, and the C-FFI unit tests
 - `build.zig.zon` — Package manifest
 - `flake.nix` — Nix dev shell, Garnix CI checks, package definition; Linux `x86_64` flake checks now include a dedicated `windows-x86_64-cross` derivation that reuses the checked-in smoke script so Garnix catches Windows portability regressions too

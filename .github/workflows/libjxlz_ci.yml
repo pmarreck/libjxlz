@@ -3,7 +3,7 @@ name: libjxlz CI
 on:
   push:
     branches:
-      - main
+      - yolo
   pull_request:
 
 permissions:

@@ -1,6 +1,6 @@
 # libjxlz
 
-[![GitHub Actions](https://img.shields.io/github/actions/workflow/status/pmarreck/libjxlz/libjxlz_ci.yml?branch=main&label=GitHub%20Actions)](https://github.com/pmarreck/libjxlz/actions/workflows/libjxlz_ci.yml)
+[![GitHub Actions](https://img.shields.io/github/actions/workflow/status/pmarreck/libjxlz/libjxlz_ci.yml?branch=yolo&label=GitHub%20Actions)](https://github.com/pmarreck/libjxlz/actions/workflows/libjxlz_ci.yml)
 [![Garnix](https://img.shields.io/endpoint.svg?url=https%3A%2F%2Fgarnix.io%2Fapi%2Fbadges%2Fpmarreck%2Flibjxlz)](https://garnix.io/repo/pmarreck/libjxlz)
 
 <img src="doc/jxl.svg" width="100" align="right" alt="JXL logo">

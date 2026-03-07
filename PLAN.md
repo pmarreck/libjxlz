@@ -73,6 +73,7 @@
 - [ ] Pipeline assembly
 
 ## Phase 5: Decode API + CLI
+- [x] Migrate the repo’s working/default branch from `main` to `yolo` in the safe two-branch form: create and push `yolo`, switch GitHub’s default branch, and retarget the checked-in GitHub Actions workflow + README badge so CI follows `yolo` instead of the old branch name — 2026-03-07 ~2:25 PM EST
 - [x] First `libjxl`-shaped decoder C FFI compatibility slice: `JxlSignatureCheck`, `JxlDecoder{Create,Reset,Destroy,SubscribeEvents,SetInput,ReleaseInput,CloseInput,GetBasicInfo,ImageOutBufferSize,SetImageOutBuffer,ProcessInput}` with real external C smoke decode of `lossless_4x4.jxl` via upstream `jxl/decode.h` — 2026-03-07 ~11:10 AM EST
 - [x] Add `djxlz`, a C CLI that dogfoods only the public C FFI, with `--help`, `--about`, `--output_format`, stdin/stdout path aliases, debug-build warning, and PPM/PGM/PAM output verified by CLI smoke tests — 2026-03-07 ~7:15 AM EST
 - [x] Check in a permanent public-API decode benchmark harness (`tests/benchmark/decode_public_api.c`) plus `./bm`, compile it against both `libjxlz_capi` and upstream `libjxl`, log benchmark history, and add a deterministic checksum smoke test — 2026-03-07 ~7:30 AM EST
