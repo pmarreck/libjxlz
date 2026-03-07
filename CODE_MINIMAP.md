@@ -49,8 +49,8 @@
 - `huffman.zig` — HuffmanCode struct, BuildHuffmanTable (2-level), HuffmanDecodingData with ReadFromBitStream/ReadSymbol, ReadSimpleCode
 - `hybrid_uint.zig` — HybridUintConfig: split-exponent scheme for variable-length integers, encode/decode
 - `inverse_mtf.zig` — Inverse move-to-front transform (scalar implementation)
-- `dec_ans.zig` — ANSCode, ANSSymbolReader (ANS + Huffman + LZ77 + hybrid uint), LZ77Params, ReadHistogram, DecodeUintConfig, special distance table, retained generic read path plus compile-time-specialized clustered uint readers, decodeHistograms (top-level)
-- `enc_ans.zig` — first encoder-side entropy-writing slice: `encodeUintConfig(s)` serializes `HybridUintConfig` metadata through the new `BitWriter`, with exhaustive roundtrip coverage against the existing decoder-side `decodeUintConfigs`
+- `dec_ans.zig` — ANSCode, ANSSymbolReader (ANS + Huffman + LZ77 + hybrid uint), LZ77Params, ReadHistogram, public decoder-side varlen uint helpers for histogram metadata, DecodeUintConfig, special distance table, retained generic read path plus compile-time-specialized clustered uint readers, decodeHistograms (top-level)
+- `enc_ans.zig` — first encoder-side entropy-writing slices: `encodeUintConfig(s)` for `HybridUintConfig` metadata plus `storeVarLenUint8/16` for histogram-header integers, each with exhaustive roundtrip coverage against the existing decoder-side readers
 - `dec_context_map.zig` — DecodeContextMap (simple + ANS-coded non-simple path), VerifyContextMap
 
 ### src/lib/codec/

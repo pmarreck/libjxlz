@@ -91,6 +91,7 @@
 - [ ] Forward DCT + quantization
 - [ ] ANS encoder
 - [x] ANS encoder slice: add `encodeUintConfig(s)` using the new `BitWriter`, with mixed and exhaustive roundtrip coverage against `dec_ans.decodeUintConfigs`, so the entropy writer can emit real HybridUint metadata before full histogram/token support exists — 2026-03-07 ~2:10 PM EST
+- [x] ANS encoder slice: add `storeVarLenUint8/16` with exhaustive roundtrip coverage against the decoder-side varlen readers, so histogram-header metadata can be written and unit-tested independently before larger ANS assembly work — 2026-03-07 ~2:20 PM EST
 - [ ] Modular encoder
 - [x] Encoder bit-writer foundation: add `src/lib/base/bit_writer.zig` with LSB-first write + byte-pad semantics and roundtrip it against the existing `BitReader`, so future ANS/modular writer work has a real writable primitive instead of the synthetic prepass scaffold alone — 2026-03-07 ~1:55 PM EST
 - [ ] Replace synthetic encoder-prepass scaffold with real modular encoder profiling once the first writable bitstream slice exists

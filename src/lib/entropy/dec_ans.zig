@@ -150,8 +150,9 @@ pub const ANSCode = struct {
 
 // ── Histogram reading helpers ──
 
-/// Decodes a number in the range [0..255], by reading 1 - 11 bits.
-fn decodeVarLenUint8(br: *BitReader) u32 {
+/// Decodes a compact variable-length integer in the range [0..255].
+/// Used by histogram metadata and now by encoder roundtrip tests to validate writer fidelity.
+pub fn decodeVarLenUint8(br: *BitReader) u32 {
     if (br.readBits(1) != 0) {
         const nbits: u5 = @intCast(br.readBits(3));
         if (nbits == 0) {
@@ -162,8 +163,9 @@ fn decodeVarLenUint8(br: *BitReader) u32 {
     return 0;
 }
 
-/// Decodes a number in the range [0..65535], by reading 1 - 21 bits.
-fn decodeVarLenUint16(br: *BitReader) u32 {
+/// Decodes a compact variable-length integer in the range [0..65535].
+/// Used by histogram metadata and now by encoder roundtrip tests to validate writer fidelity.
+pub fn decodeVarLenUint16(br: *BitReader) u32 {
     if (br.readBits(1) != 0) {
         const nbits: u5 = @intCast(br.readBits(4));
         if (nbits == 0) {

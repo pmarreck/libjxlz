@@ -23,6 +23,38 @@ pub fn encodeUintConfigs(configs: []const HybridUintConfig, writer: *BitWriter, 
 	}
 }
 
+/// Encodes a compact variable-length integer in the range [0..255].
+/// Mirrors libjxl's histogram-header format so small counts stay very cheap to write.
+pub fn storeVarLenUint8(value: u8, writer: *BitWriter) !void {
+	if (value == 0) {
+		try writer.write(1, 0);
+		return;
+	}
+
+	try writer.write(1, 1);
+	const nbits = bits_mod.floorLog2Nonzero(value);
+	try writer.write(3, nbits);
+	if (nbits != 0) {
+		try writer.write(nbits, value - (@as(u8, 1) << @intCast(nbits)));
+	}
+}
+
+/// Encodes a compact variable-length integer in the range [0..65535].
+/// This is the wider companion to `storeVarLenUint8` for histogram alphabet sizes.
+pub fn storeVarLenUint16(value: u16, writer: *BitWriter) !void {
+	if (value == 0) {
+		try writer.write(1, 0);
+		return;
+	}
+
+	try writer.write(1, 1);
+	const nbits = bits_mod.floorLog2Nonzero(value);
+	try writer.write(4, nbits);
+	if (nbits != 0) {
+		try writer.write(nbits, value - (@as(u16, 1) << @intCast(nbits)));
+	}
+}
+
 const testing = std.testing;
 
 test "encodeUintConfigs round-trips a mixed config set" {
@@ -110,4 +142,36 @@ test "encodeUintConfigs exhaustively round-trips valid configs through decoder" 
 			try testing.expectEqual(want.lsb_in_token, got.lsb_in_token);
 		}
 	}
+}
+
+test "storeVarLenUint8 exhaustively round-trips through decoder helper" {
+	var writer = BitWriter.init(testing.allocator);
+	defer writer.deinit();
+
+	for (0..256) |value| {
+		try storeVarLenUint8(@intCast(value), &writer);
+	}
+	try writer.zeroPadToByte();
+
+	var reader = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+	for (0..256) |value| {
+		try testing.expectEqual(@as(u32, @intCast(value)), dec_ans.decodeVarLenUint8(&reader));
+	}
+	try reader.close();
+}
+
+test "storeVarLenUint16 exhaustively round-trips through decoder helper" {
+	var writer = BitWriter.init(testing.allocator);
+	defer writer.deinit();
+
+	for (0..65536) |value| {
+		try storeVarLenUint16(@intCast(value), &writer);
+	}
+	try writer.zeroPadToByte();
+
+	var reader = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+	for (0..65536) |value| {
+		try testing.expectEqual(@as(u32, @intCast(value)), dec_ans.decodeVarLenUint16(&reader));
+	}
+	try reader.close();
 }
