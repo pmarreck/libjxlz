@@ -18,6 +18,7 @@ pub const entropy = struct {
 	pub const hybrid_uint = @import("entropy/hybrid_uint.zig");
 	pub const inverse_mtf = @import("entropy/inverse_mtf.zig");
 	pub const dec_ans = @import("entropy/dec_ans.zig");
+	pub const enc_ans = @import("entropy/enc_ans.zig");
 	pub const dec_context_map = @import("entropy/dec_context_map.zig");
 };
 
@@ -70,6 +71,7 @@ test {
 	_ = @import("entropy/hybrid_uint.zig");
 	_ = @import("entropy/inverse_mtf.zig");
 	_ = @import("entropy/dec_ans.zig");
+	_ = @import("entropy/enc_ans.zig");
 	_ = @import("entropy/dec_context_map.zig");
 
 	// Codec

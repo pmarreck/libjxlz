@@ -50,6 +50,7 @@
 - `hybrid_uint.zig` — HybridUintConfig: split-exponent scheme for variable-length integers, encode/decode
 - `inverse_mtf.zig` — Inverse move-to-front transform (scalar implementation)
 - `dec_ans.zig` — ANSCode, ANSSymbolReader (ANS + Huffman + LZ77 + hybrid uint), LZ77Params, ReadHistogram, DecodeUintConfig, special distance table, retained generic read path plus compile-time-specialized clustered uint readers, decodeHistograms (top-level)
+- `enc_ans.zig` — first encoder-side entropy-writing slice: `encodeUintConfig(s)` serializes `HybridUintConfig` metadata through the new `BitWriter`, with exhaustive roundtrip coverage against the existing decoder-side `decodeUintConfigs`
 - `dec_context_map.zig` — DecodeContextMap (simple + ANS-coded non-simple path), VerifyContextMap
 
 ### src/lib/codec/
