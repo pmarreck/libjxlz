@@ -272,6 +272,13 @@ fn normalizedFloat(value: i32, max_value: u32) f32 {
 	return @as(f32, @floatFromInt(clampU32(value, max_value))) / @as(f32, @floatFromInt(max_value));
 }
 
+fn scaleToU8(value: i32, max_value: u32) u8 {
+	if (max_value == 0) return 0;
+	const clamped = clampU32(value, max_value);
+	if (max_value == 255) return @intCast(clamped);
+	return @intCast((@as(u64, clamped) * 255 + max_value / 2) / max_value);
+}
+
 fn outputValue(img: *const Image, metadata: *const image_metadata.ImageMetadata, color_channels: usize, x: usize, y: usize, requested_channel: usize) i32 {
 	const alpha_idx = alphaChannelIndex(metadata);
 
@@ -307,6 +314,47 @@ fn writeImageToOutput(img: *const Image, metadata: *const image_metadata.ImageMe
 	const bytes_per_channel = bytesPerChannel(format.data_type) orelse return error.Unsupported;
 	const max_value = bitDepthMax(metadata.bit_depth.bits_per_sample);
 
+	if (format.data_type == .JXL_TYPE_UINT8 and format.num_channels == 3) {
+		if (color_channels == 3) {
+			for (0..img.h) |y| {
+				const dst = buffer[y * stride .. y * stride + img.w * 3];
+				const row_r = img.channels.items[0].rowConst(y);
+				const row_g = img.channels.items[1].rowConst(y);
+				const row_b = img.channels.items[2].rowConst(y);
+				for (0..img.w) |x| {
+					dst[x * 3 + 0] = scaleToU8(row_r[x], max_value);
+					dst[x * 3 + 1] = scaleToU8(row_g[x], max_value);
+					dst[x * 3 + 2] = scaleToU8(row_b[x], max_value);
+				}
+			}
+			return;
+		}
+		if (color_channels == 1) {
+			for (0..img.h) |y| {
+				const dst = buffer[y * stride .. y * stride + img.w * 3];
+				const row_gray = img.channels.items[0].rowConst(y);
+				for (0..img.w) |x| {
+					const gray = scaleToU8(row_gray[x], max_value);
+					dst[x * 3 + 0] = gray;
+					dst[x * 3 + 1] = gray;
+					dst[x * 3 + 2] = gray;
+				}
+			}
+			return;
+		}
+	}
+
+	if (format.data_type == .JXL_TYPE_UINT8 and format.num_channels == 1 and color_channels == 1) {
+		for (0..img.h) |y| {
+			const dst = buffer[y * stride .. y * stride + img.w];
+			const row_gray = img.channels.items[0].rowConst(y);
+			for (0..img.w) |x| {
+				dst[x] = scaleToU8(row_gray[x], max_value);
+			}
+		}
+		return;
+	}
+
 	for (0..img.h) |y| {
 		const row = buffer[y * stride .. y * stride + stride];
 		for (0..img.w) |x| {
@@ -315,7 +363,7 @@ fn writeImageToOutput(img: *const Image, metadata: *const image_metadata.ImageMe
 				const value = outputValue(img, metadata, color_channels, x, y, c);
 				switch (format.data_type) {
 					.JXL_TYPE_UINT8 => {
-						pixel[c] = @intCast(clampU32(value, 255));
+						pixel[c] = scaleToU8(value, max_value);
 					},
 					.JXL_TYPE_UINT16 => {
 						const scaled = if (max_value == 0) 0 else @as(u32, @intFromFloat(@round(normalizedFloat(value, max_value) * 65535.0)));
@@ -615,4 +663,55 @@ test "rowStrideBytes respects requested alignment" {
 		.@"align" = 8,
 	};
 	try std.testing.expectEqual(@as(?usize, 16), rowStrideBytes(2, format));
+}
+
+test "writeImageToOutput writes RGB uint8 interleaved rows" {
+	const allocator = std.testing.allocator;
+	var img = try Image.create(allocator, 2, 1, 8, 3);
+	defer img.deinit();
+
+	img.channels.items[0].row(0)[0] = 1;
+	img.channels.items[0].row(0)[1] = 4;
+	img.channels.items[1].row(0)[0] = 2;
+	img.channels.items[1].row(0)[1] = 5;
+	img.channels.items[2].row(0)[0] = 3;
+	img.channels.items[2].row(0)[1] = 6;
+
+	var metadata = image_metadata.ImageMetadata{};
+	metadata.bit_depth.bits_per_sample = 8;
+	metadata.color_encoding.color_space = .rgb;
+
+	const format = JxlPixelFormat{
+		.num_channels = 3,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	var buffer: [6]u8 = undefined;
+	try writeImageToOutput(&img, &metadata, format, buffer[0..].ptr, buffer.len);
+	try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3, 4, 5, 6 }, &buffer);
+}
+
+test "writeImageToOutput scales grayscale to uint8 rgb" {
+	const allocator = std.testing.allocator;
+	var img = try Image.create(allocator, 3, 1, 10, 1);
+	defer img.deinit();
+
+	img.channels.items[0].row(0)[0] = 0;
+	img.channels.items[0].row(0)[1] = 512;
+	img.channels.items[0].row(0)[2] = 1023;
+
+	var metadata = image_metadata.ImageMetadata{};
+	metadata.bit_depth.bits_per_sample = 10;
+	metadata.color_encoding.color_space = .gray;
+
+	const format = JxlPixelFormat{
+		.num_channels = 3,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	var buffer: [9]u8 = undefined;
+	try writeImageToOutput(&img, &metadata, format, buffer[0..].ptr, buffer.len);
+	try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 128, 128, 128, 255, 255, 255 }, &buffer);
 }

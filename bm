@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+set -u
+
+RUNS=8
+WARMUP=2
+FULL_REPEAT=4
+LARGE_REPEAT=96
+THRESHOLD_PCT=5
+HISTORY="tests/benchmark/public_api_decode_history.tsv"
+TMP_BM_DIR="${TMPDIR}/libjxlz-bm-public-api"
+OUR_BIN="${TMP_BM_DIR}/decode_public_api_libjxlz"
+REF_BIN="${TMP_BM_DIR}/decode_public_api_libjxl_ref"
+CSV_OUT="${TMP_BM_DIR}/hyperfine.csv"
+OUR_COMPILE_LOG="${TMP_BM_DIR}/compile_ours.log"
+REF_COMPILE_LOG="${TMP_BM_DIR}/compile_ref.log"
+REF_BUILD_DIR="build-cpp-bm"
+
+mkdir -p "${TMP_BM_DIR}"
+
+compile_ours() {
+	zig build capi -Doptimize=ReleaseFast >/dev/null
+	if ! clang \
+		-std=c11 \
+		-O3 \
+		-Wall -Wextra -Werror \
+		-Iinclude \
+		-Ilib/include \
+		tests/benchmark/decode_public_api.c \
+		zig-out/lib/libjxlz_capi.a \
+		-o "${OUR_BIN}" >"${OUR_COMPILE_LOG}" 2>&1; then
+		cat "${OUR_COMPILE_LOG}"
+		exit 1
+	fi
+}
+
+compile_ref() {
+	REF_LIB="$(fd '^libjxl(\..*)?\.(dylib|so|a)$' build-cpp/lib -t f 2>/dev/null | head -n 1)"
+	if [ -z "${REF_LIB}" ]; then
+		cmake -S . -B "${REF_BUILD_DIR}" -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF >/dev/null
+		cmake --build "${REF_BUILD_DIR}" >/dev/null
+	fi
+
+	REF_LIB="$(fd '^libjxl(\..*)?\.(dylib|so|a)$' build-cpp/lib "${REF_BUILD_DIR}/lib" -t f 2>/dev/null | head -n 1)"
+	if [ -z "${REF_LIB}" ]; then
+		echo "reference libjxl build not found under build-cpp/lib" >&2
+		exit 1
+	fi
+	REF_LIB_DIR="$(cd "$(dirname "${REF_LIB}")" && pwd)"
+	REF_ROOT_DIR="$(cd "${REF_LIB_DIR}/.." && pwd)"
+
+	if ! clang \
+		-std=c11 \
+		-O3 \
+		-Wall -Wextra -Werror \
+		-Iinclude \
+		-Ilib/include \
+		tests/benchmark/decode_public_api.c \
+		"${REF_LIB}" \
+		-Wl,-rpath,"${REF_LIB_DIR}" \
+		-Wl,-rpath,"${REF_ROOT_DIR}/third_party/brotli" \
+		-o "${REF_BIN}" >"${REF_COMPILE_LOG}" 2>&1; then
+		cat "${REF_COMPILE_LOG}"
+		exit 1
+	fi
+}
+
+benchmark_scenario() {
+	SCENARIO_NAME="$1"
+	REPEAT_COUNT="$2"
+	shift 2
+	FILES=("$@")
+
+	hyperfine \
+		--style basic \
+		--warmup "${WARMUP}" \
+		--runs "${RUNS}" \
+		--export-csv "${CSV_OUT}" \
+		-N \
+		-n libjxlz_capi \
+		-n libjxl_ref \
+		"${OUR_BIN} --repeat ${REPEAT_COUNT} ${FILES[*]}" \
+		"${REF_BIN} --repeat ${REPEAT_COUNT} ${FILES[*]}"
+
+	OUR_MEAN="$(awk -F, 'NR==2 { gsub(/"/, "", $2); print $2 }' "${CSV_OUT}")"
+	REF_MEAN="$(awk -F, 'NR==3 { gsub(/"/, "", $2); print $2 }' "${CSV_OUT}")"
+	SPEEDUP="$(awk -v our="${OUR_MEAN}" -v ref="${REF_MEAN}" 'BEGIN { printf "%.6f", ref / our }')"
+	STAMP="$(TZ=America/New_York date '+%Y-%m-%d %I:%M:%S %p EST')"
+
+	if [ ! -f "${HISTORY}" ]; then
+		printf 'timestamp_est\tscenario\trepeat\tour_mean_s\tref_mean_s\tref_over_our\n' > "${HISTORY}"
+	fi
+
+	PREV_LINE="$(awk -F '\t' -v scenario="${SCENARIO_NAME}" 'NR > 1 && $2 == scenario { last = $0 } END { print last }' "${HISTORY}")"
+	printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${STAMP}" "${SCENARIO_NAME}" "${REPEAT_COUNT}" "${OUR_MEAN}" "${REF_MEAN}" "${SPEEDUP}" >> "${HISTORY}"
+
+	printf '%s: libjxlz=%ss libjxl=%ss ref/our=%sx\n' "${SCENARIO_NAME}" "${OUR_MEAN}" "${REF_MEAN}" "${SPEEDUP}"
+
+	if [ -n "${PREV_LINE}" ]; then
+		PREV_OUR="$(printf '%s\n' "${PREV_LINE}" | awk -F '\t' '{ print $4 }')"
+		DELTA_PCT="$(awk -v prev="${PREV_OUR}" -v cur="${OUR_MEAN}" 'BEGIN { if (prev == 0) print 0; else printf "%.2f", ((cur - prev) / prev) * 100.0 }')"
+		ABS_DELTA="$(awk -v delta="${DELTA_PCT}" 'BEGIN { if (delta < 0) delta = -delta; printf "%.2f", delta }')"
+		if awk -v delta="${ABS_DELTA}" -v threshold="${THRESHOLD_PCT}" 'BEGIN { exit !(delta >= threshold) }'; then
+			echo "PERF SHIFT: ${SCENARIO_NAME} changed by ${DELTA_PCT}% vs previous recorded run" >&2
+			exit 1
+		fi
+	fi
+}
+
+compile_ours
+compile_ref
+
+FULL_FILES=(
+	src/lib/testdata/lossless_4x4.jxl
+	src/lib/testdata/lossless_16x16.jxl
+	src/lib/testdata/lossless_64x64.jxl
+	src/lib/testdata/lossless_300x200.jxl
+	src/lib/testdata/lossless_600x10_multisection.jxl
+	src/lib/testdata/lossless_600x300_multigroup_rgb.jxl
+)
+LARGE_FILE=(src/lib/testdata/lossless_600x300_multigroup_rgb.jxl)
+
+benchmark_scenario full_corpus "${FULL_REPEAT}" "${FULL_FILES[@]}"
+benchmark_scenario large_multigroup_rgb "${LARGE_REPEAT}" "${LARGE_FILE[@]}"

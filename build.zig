@@ -40,6 +40,30 @@ pub fn build(b: *std.Build) void {
 	const capi_step = b.step("capi", "Build the libjxl-shaped C FFI static library");
 	capi_step.dependOn(&install_capi.step);
 
+	const djxlz = b.addExecutable(.{
+		.name = "djxlz",
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("src/cli/djxlz_root.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	djxlz.addIncludePath(b.path("include"));
+	djxlz.addIncludePath(b.path("lib/include"));
+	djxlz.addCSourceFile(.{
+		.file = b.path("src/cli/djxlz.c"),
+		.flags = &.{"-std=c11"},
+	});
+	djxlz.linkLibrary(capi_lib);
+	djxlz.linkLibC();
+	if (optimize == .Debug) {
+		djxlz.root_module.addCMacro("JXLZ_DEBUG_BUILD", "1");
+	}
+
+	const install_djxlz = b.addInstallArtifact(djxlz, .{});
+	const djxlz_step = b.step("djxlz", "Build the C CLI that dogfoods the C FFI");
+	djxlz_step.dependOn(&install_djxlz.step);
+
 	const unit_tests = b.addTest(.{
 		.root_module = b.createModule(.{
 			.root_source_file = b.path("src/root.zig"),

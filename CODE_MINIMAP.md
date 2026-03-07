@@ -6,14 +6,19 @@
 - `flake.nix` — Nix dev shell, Garnix CI checks, package definition
 - `build` — Bash: `nix develop -c zig build` with --test/--debug flags
 - `test` — Bash: runs Zig unit tests + CLI tests, accumulates errors
+- `bm` — Bash: builds the public-API benchmark harness against both `libjxlz_capi` and upstream `libjxl`, runs `hyperfine` on the committed corpus and large multigroup case, appends results to `tests/benchmark/public_api_decode_history.tsv`, and fails loudly on >5% shifts from the previous logged run
 - `include/jxl/jxl_export.h` / `include/jxl/version.h` — generated-support compatibility headers so the upstream public `jxl/*.h` headers in `lib/include` can be used directly by external C consumers and tests
 - `bench_decode_runtime.zig` — Runtime decode benchmark harness (`--repeat`, `--reader reference|specialized`, preloaded inputs, full frame decode) with sampled image fingerprints plus known-fixture checksum verification (`--no-verify-known`, `--print-checksum`) so benchmarking catches partial/zero decodes instead of timing them
 - `bench_weighted_predict.zig` — Synthetic weighted-predictor microbenchmark (`--repeat`, `--width`, `--height`) that isolates `weighted.State.predict` + `updateErrors` with a stable checksum, for measuring predictor-only changes before they are tried in full-frame decode
 - `tests/cli/capi_decode.c` / `tests/cli/capi_decode.sh` — external C smoke test that compiles against the real upstream `jxl/decode.h`, links `libjxlz_capi.a`, and decodes the 4x4 fixture through the public `JxlDecoder` flow
+- `tests/benchmark/decode_public_api.c` — checked-in in-memory public-API benchmark harness in C; loads inputs once, reuses `JxlDecoder` + output storage across repeats, decodes through `JxlDecoder` only, and hashes RGB output for deterministic correctness checks
+- `tests/benchmark/public_api_decode_history.tsv` — source-controlled benchmark history for the public-API harness (`./bm`)
+- `tests/cli/capi_bench_smoke.sh` — checksum smoke test proving the checked-in public-API benchmark harness compiles and decodes deterministically against `libjxlz_capi`
 
 ## src/
 - `root.zig` — package root for the pure Zig library, re-exporting the core `src/lib` modules plus the C-FFI module for test discovery
-- `capi_root.zig` — `libjxl`-shaped decoder compatibility layer exporting the first public C decoder slice (`JxlSignatureCheck`, `JxlDecoder*` create/input/basic-info/output/decode flow) by reusing the existing Zig decode pipeline and converting into caller-owned interleaved buffers
+- `capi_root.zig` — `libjxl`-shaped decoder compatibility layer exporting the first public C decoder slice (`JxlSignatureCheck`, `JxlDecoder*` create/input/basic-info/output/decode flow) by reusing the existing Zig decode pipeline and converting into caller-owned interleaved buffers; now includes tested `UINT8` fast paths for RGB/gray output and correct 8-bit scaling from higher source bit depths
+- `src/cli/djxlz_root.zig` / `src/cli/djxlz.c` — C CLI entrypoint and implementation for `djxlz`, which dogfoods the public `JxlDecoder` API exclusively and writes PPM/PGM/PAM to files or stdio targets
 
 ## src/lib/
 - `lib/root.zig` — core module root, re-exports all submodules via refAllDecls
