@@ -21,6 +21,7 @@ const dec_ans = @import("../entropy/dec_ans.zig");
 const ANSCode = dec_ans.ANSCode;
 const encoding = @import("../modular/encoding.zig");
 const GroupHeader = encoding.GroupHeader;
+const ReaderStrategy = encoding.ReaderStrategy;
 const modular_image = @import("../modular/modular_image.zig");
 const Channel = modular_image.Channel;
 const Image = modular_image.Image;
@@ -139,8 +140,9 @@ pub const ModularFrameDecoder = struct {
     }
 
     /// Decode global modular info: tree, histograms, and global modular image.
-    pub fn decodeGlobalInfo(
+    pub fn decodeGlobalInfoWithReaderStrategy(
         self: *ModularFrameDecoder,
+        comptime reader_strategy: ReaderStrategy,
         br: *BitReader,
         frame_header: *const FrameHeader,
         metadata: *const CodecMetadata,
@@ -209,7 +211,8 @@ pub const ModularFrameDecoder = struct {
         const code_ptr: ?*const ANSCode = if (self.has_tree) &self.code else null;
         const ctx_map_ptr: ?[]const u8 = if (self.has_tree) self.context_map else null;
 
-        try encoding.modularGenericDecompress(
+        try encoding.modularGenericDecompressWithReaderStrategy(
+            reader_strategy,
             br,
             &self.full_image,
             global_stream_id,
@@ -232,6 +235,16 @@ pub const ModularFrameDecoder = struct {
                 self.have_something = true;
             }
         }
+    }
+
+    /// Decode global modular info using the default hot-path reader strategy.
+    pub fn decodeGlobalInfo(
+        self: *ModularFrameDecoder,
+        br: *BitReader,
+        frame_header: *const FrameHeader,
+        metadata: *const CodecMetadata,
+    ) JxlError!void {
+        return self.decodeGlobalInfoWithReaderStrategy(.specialized, br, frame_header, metadata);
     }
 
     /// Decode a modular group (DC or AC) from the bitstream.
@@ -374,7 +387,11 @@ pub const FrameDecoder = struct {
     /// Process DC Global section (section ID 0).
     /// Matches C++ FrameDecoder::ProcessDCGlobal: patches/splines/noise (conditional),
     /// then DecodeDC (unconditional), then DecodeGlobalInfo.
-    pub fn processDCGlobal(self: *FrameDecoder, br: *BitReader) JxlError!void {
+    pub fn processDCGlobalWithReaderStrategy(
+        self: *FrameDecoder,
+        comptime reader_strategy: ReaderStrategy,
+        br: *BitReader,
+    ) JxlError!void {
         // TODO: decode patches, splines, noise if frame_header.flags indicate them
 
         // DequantMatrices::DecodeDC — always called, even for modular frames
@@ -383,14 +400,23 @@ pub const FrameDecoder = struct {
 
         // For modular frames: decode global modular info
         if (self.frame_header.encoding == .modular) {
-            try self.modular_decoder.decodeGlobalInfo(br, &self.frame_header, self.metadata);
+            try self.modular_decoder.decodeGlobalInfoWithReaderStrategy(reader_strategy, br, &self.frame_header, self.metadata);
         }
         self.decoded_dc_global = true;
     }
 
+    /// Process the DC global section using the default hot-path reader strategy.
+    pub fn processDCGlobal(self: *FrameDecoder, br: *BitReader) JxlError!void {
+        return self.processDCGlobalWithReaderStrategy(.specialized, br);
+    }
+
     /// Decode entire frame from a contiguous byte buffer.
     /// This is the simple single-pass entry point.
-    pub fn decodeFrame(self: *FrameDecoder, data: []const u8) JxlError!void {
+    pub fn decodeFrameWithReaderStrategy(
+        self: *FrameDecoder,
+        comptime reader_strategy: ReaderStrategy,
+        data: []const u8,
+    ) JxlError!void {
         // Read frame header + TOC
         var header_br = BitReader.init(data);
         try self.initFrame(&header_br);
@@ -403,7 +429,7 @@ pub const FrameDecoder = struct {
             // Single-section frame (common for small lossless images)
             const section_data = data[header_byte_offset..];
             var section_br = BitReader.init(section_data);
-            try self.processDCGlobal(&section_br);
+            try self.processDCGlobalWithReaderStrategy(reader_strategy, &section_br);
             section_br.close() catch {};
         } else {
             // Multi-section frame: compute offsets and process in order
@@ -414,7 +440,7 @@ pub const FrameDecoder = struct {
                 if (self.toc_entries[i].id == 0) {
                     const section_data = data[pos..];
                     var section_br = BitReader.init(section_data);
-                    try self.processDCGlobal(&section_br);
+                    try self.processDCGlobalWithReaderStrategy(reader_strategy, &section_br);
                     section_br.close() catch {};
                     break;
                 }
@@ -455,6 +481,11 @@ pub const FrameDecoder = struct {
 
         // Finalize: undo transforms on full image
         try self.modular_decoder.finalizeDecoding();
+    }
+
+    /// Decode an entire frame using the default hot-path reader strategy.
+    pub fn decodeFrame(self: *FrameDecoder, data: []const u8) JxlError!void {
+        return self.decodeFrameWithReaderStrategy(.specialized, data);
     }
 
     /// Get the decoded image (after decodeFrame).

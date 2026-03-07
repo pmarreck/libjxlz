@@ -6,7 +6,7 @@
 - `flake.nix` — Nix dev shell, Garnix CI checks, package definition
 - `build` — Bash: `nix develop -c zig build` with --test/--debug flags
 - `test` — Bash: runs Zig unit tests + CLI tests, accumulates errors
-- `bench_decode_runtime.zig` — Runtime decode benchmark harness (`--repeat`, preloaded inputs, full frame decode) for apples-to-apples corpus benchmarking/profiling vs `djxl`
+- `bench_decode_runtime.zig` — Runtime decode benchmark harness (`--repeat`, `--reader reference|specialized`, preloaded inputs, full frame decode) for apples-to-apples corpus benchmarking/profiling and A/B reader-strategy comparisons
 
 ## src/lib/
 - `root.zig` — Module root, re-exports all submodules via refAllDecls
@@ -28,7 +28,7 @@
 - `huffman.zig` — HuffmanCode struct, BuildHuffmanTable (2-level), HuffmanDecodingData with ReadFromBitStream/ReadSymbol, ReadSimpleCode
 - `hybrid_uint.zig` — HybridUintConfig: split-exponent scheme for variable-length integers, encode/decode
 - `inverse_mtf.zig` — Inverse move-to-front transform (scalar implementation)
-- `dec_ans.zig` — ANSCode, ANSSymbolReader (ANS + Huffman + LZ77 + hybrid uint), LZ77Params, ReadHistogram, DecodeUintConfig, special distance table, decodeHistograms (top-level)
+- `dec_ans.zig` — ANSCode, ANSSymbolReader (ANS + Huffman + LZ77 + hybrid uint), LZ77Params, ReadHistogram, DecodeUintConfig, special distance table, retained generic read path plus compile-time-specialized clustered uint readers, decodeHistograms (top-level)
 - `dec_context_map.zig` — DecodeContextMap (simple + ANS-coded non-simple path), VerifyContextMap
 
 ### src/lib/codec/
@@ -40,7 +40,7 @@
 - `color_encoding.zig` — ColorSpace, WhitePoint, Primaries, TransferFunction, RenderingIntent, Customxy, CustomTransferFunction, ColorEncoding with full readFromBitStream
 - `frame_header.zig` — FrameEncoding, ColorTransform, FrameType, BlendMode, BlendingInfo, YCbCrChromaSubsampling, Passes, AnimationFrame, FrameHeader with full readFromBitStream
 - `toc.zig` — TOC reading (section sizes + Lehmer-coded permutation via ANS), numTocEntries, acGroupIndex
-- `dec_frame.zig` — FrameDecoder (frame header + TOC + section dispatch), ModularFrameDecoder (global tree + per-group decode), ModularStreamId
+- `dec_frame.zig` — FrameDecoder (frame header + TOC + section dispatch, `decodeFrameWithReaderStrategy`), ModularFrameDecoder (`decodeGlobalInfoWithReaderStrategy`, global tree + per-group decode), ModularStreamId
 - `codestream_test.zig` — Integration test: parses real JXL codestream (SizeHeader + ImageMetadata + FrameHeader)
 
 ### src/lib/modular/
@@ -51,7 +51,7 @@
 - `context_predict.zig` — ClampedGradient, Select, PredictOne (14 predictors), FlatDecisionNode, MATreeLookup, FilterTree (static property elimination + tree flattening)
 - `transform.zig` — TransformId (RCT/Palette/Squeeze), SqueezeParams, Transform reading; InvRCT (42 variants), InvHSqueeze, InvVSqueeze, InvPalette, SmoothTendency; MetaSqueeze, MetaPalette, DefaultSqueezeParameters; undoTransforms, metaApply
 - `modular_image.zig` — Channel (2D pixel storage with row/shrink access), Image (multi-channel container with transforms)
-- `encoding.zig` — GroupHeader reading, ModularDecode (tree + ANS reader + per-channel decoding with WP/reference properties + MetaApply + transform undo), ModularGenericDecompress
+- `encoding.zig` — GroupHeader reading, ModularDecode/ModularGenericDecompress with retained `ReaderStrategy.reference` path and compile-time-specialized hot-path dispatch for per-channel decoding with WP/reference properties + MetaApply + transform undo
 
 ## docs/plans/
 - `2026-03-06-libjxlz-design.md` — Overall project design document

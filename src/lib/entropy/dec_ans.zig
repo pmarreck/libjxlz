@@ -415,6 +415,10 @@ pub const ANSSymbolReader = struct {
 
     const undefined_entry_ptr: [*]const AliasTable.Entry = @ptrFromInt(@alignOf(AliasTable.Entry));
 
+    pub fn usesLZ77(self: *const ANSSymbolReader) bool {
+        return self.lz77_window != null;
+    }
+
     pub fn readSymbolANSWithoutRefill(self: *ANSSymbolReader, histo_idx: usize, br: *BitReader) usize {
         const res = self.state & params.ans_tab_mask;
         const table = self.alias_tables + (histo_idx << self.log_alpha_size);
@@ -436,6 +440,18 @@ pub const ANSSymbolReader = struct {
 
     pub fn readSymbolWithoutRefill(self: *ANSSymbolReader, histo_idx: usize, br: *BitReader) usize {
         if (self.use_prefix_code) {
+            return self.readSymbolHuffWithoutRefill(histo_idx, br);
+        }
+        return self.readSymbolANSWithoutRefill(histo_idx, br);
+    }
+
+    inline fn readSymbolWithoutRefillSpecialized(
+        self: *ANSSymbolReader,
+        comptime use_prefix_code: bool,
+        histo_idx: usize,
+        br: *BitReader,
+    ) usize {
+        if (use_prefix_code) {
             return self.readSymbolHuffWithoutRefill(histo_idx, br);
         }
         return self.readSymbolANSWithoutRefill(histo_idx, br);
@@ -516,6 +532,90 @@ pub const ANSSymbolReader = struct {
             }
         }
         return ret;
+    }
+
+    inline fn readHybridUintClusteredInlined(
+        self: *ANSSymbolReader,
+        comptime uses_lz77: bool,
+        comptime use_prefix_code: bool,
+        ctx: usize,
+        br: *BitReader,
+    ) usize {
+        if (uses_lz77) {
+            if (self.num_to_copy > 0) {
+                const ret = self.lz77_window.?[self.copy_pos & window_mask];
+                self.copy_pos +%= 1;
+                self.num_to_copy -= 1;
+                self.lz77_window.?[self.num_decoded & window_mask] = ret;
+                self.num_decoded +%= 1;
+                return ret;
+            }
+        }
+
+        br.refill();
+        const token = self.readSymbolWithoutRefillSpecialized(use_prefix_code, ctx, br);
+        if (uses_lz77) {
+            if (token >= self.lz77_threshold) {
+                self.num_to_copy = readHybridUintConfigValue(
+                    self.lz77_length_uint,
+                    token - self.lz77_threshold,
+                    br,
+                ) + self.lz77_min_length;
+                br.refill();
+                const d_token = self.readSymbolWithoutRefillSpecialized(use_prefix_code, self.lz77_ctx, br);
+                var distance: usize = readHybridUintConfigValue(self.configs[self.lz77_ctx], d_token, br);
+                if (distance < self.num_special_distances_cached) {
+                    distance = self.special_distances_cache[distance];
+                } else {
+                    distance = distance + 1 - self.num_special_distances_cached;
+                }
+                if (distance > self.num_decoded) distance = self.num_decoded;
+                if (distance > window_size) distance = window_size;
+                self.copy_pos = self.num_decoded -% @as(u32, @intCast(distance));
+                if (distance == 0) {
+                    const to_fill = @min(self.num_to_copy, window_size);
+                    @memset(self.lz77_window.?[0..to_fill], 0);
+                }
+                if (self.num_to_copy < self.lz77_min_length) return 0;
+
+                const ret = self.lz77_window.?[self.copy_pos & window_mask];
+                self.copy_pos +%= 1;
+                self.num_to_copy -= 1;
+                self.lz77_window.?[self.num_decoded & window_mask] = ret;
+                self.num_decoded +%= 1;
+                return ret;
+            }
+        }
+
+        const ret: usize = readHybridUintConfigValue(self.configs[ctx], token, br);
+        if (uses_lz77) {
+            self.lz77_window.?[self.num_decoded & window_mask] = @intCast(ret);
+            self.num_decoded +%= 1;
+        }
+        return ret;
+    }
+
+    fn readHybridUintClusteredSpecialized(
+        self: *ANSSymbolReader,
+        comptime uses_lz77: bool,
+        comptime use_prefix_code: bool,
+        ctx: usize,
+        br: *BitReader,
+    ) usize {
+        return self.readHybridUintClusteredInlined(uses_lz77, use_prefix_code, ctx, br);
+    }
+
+    pub inline fn readHybridUintClusteredMaybeInlined(
+        self: *ANSSymbolReader,
+        comptime uses_lz77: bool,
+        comptime use_prefix_code: bool,
+        ctx: usize,
+        br: *BitReader,
+    ) usize {
+        if (uses_lz77) {
+            return self.readHybridUintClusteredSpecialized(uses_lz77, use_prefix_code, ctx, br);
+        }
+        return self.readHybridUintClusteredInlined(uses_lz77, use_prefix_code, ctx, br);
     }
 
     pub fn readHybridUint(self: *ANSSymbolReader, ctx: usize, br: *BitReader, context_map: []const u8) usize {

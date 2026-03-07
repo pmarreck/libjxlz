@@ -9,6 +9,53 @@ const image_metadata = @import("image_metadata.zig");
 const frame_header_mod = @import("frame_header.zig");
 const dec_frame = @import("dec_frame.zig");
 const toc = @import("toc.zig");
+const encoding = @import("../modular/encoding.zig");
+const modular_image = @import("../modular/modular_image.zig");
+
+const Image = modular_image.Image;
+
+const PreparedFrame = struct {
+    codec_meta: image_metadata.CodecMetadata,
+    frame_data: []const u8,
+};
+
+fn prepareFrame(data: []const u8) !PreparedFrame {
+    var br = BitReader.init(data[2..]);
+
+    const size = headers.SizeHeader.readFromBitStream(&br);
+    const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+    const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+    try br.jumpToByteBoundary();
+
+    var codec_meta = image_metadata.CodecMetadata{};
+    codec_meta.m = metadata;
+    codec_meta.size = size;
+    codec_meta.transform_data = transform_data;
+
+    const frame_header_byte_offset = br.totalBitsConsumed() / 8;
+    return .{
+        .codec_meta = codec_meta,
+        .frame_data = data[2 + frame_header_byte_offset ..],
+    };
+}
+
+fn expectImagesEqual(expected: *const Image, actual: *const Image) !void {
+    try testing.expectEqual(expected.w, actual.w);
+    try testing.expectEqual(expected.h, actual.h);
+    try testing.expectEqual(expected.bitdepth, actual.bitdepth);
+    try testing.expectEqual(expected.nb_meta_channels, actual.nb_meta_channels);
+    try testing.expectEqual(expected.channels.items.len, actual.channels.items.len);
+
+    for (expected.channels.items, actual.channels.items) |*expected_ch, *actual_ch| {
+        try testing.expectEqual(expected_ch.w, actual_ch.w);
+        try testing.expectEqual(expected_ch.h, actual_ch.h);
+        try testing.expectEqual(expected_ch.hshift, actual_ch.hshift);
+        try testing.expectEqual(expected_ch.vshift, actual_ch.vshift);
+        for (0..expected_ch.h) |y| {
+            try testing.expectEqualSlices(i32, expected_ch.rowConst(y), actual_ch.rowConst(y));
+        }
+    }
+}
 
 test "parse lossless 4x4 codestream headers" {
     const data = @embedFile("../testdata/lossless_4x4.jxl");
@@ -306,4 +353,31 @@ test "decode lossless 300x200 multi-group" {
     try testing.expect(img.channels.items.len >= 3);
     try testing.expectEqual(@as(usize, 300), img.w);
     try testing.expectEqual(@as(usize, 200), img.h);
+}
+
+test "reference and specialized reader strategies decode identical lossless corpus" {
+    const allocator = testing.allocator;
+    const cases = [_]struct {
+        name: []const u8,
+        data: []const u8,
+    }{
+        .{ .name = "lossless_4x4", .data = @embedFile("../testdata/lossless_4x4.jxl") },
+        .{ .name = "lossless_16x16", .data = @embedFile("../testdata/lossless_16x16.jxl") },
+        .{ .name = "lossless_64x64", .data = @embedFile("../testdata/lossless_64x64.jxl") },
+        .{ .name = "lossless_300x200", .data = @embedFile("../testdata/lossless_300x200.jxl") },
+    };
+
+    for (cases) |tc| {
+        const prepared = try prepareFrame(tc.data);
+
+        var ref_dec = dec_frame.FrameDecoder.init(allocator, &prepared.codec_meta);
+        defer ref_dec.deinit();
+        try ref_dec.decodeFrameWithReaderStrategy(encoding.ReaderStrategy.reference, prepared.frame_data);
+
+        var specialized_dec = dec_frame.FrameDecoder.init(allocator, &prepared.codec_meta);
+        defer specialized_dec.deinit();
+        try specialized_dec.decodeFrameWithReaderStrategy(encoding.ReaderStrategy.specialized, prepared.frame_data);
+
+        try expectImagesEqual(ref_dec.getDecodedImage(), specialized_dec.getDecodedImage());
+    }
 }

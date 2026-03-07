@@ -125,9 +125,37 @@ fn precomputeReferences(
     }
 }
 
+pub const ReaderStrategy = enum {
+    reference,
+    specialized,
+};
+
+const default_reader_strategy: ReaderStrategy = .specialized;
+
+inline fn readHybridUintClusteredReference(reader: *ANSSymbolReader, ctx: usize, br: *BitReader) usize {
+    return reader.readHybridUintClustered(ctx, br, true);
+}
+
+inline fn readHybridUintClusteredNoLZ77ANS(reader: *ANSSymbolReader, ctx: usize, br: *BitReader) usize {
+    return reader.readHybridUintClusteredMaybeInlined(false, false, ctx, br);
+}
+
+inline fn readHybridUintClusteredLZ77ANS(reader: *ANSSymbolReader, ctx: usize, br: *BitReader) usize {
+    return reader.readHybridUintClusteredMaybeInlined(true, false, ctx, br);
+}
+
+inline fn readHybridUintClusteredNoLZ77Huff(reader: *ANSSymbolReader, ctx: usize, br: *BitReader) usize {
+    return reader.readHybridUintClusteredMaybeInlined(false, true, ctx, br);
+}
+
+inline fn readHybridUintClusteredLZ77Huff(reader: *ANSSymbolReader, ctx: usize, br: *BitReader) usize {
+    return reader.readHybridUintClusteredMaybeInlined(true, true, ctx, br);
+}
+
 // ── Decode a single modular channel ──
 
-fn decodeModularChannel(
+fn decodeModularChannelImpl(
+    comptime read_next: anytype,
     br: *BitReader,
     reader: *ANSSymbolReader,
     context_map: []const u8,
@@ -179,7 +207,7 @@ fn decodeModularChannel(
                 for (0..channel.h) |y| {
                     const r = channel.row(y);
                     for (0..channel.w) |x| {
-                        const v: u32 = @intCast(reader.readHybridUintClustered(ctx_id, br, true));
+                        const v: u32 = @intCast(read_next(reader, ctx_id, br));
                         r[x] = pack_signed.unpackSigned(v);
                     }
                 }
@@ -187,7 +215,7 @@ fn decodeModularChannel(
                 for (0..channel.h) |y| {
                     const r = channel.row(y);
                     for (0..channel.w) |x| {
-                        const v: u32 = @intCast(reader.readHybridUintClustered(ctx_id, br, true));
+                        const v: u32 = @intCast(read_next(reader, ctx_id, br));
                         r[x] = makePixel(v, multiplier, offset);
                     }
                 }
@@ -204,7 +232,7 @@ fn decodeModularChannel(
                     const top: pixel_type_w = if (y > 0) channel.row(y - 1)[x] else left;
                     const topleft: pixel_type_w = if (x > 0 and y > 0) channel.row(y - 1)[x - 1] else left;
                     const guess: pixel_type = context_predict.clampedGradient(@as(pixel_type, @intCast(left)), @as(pixel_type, @intCast(top)), @as(pixel_type, @intCast(topleft)));
-                    const v: u32 = @intCast(reader.readHybridUintClustered(ctx_id, br, true));
+                    const v: u32 = @intCast(read_next(reader, ctx_id, br));
                     r[x] = makePixel(v, 1, guess);
                 }
             }
@@ -302,7 +330,7 @@ fn decodeModularChannel(
                 leftleft, toprightright, wp_pred,
             );
 
-            const v: u32 = @intCast(reader.readHybridUintClustered(lr.context, br, true));
+            const v: u32 = @intCast(read_next(reader, lr.context, br));
             r[x] = makePixel(v, @intCast(lr.multiplier), pred + lr.offset);
 
             if (wp_state) |*ws| {
@@ -312,9 +340,141 @@ fn decodeModularChannel(
     }
 }
 
+fn decodeModularChannelReference(
+    br: *BitReader,
+    reader: *ANSSymbolReader,
+    context_map: []const u8,
+    global_tree: []const dec_ma.PropertyDecisionNode,
+    wp_header: *const weighted.Header,
+    chan: usize,
+    group_id: usize,
+    image: *Image,
+    allocator: std.mem.Allocator,
+) JxlError!void {
+    return decodeModularChannelImpl(
+        readHybridUintClusteredReference,
+        br,
+        reader,
+        context_map,
+        global_tree,
+        wp_header,
+        chan,
+        group_id,
+        image,
+        allocator,
+    );
+}
+
+fn decodeModularChannelWithReaderStrategy(
+    comptime reader_strategy: ReaderStrategy,
+    br: *BitReader,
+    reader: *ANSSymbolReader,
+    context_map: []const u8,
+    global_tree: []const dec_ma.PropertyDecisionNode,
+    wp_header: *const weighted.Header,
+    chan: usize,
+    group_id: usize,
+    image: *Image,
+    allocator: std.mem.Allocator,
+) JxlError!void {
+    if (reader_strategy == .reference) {
+        return decodeModularChannelReference(
+            br,
+            reader,
+            context_map,
+            global_tree,
+            wp_header,
+            chan,
+            group_id,
+            image,
+            allocator,
+        );
+    }
+    if (reader.use_prefix_code) {
+        if (reader.usesLZ77()) {
+            return decodeModularChannelImpl(
+                readHybridUintClusteredLZ77Huff,
+                br,
+                reader,
+                context_map,
+                global_tree,
+                wp_header,
+                chan,
+                group_id,
+                image,
+                allocator,
+            );
+        }
+        return decodeModularChannelImpl(
+            readHybridUintClusteredNoLZ77Huff,
+            br,
+            reader,
+            context_map,
+            global_tree,
+            wp_header,
+            chan,
+            group_id,
+            image,
+            allocator,
+        );
+    }
+    if (reader.usesLZ77()) {
+        return decodeModularChannelImpl(
+            readHybridUintClusteredLZ77ANS,
+            br,
+            reader,
+            context_map,
+            global_tree,
+            wp_header,
+            chan,
+            group_id,
+            image,
+            allocator,
+        );
+    }
+    return decodeModularChannelImpl(
+        readHybridUintClusteredNoLZ77ANS,
+        br,
+        reader,
+        context_map,
+        global_tree,
+        wp_header,
+        chan,
+        group_id,
+        image,
+        allocator,
+    );
+}
+
+fn decodeModularChannel(
+    br: *BitReader,
+    reader: *ANSSymbolReader,
+    context_map: []const u8,
+    global_tree: []const dec_ma.PropertyDecisionNode,
+    wp_header: *const weighted.Header,
+    chan: usize,
+    group_id: usize,
+    image: *Image,
+    allocator: std.mem.Allocator,
+) JxlError!void {
+    return decodeModularChannelWithReaderStrategy(
+        default_reader_strategy,
+        br,
+        reader,
+        context_map,
+        global_tree,
+        wp_header,
+        chan,
+        group_id,
+        image,
+        allocator,
+    );
+}
+
 // ── ModularDecode ──
 
-pub fn modularDecode(
+pub fn modularDecodeWithReaderStrategy(
+    comptime reader_strategy: ReaderStrategy,
     br: *BitReader,
     image: *Image,
     header: *GroupHeader,
@@ -431,7 +591,8 @@ pub fn modularDecode(
         }
         if (ch.w == 0 or ch.h == 0) continue;
 
-        try decodeModularChannel(
+        try decodeModularChannelWithReaderStrategy(
+            reader_strategy,
             br,
             &reader,
             ctx_map,
@@ -449,8 +610,34 @@ pub fn modularDecode(
     }
 }
 
+pub fn modularDecode(
+    br: *BitReader,
+    image: *Image,
+    header: *GroupHeader,
+    group_id: usize,
+    opts: *const ModularOptions,
+    global_tree: ?[]const dec_ma.PropertyDecisionNode,
+    global_code: ?*const ANSCode,
+    global_ctx_map: ?[]const u8,
+    allocator: std.mem.Allocator,
+) JxlError!void {
+    return modularDecodeWithReaderStrategy(
+        default_reader_strategy,
+        br,
+        image,
+        header,
+        group_id,
+        opts,
+        global_tree,
+        global_code,
+        global_ctx_map,
+        allocator,
+    );
+}
+
 /// High-level modular decompress with optional transform undo.
-pub fn modularGenericDecompress(
+pub fn modularGenericDecompressWithReaderStrategy(
+    comptime reader_strategy: ReaderStrategy,
     br: *BitReader,
     image: *Image,
     group_id: usize,
@@ -464,11 +651,37 @@ pub fn modularGenericDecompress(
     var header = GroupHeader{};
     defer header.deinit();
 
-    try modularDecode(br, image, &header, group_id, opts, tree, code, ctx_map, allocator);
+    try modularDecodeWithReaderStrategy(reader_strategy, br, image, &header, group_id, opts, tree, code, ctx_map, allocator);
 
     if (undo_transforms) {
         try transform_mod.undoTransforms(image, &header.wp_header);
     }
+}
+
+/// High-level modular decompress with optional transform undo.
+pub fn modularGenericDecompress(
+    br: *BitReader,
+    image: *Image,
+    group_id: usize,
+    opts: *const ModularOptions,
+    undo_transforms: bool,
+    tree: ?[]const dec_ma.PropertyDecisionNode,
+    code: ?*const ANSCode,
+    ctx_map: ?[]const u8,
+    allocator: std.mem.Allocator,
+) JxlError!void {
+    return modularGenericDecompressWithReaderStrategy(
+        default_reader_strategy,
+        br,
+        image,
+        group_id,
+        opts,
+        undo_transforms,
+        tree,
+        code,
+        ctx_map,
+        allocator,
+    );
 }
 
 // ── Tests ──
