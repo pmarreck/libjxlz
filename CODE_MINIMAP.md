@@ -19,7 +19,7 @@
 - `tests/benchmark/public_api_decode_history.tsv` — source-controlled benchmark history for the public-API harness (`./bm`)
 - `tests/benchmark/modular_encode_prep_history.tsv` — source-controlled timing history for the synthetic encoder prepass benchmark run by `./bm`
 - `tests/cli/capi_bench_smoke.sh` — checksum smoke test proving the checked-in public-API benchmark harness compiles and decodes deterministically against `libjxlz_capi`
-- `tests/cli/encode_prep_bench_smoke.sh` — checksum smoke test proving the encoder prepass harness compiles in ReleaseFast and produces the expected deterministic checksum
+- `tests/cli/encode_prep_bench_smoke.sh` — checksum smoke test proving the encoder prepass harness compiles in ReleaseFast, also cross-compiles cleanly for `x86_64-linux`, and produces the expected deterministic checksum
 
 ## src/
 - `root.zig` — package root for the pure Zig library, re-exporting the core `src/lib` modules plus the C-FFI module for test discovery

@@ -6,7 +6,7 @@
 // bitstream writer exists.
 
 const std = @import("std");
-const lib = @import("src/root.zig");
+const lib = @import("src/lib/root.zig");
 
 const Rng = lib.base.random.Rng;
 const packSigned = lib.base.pack_signed.packSigned;
