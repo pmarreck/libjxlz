@@ -80,6 +80,39 @@ inline fn absPixel(v: pixel_type_w) pixel_type {
     return @intCast(if (v >= 0) v else -v);
 }
 
+const kMaskProp9: u8 = 1 << 0;
+const kMaskProp10: u8 = 1 << 1;
+const kMaskProp11: u8 = 1 << 2;
+const kMaskProp12: u8 = 1 << 3;
+const kMaskProp13: u8 = 1 << 4;
+const kMaskProp15: u8 = 1 << 5;
+
+inline fn propertyMaskBit(property_index: usize) ?u8 {
+    return switch (property_index) {
+        9 => kMaskProp9,
+        10 => kMaskProp10,
+        11 => kMaskProp11,
+        12 => kMaskProp12,
+        13 => kMaskProp13,
+        context_predict.kWPProp => kMaskProp15,
+        else => null,
+    };
+}
+
+/// Recognizes the dominant no-reference property sets after MA-tree filtering so
+/// decode can switch to compile-time-specialized inner loops instead of runtime
+/// property guards for each pixel.
+fn specializedPropertyMask(property_use: *const context_predict.PropertyUsePlan) ?u8 {
+    if (property_use.usesReferenceProps()) return null;
+
+    var mask: u8 = 0;
+    for (options.kNumStaticProperties..context_predict.kNumNonrefProperties) |property_index| {
+        if (!property_use.uses(property_index)) continue;
+        mask |= propertyMaskBit(property_index) orelse return null;
+    }
+    return mask;
+}
+
 /// Precompute per-x extra reference properties from prior decoded channels.
 /// Mirrors libjxl `PrecomputeReferences` and feeds properties >= kNumNonrefProperties.
 fn precomputeReferences(
@@ -174,6 +207,97 @@ inline fn readHybridUintClusteredLZ77Huff(reader: *ANSSymbolReader, ctx: usize, 
     return reader.readHybridUintClusteredMaybeInlined(true, true, ctx, br);
 }
 
+/// Handles the common filtered-tree cases that use only non-reference properties
+/// from a small fixed mask, letting Zig constant-fold the property writes in the
+/// inner pixel loop while keeping the generic tree lookup and predictor logic.
+fn decodeModularChannelNoRefsMask(
+    comptime read_next: anytype,
+    comptime property_mask: u8,
+    br: *BitReader,
+    reader: *ANSSymbolReader,
+    flat_tree: []const context_predict.FlatDecisionNode,
+    wp_header: *const weighted.Header,
+    channel: *Channel,
+    allocator: std.mem.Allocator,
+    use_wp: bool,
+) JxlError!void {
+    const use_prop_9 = (property_mask & kMaskProp9) != 0;
+    const use_prop_10 = (property_mask & kMaskProp10) != 0;
+    const use_prop_11 = (property_mask & kMaskProp11) != 0;
+    const use_prop_12 = (property_mask & kMaskProp12) != 0;
+    const use_prop_13 = (property_mask & kMaskProp13) != 0;
+    const use_prop_wp = (property_mask & kMaskProp15) != 0;
+
+    const tree_lookup = context_predict.MATreeLookup.init(flat_tree);
+    var properties = [_]pixel_type{0} ** context_predict.kNumNonrefProperties;
+
+    var wp_state: ?weighted.State = null;
+    if (use_wp) {
+        wp_state = try weighted.State.init(allocator, wp_header.*, channel.w, channel.h);
+    }
+    defer {
+        if (wp_state) |*ws| ws.deinit();
+    }
+
+    for (0..channel.h) |y| {
+        const r = channel.row(y);
+        const has_top = y > 0;
+        const has_toptop = y > 1;
+        const top_row = if (has_top) channel.rowConst(y - 1) else &[_]pixel_type{};
+        const top2_row = if (has_toptop) channel.rowConst(y - 2) else &[_]pixel_type{};
+        var local_gradient: pixel_type_w = 0;
+
+        for (0..channel.w) |x| {
+            const left: pixel_type_w = if (x > 0) r[x - 1] else if (has_top) top_row[x] else 0;
+            const top: pixel_type_w = if (has_top) top_row[x] else left;
+            const topleft: pixel_type_w = if (x > 0 and has_top) top_row[x - 1] else left;
+            const topright: pixel_type_w = if (x + 1 < channel.w and has_top) top_row[x + 1] else top;
+            const leftleft: pixel_type_w = if (x > 1) r[x - 2] else left;
+            const toptop: pixel_type_w = if (has_toptop) top2_row[x] else top;
+            const toprightright: pixel_type_w = if (x + 2 < channel.w and has_top) top_row[x + 2] else topright;
+
+            if (use_prop_9) {
+                local_gradient = left + top - topleft;
+                properties[9] = @intCast(local_gradient);
+            }
+            if (use_prop_10) properties[10] = @intCast(left - topleft);
+            if (use_prop_11) properties[11] = @intCast(topleft - top);
+            if (use_prop_12) properties[12] = @intCast(top - topright);
+            if (use_prop_13) properties[13] = @intCast(top - toptop);
+
+            var wp_pred: pixel_type_w = 0;
+            if (wp_state) |*ws| {
+                if (use_prop_wp) {
+                    wp_pred = ws.predictNoProps(x, y, channel.w, top, left, topright, topleft, toptop);
+                    properties[context_predict.kWPProp] = ws.getWPProp();
+                } else {
+                    wp_pred = ws.predictNoWPProp(x, y, channel.w, top, left, topright, topleft, toptop);
+                }
+            }
+
+            const lr = tree_lookup.lookup(&properties);
+            const pred = context_predict.predictOne(
+                lr.predictor,
+                left,
+                top,
+                toptop,
+                topleft,
+                topright,
+                leftleft,
+                toprightright,
+                wp_pred,
+            );
+
+            const v: u32 = @intCast(read_next(reader, lr.context, br));
+            r[x] = makePixel(v, @intCast(lr.multiplier), pred + lr.offset);
+
+            if (wp_state) |*ws| {
+                ws.updateErrors(r[x], x, y, channel.w);
+            }
+        }
+    }
+}
+
 // ── Decode a single modular channel ──
 
 fn decodeModularChannelImpl(
@@ -261,6 +385,18 @@ fn decodeModularChannelImpl(
                 }
             }
             return;
+        }
+    }
+
+    if (specializedPropertyMask(&property_use)) |property_mask| {
+        switch (property_mask) {
+            kMaskProp15 => return decodeModularChannelNoRefsMask(read_next, kMaskProp15, br, reader, flat_tree.items, wp_header, channel, allocator, use_wp),
+            kMaskProp9 | kMaskProp15 => return decodeModularChannelNoRefsMask(read_next, kMaskProp9 | kMaskProp15, br, reader, flat_tree.items, wp_header, channel, allocator, use_wp),
+            kMaskProp13 | kMaskProp15 => return decodeModularChannelNoRefsMask(read_next, kMaskProp13 | kMaskProp15, br, reader, flat_tree.items, wp_header, channel, allocator, use_wp),
+            kMaskProp10 | kMaskProp11 | kMaskProp15 => return decodeModularChannelNoRefsMask(read_next, kMaskProp10 | kMaskProp11 | kMaskProp15, br, reader, flat_tree.items, wp_header, channel, allocator, use_wp),
+            kMaskProp10 | kMaskProp11 | kMaskProp13 | kMaskProp15 => return decodeModularChannelNoRefsMask(read_next, kMaskProp10 | kMaskProp11 | kMaskProp13 | kMaskProp15, br, reader, flat_tree.items, wp_header, channel, allocator, use_wp),
+            kMaskProp9 | kMaskProp10 | kMaskProp11 | kMaskProp12 | kMaskProp13 | kMaskProp15 => return decodeModularChannelNoRefsMask(read_next, kMaskProp9 | kMaskProp10 | kMaskProp11 | kMaskProp12 | kMaskProp13 | kMaskProp15, br, reader, flat_tree.items, wp_header, channel, allocator, use_wp),
+            else => {},
         }
     }
 
@@ -750,4 +886,26 @@ test "makePixel basic" {
     try testing.expectEqual(@as(pixel_type, 11), makePixel(2, 1, 10));
     // v=1 (unpacks to -1), multiplier=1, offset=5
     try testing.expectEqual(@as(pixel_type, 4), makePixel(1, 1, 5));
+}
+
+test "specializedPropertyMask accepts hot non-reference masks" {
+    var property_use = context_predict.PropertyUsePlan{};
+    property_use.mark(13);
+    property_use.mark(context_predict.kWPProp);
+    property_use.finalize();
+
+    try testing.expectEqual(@as(?u8, 0b11_0000), specializedPropertyMask(&property_use));
+}
+
+test "specializedPropertyMask rejects reference and unsupported properties" {
+    var reference_props = context_predict.PropertyUsePlan{};
+    reference_props.mark(context_predict.kNumNonrefProperties);
+    reference_props.finalize();
+    try testing.expectEqual(@as(?u8, null), specializedPropertyMask(&reference_props));
+
+    var unsupported_props = context_predict.PropertyUsePlan{};
+    unsupported_props.mark(8);
+    unsupported_props.mark(context_predict.kWPProp);
+    unsupported_props.finalize();
+    try testing.expectEqual(@as(?u8, null), specializedPropertyMask(&unsupported_props));
 }
