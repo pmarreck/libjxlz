@@ -121,6 +121,71 @@ pub fn freeANSEncSymbolInfoTable(allocator: std.mem.Allocator, info: []ANSEncSym
 	allocator.free(info);
 }
 
+/// Packs reversed ANS/extra-bit chunks into a forward bitstream order suitable
+/// for `BitWriter`, matching libjxl's `WriteTokens` buffering discipline.
+fn addReversedBits(
+	out: *std.ArrayList(u64),
+	out_nbits: *std.ArrayList(u8),
+	allbits: *u64,
+	numallbits: *usize,
+	bits: u64,
+	nbits: usize,
+	allocator: std.mem.Allocator,
+) !void {
+	if (nbits == 0) return;
+	std.debug.assert(bits >> @intCast(nbits) == 0);
+	if (numallbits.* + nbits > BitWriter.kMaxBitsPerCall) {
+		try out.append(allocator, allbits.*);
+		try out_nbits.append(allocator, @intCast(numallbits.*));
+		allbits.* = 0;
+		numallbits.* = 0;
+	}
+	allbits.* <<= @intCast(nbits);
+	allbits.* |= bits;
+	numallbits.* += nbits;
+}
+
+pub fn writeSingleHistogramTokens(
+	tokens: []const Token,
+	info: []const ANSEncSymbolInfo,
+	uint_config: HybridUintConfig,
+	writer: *BitWriter,
+) !usize {
+	var out: std.ArrayList(u64) = .{};
+	defer out.deinit(writer.allocator);
+	var out_nbits: std.ArrayList(u8) = .{};
+	defer out_nbits.deinit(writer.allocator);
+
+	var allbits: u64 = 0;
+	var numallbits: usize = 0;
+	var num_extra_bits: usize = 0;
+	var ans = ANSCoder{};
+
+	var i = tokens.len;
+	while (i > 0) {
+		i -= 1;
+		const token = tokens[i];
+		std.debug.assert(!token.is_lz77_length);
+		std.debug.assert(token.context == 0);
+
+		const encoded = uint_config.encode(token.value);
+		try addReversedBits(&out, &out_nbits, &allbits, &numallbits, encoded.bits, encoded.nbits, writer.allocator);
+		num_extra_bits += encoded.nbits;
+
+		const ans_bits = ans.putSymbol(&info[encoded.token]);
+		try addReversedBits(&out, &out_nbits, &allbits, &numallbits, ans_bits.bits, ans_bits.nbits, writer.allocator);
+	}
+
+	try writer.write(32, ans.getState());
+	try writer.write(numallbits, allbits);
+	var chunk_index = out.items.len;
+	while (chunk_index > 0) {
+		chunk_index -= 1;
+		try writer.write(out_nbits.items[chunk_index], out.items[chunk_index]);
+	}
+	return num_extra_bits;
+}
+
 pub fn encodeUintConfig(cfg: HybridUintConfig, writer: anytype, log_alpha_size: u5) !void {
 	try writer.write(bits_mod.ceilLog2Nonzero(@as(u32, log_alpha_size) + 1), cfg.split_exponent);
 	if (cfg.split_exponent == log_alpha_size) return;
@@ -378,4 +443,126 @@ test "buildANSEncSymbolInfoTable creates a valid empty-stream fallback symbol" {
 	try testing.expectEqual(@as(usize, 1), info.len);
 	try testing.expectEqual(@as(u16, @intCast(params.ans_tab_size)), info[0].freq);
 	try testing.expectEqual(@as(usize, params.ans_tab_size), info[0].reverse_map.len);
+}
+
+fn buildSingleHistogramCode(
+	allocator: std.mem.Allocator,
+	counts: []const i32,
+	uint_config: HybridUintConfig,
+	log_alpha_size: u5,
+) !dec_ans.ANSCode {
+	var code = dec_ans.ANSCode.init(allocator);
+	errdefer code.deinit();
+
+	code.use_prefix_code = false;
+	code.log_alpha_size = log_alpha_size;
+	code.alias_tables = try allocator.alloc(AliasTable.Entry, @as(usize, 1) << log_alpha_size);
+	try ans_common.initAliasTable(counts, params.ans_log_tab_size, log_alpha_size, code.alias_tables.ptr);
+	code.uint_config = try allocator.alloc(HybridUintConfig, 1);
+	code.uint_config[0] = uint_config;
+	return code;
+}
+
+test "writeSingleHistogramTokens round-trips empty stream" {
+	const allocator = testing.allocator;
+	const uint_config = HybridUintConfig.init(0, 0, 0);
+	const log_alpha_size: u5 = 5;
+	const info = try buildANSEncSymbolInfoTable(allocator, &.{}, log_alpha_size);
+	defer freeANSEncSymbolInfoTable(allocator, info);
+	var code = try buildSingleHistogramCode(allocator, &.{}, uint_config, log_alpha_size);
+	defer code.deinit();
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try testing.expectEqual(@as(usize, 0), try writeSingleHistogramTokens(&.{}, info, uint_config, &writer));
+	try writer.zeroPadToByte();
+
+	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+	var reader = try dec_ans.ANSSymbolReader.create(&code, &br, 0, allocator);
+	defer reader.deinit();
+	try testing.expect(reader.checkANSFinalState());
+	try br.jumpToByteBoundary();
+	try br.close();
+}
+
+test "writeSingleHistogramTokens round-trips direct-token stream through ANSSymbolReader" {
+	const allocator = testing.allocator;
+	const counts = [_]i32{ 2048, 1024, 512, 512 };
+	const log_alpha_size: u5 = 5;
+	const uint_config = HybridUintConfig.init(2, 0, 0);
+	const info = try buildANSEncSymbolInfoTable(allocator, &counts, log_alpha_size);
+	defer freeANSEncSymbolInfoTable(allocator, info);
+	var code = try buildSingleHistogramCode(allocator, &counts, uint_config, log_alpha_size);
+	defer code.deinit();
+
+	const tokens = [_]Token{
+		Token.init(0, 0),
+		Token.init(0, 1),
+		Token.init(0, 2),
+		Token.init(0, 3),
+		Token.init(0, 0),
+		Token.init(0, 2),
+		Token.init(0, 1),
+		Token.init(0, 3),
+		Token.init(0, 0),
+		Token.init(0, 0),
+	};
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try testing.expectEqual(@as(usize, 0), try writeSingleHistogramTokens(&tokens, info, uint_config, &writer));
+	try writer.zeroPadToByte();
+
+	const context_map = [_]u8{0};
+	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+	var reader = try dec_ans.ANSSymbolReader.create(&code, &br, 0, allocator);
+	defer reader.deinit();
+
+	for (tokens) |token| {
+		try testing.expectEqual(@as(usize, token.value), reader.readHybridUint(0, &br, &context_map));
+	}
+	try testing.expect(reader.checkANSFinalState());
+	try br.jumpToByteBoundary();
+	try br.close();
+}
+
+test "writeSingleHistogramTokens round-trips extra-bit stream through ANSSymbolReader" {
+	const allocator = testing.allocator;
+	const counts = [_]i32{ 2048, 1024, 512, 512 };
+	const log_alpha_size: u5 = 5;
+	const uint_config = HybridUintConfig.init(1, 0, 0);
+	const info = try buildANSEncSymbolInfoTable(allocator, &counts, log_alpha_size);
+	defer freeANSEncSymbolInfoTable(allocator, info);
+	var code = try buildSingleHistogramCode(allocator, &counts, uint_config, log_alpha_size);
+	defer code.deinit();
+
+	const tokens = [_]Token{
+		Token.init(0, 0),
+		Token.init(0, 1),
+		Token.init(0, 2),
+		Token.init(0, 3),
+		Token.init(0, 4),
+		Token.init(0, 3),
+		Token.init(0, 2),
+		Token.init(0, 1),
+		Token.init(0, 4),
+		Token.init(0, 0),
+	};
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try testing.expectEqual(@as(usize, 8), try writeSingleHistogramTokens(&tokens, info, uint_config, &writer));
+	try writer.zeroPadToByte();
+
+	const context_map = [_]u8{0};
+	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+	var reader = try dec_ans.ANSSymbolReader.create(&code, &br, 0, allocator);
+	defer reader.deinit();
+
+	for (tokens) |token| {
+		try testing.expectEqual(@as(usize, token.value), reader.readHybridUint(0, &br, &context_map));
+	}
+	try testing.expect(reader.checkANSFinalState());
+	try br.jumpToByteBoundary();
+	try br.close();
 }

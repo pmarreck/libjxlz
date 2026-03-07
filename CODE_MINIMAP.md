@@ -50,7 +50,7 @@
 - `hybrid_uint.zig` — HybridUintConfig: split-exponent scheme for variable-length integers, encode/decode
 - `inverse_mtf.zig` — Inverse move-to-front transform (scalar implementation)
 - `dec_ans.zig` — ANSCode, ANSSymbolReader (ANS + Huffman + LZ77 + hybrid uint), LZ77Params, ReadHistogram, public decoder-side varlen uint helpers for histogram metadata, DecodeUintConfig, special distance table, retained generic read path plus compile-time-specialized clustered uint readers, decodeHistograms (top-level)
-- `enc_ans.zig` — first encoder-side entropy-writing foundations: generic `encodeUintConfig(s)` and `storeVarLenUint8/16`, `SizeWriter`, `Token`, `ANSEncSymbolInfo`, an alias-table-backed ANS info-table builder, and `ANSCoder.putSymbol`; tests prove the metadata writers roundtrip against decoder-side readers and that the ANS fast path matches a direct reference update formula
+- `enc_ans.zig` — first encoder-side entropy-writing foundations: generic `encodeUintConfig(s)` and `storeVarLenUint8/16`, `SizeWriter`, `Token`, `ANSEncSymbolInfo`, an alias-table-backed ANS info-table builder, `ANSCoder.putSymbol`, and a minimal single-histogram token-stream writer; tests prove metadata roundtrips, exact bit-count agreement, ANS state-update correctness, and decoder roundtrip of both direct-token and extra-bit streams
 - `dec_context_map.zig` — DecodeContextMap (simple + ANS-coded non-simple path), VerifyContextMap
 
 ### src/lib/codec/
