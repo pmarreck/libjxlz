@@ -76,6 +76,55 @@ inline fn makePixel(v: u32, multiplier: pixel_type, offset: pixel_type_w) pixel_
     return @truncate(val *% @as(pixel_type_w, multiplier) +% offset);
 }
 
+inline fn absPixel(v: pixel_type_w) pixel_type {
+    return @intCast(if (v >= 0) v else -v);
+}
+
+/// Precompute per-x extra reference properties from prior decoded channels.
+/// Mirrors libjxl `PrecomputeReferences` and feeds properties >= kNumNonrefProperties.
+fn precomputeReferences(
+    channel: *const Channel,
+    y: usize,
+    image: *const Image,
+    chan: usize,
+    references: *Channel,
+) void {
+    references.zeroFill();
+    var offset: usize = 0;
+    const num_extra_props = references.w;
+
+    var j: isize = @intCast(chan);
+    while (j > 0 and offset < num_extra_props) {
+        j -= 1;
+        const ref_chan = &image.channels.items[@intCast(j)];
+        if (ref_chan.w != channel.w or ref_chan.h != channel.h) continue;
+        if (ref_chan.hshift != channel.hshift or ref_chan.vshift != channel.vshift) continue;
+
+        const rpp = ref_chan.rowConst(y);
+        const rpprev = ref_chan.rowConst(if (y > 0) y - 1 else 0);
+        for (0..channel.w) |x| {
+            const rp = references.row(x);
+            const v: pixel_type_w = rpp[x];
+            rp[offset + 0] = absPixel(v);
+            rp[offset + 1] = @intCast(v);
+
+            const vleft: pixel_type_w = if (x > 0) rpp[x - 1] else 0;
+            const vtop: pixel_type_w = if (y > 0) rpprev[x] else vleft;
+            const vtopleft: pixel_type_w = if (x > 0 and y > 0) rpprev[x - 1] else vleft;
+            const vpredicted: pixel_type_w = context_predict.clampedGradient(
+                @as(pixel_type, @intCast(vleft)),
+                @as(pixel_type, @intCast(vtop)),
+                @as(pixel_type, @intCast(vtopleft)),
+            );
+            const vdiff: pixel_type_w = v - vpredicted;
+            rp[offset + 2] = absPixel(vdiff);
+            rp[offset + 3] = @intCast(vdiff);
+        }
+
+        offset += context_predict.kExtraPropsPerChannel;
+    }
+}
+
 // ── Decode a single modular channel ──
 
 fn decodeModularChannel(
@@ -169,6 +218,18 @@ fn decodeModularChannel(
     defer allocator.free(properties);
     @memset(properties, 0);
 
+    const num_extra_props = if (num_props > context_predict.kNumNonrefProperties)
+        num_props - context_predict.kNumNonrefProperties
+    else
+        0;
+    var references: ?Channel = null;
+    if (num_extra_props > 0) {
+        references = try Channel.create(allocator, num_extra_props, channel.w, 0, 0);
+    }
+    defer {
+        if (references) |*r| r.deinit();
+    }
+
     var wp_state: ?weighted.State = null;
     if (use_wp) {
         wp_state = try weighted.State.init(allocator, wp_header.*, channel.w, channel.h);
@@ -179,6 +240,9 @@ fn decodeModularChannel(
 
     for (0..channel.h) |y| {
         const r = channel.row(y);
+        if (references) |*refs| {
+            precomputeReferences(channel, y, image, chan, refs);
+        }
 
         // Init static properties for this row
         if (properties.len > 0) properties[0] = @intCast(chan);
@@ -218,6 +282,15 @@ fn decodeModularChannel(
                 // Set WP property (property kWPProp = 15) for tree lookup
                 if (properties.len > context_predict.kWPProp) {
                     properties[context_predict.kWPProp] = ws.getWPProp();
+                }
+            }
+
+            if (references) |*refs| {
+                const ref_props = refs.rowConst(x);
+                var pi: usize = context_predict.kNumNonrefProperties;
+                for (ref_props) |v| {
+                    properties[pi] = v;
+                    pi += 1;
                 }
             }
 

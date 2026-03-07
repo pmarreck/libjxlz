@@ -28,7 +28,7 @@
 - `hybrid_uint.zig` — HybridUintConfig: split-exponent scheme for variable-length integers, encode/decode
 - `inverse_mtf.zig` — Inverse move-to-front transform (scalar implementation)
 - `dec_ans.zig` — ANSCode, ANSSymbolReader (ANS + Huffman + LZ77 + hybrid uint), LZ77Params, ReadHistogram, DecodeUintConfig, special distance table, decodeHistograms (top-level)
-- `dec_context_map.zig` — DecodeContextMap (simple path), VerifyContextMap
+- `dec_context_map.zig` — DecodeContextMap (simple + ANS-coded non-simple path), VerifyContextMap
 
 ### src/lib/codec/
 - `field_coders.zig` — U32Distr, U32Enc, U32Coder, U64Coder, F16Coder, BitsCoder read functions, readEnum, readExtensions, readAllDefault
@@ -50,7 +50,7 @@
 - `context_predict.zig` — ClampedGradient, Select, PredictOne (14 predictors), FlatDecisionNode, MATreeLookup, FilterTree (static property elimination + tree flattening)
 - `transform.zig` — TransformId (RCT/Palette/Squeeze), SqueezeParams, Transform reading; InvRCT (42 variants), InvHSqueeze, InvVSqueeze, InvPalette, SmoothTendency; MetaSqueeze, MetaPalette, DefaultSqueezeParameters; undoTransforms, metaApply
 - `modular_image.zig` — Channel (2D pixel storage with row/shrink access), Image (multi-channel container with transforms)
-- `encoding.zig` — GroupHeader reading, ModularDecode (tree + ANS reader + per-channel decoding + MetaApply + transform undo), ModularGenericDecompress
+- `encoding.zig` — GroupHeader reading, ModularDecode (tree + ANS reader + per-channel decoding with WP/reference properties + MetaApply + transform undo), ModularGenericDecompress
 
 ## docs/plans/
 - `2026-03-06-libjxlz-design.md` — Overall project design document

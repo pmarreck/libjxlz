@@ -192,14 +192,14 @@ pub const State = struct {
 
         // If all three have the same sign, skip clamping
         if (((teN ^ teW) | (teN ^ teNW)) > 0) {
-            return @intCast(@divTrunc(self.pred + kPredictionRound, 1 << kPredExtraBits));
+            return @intCast((self.pred + kPredictionRound) >> @as(u6, @intCast(kPredExtraBits)));
         }
 
         // Otherwise clamp to min/max of W, NE, N
         const mx = @max(W, @max(NE, N));
         const mn = @min(W, @min(NE, N));
         self.pred = @max(mn, @min(mx, self.pred));
-        return @intCast(@divTrunc(self.pred + kPredictionRound, 1 << kPredExtraBits));
+        return @intCast((self.pred + kPredictionRound) >> @as(u6, @intCast(kPredExtraBits)));
     }
 
     pub fn getWPProp(self: *const State) pixel_type {
@@ -213,7 +213,7 @@ pub const State = struct {
         self.errors[cur_row + x] = @intCast(self.pred - val);
         for (0..kNumPredictors) |i| {
             const abs_diff = absW(self.prediction[i] - val);
-            const err: u32 = @intCast(@divTrunc(abs_diff + kPredictionRound, 1 << kPredExtraBits));
+            const err: u32 = @intCast((abs_diff + kPredictionRound) >> @as(u6, @intCast(kPredExtraBits)));
             self.pred_errors[i][cur_row + x] = err;
             self.pred_errors[i][prev_row + x + 1] += err;
         }

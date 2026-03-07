@@ -300,11 +300,7 @@ test "decode lossless 300x200 multi-group" {
     var frame_dec = dec_frame.FrameDecoder.init(allocator, &codec_meta);
     defer frame_dec.deinit();
 
-    // TODO: 300x200 decode currently fails ANS final state check after all channels decode.
-    // The histogram counts operator precedence bug is fixed, non-simple context map is implemented,
-    // but the ANS state diverges over 540K symbols with a complex 433-node MA tree.
-    // Needs further investigation — likely a subtle tree traversal or property computation issue.
-    frame_dec.decodeFrame(frame_data) catch return;
+    try frame_dec.decodeFrame(frame_data);
 
     const img = frame_dec.getDecodedImage();
     try testing.expect(img.channels.items.len >= 3);

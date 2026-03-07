@@ -22,7 +22,7 @@
 - [x] hybrid_uint.zig — HybridUintConfig encode/decode with roundtrip tests
 - [x] inverse_mtf.zig — Inverse move-to-front transform (scalar, SIMD noted for later)
 - [x] dec_ans.zig — ANSCode, ANSSymbolReader, LZ77Params, ReadHistogram, DecodeUintConfig, decodeHistograms
-- [x] dec_context_map.zig — DecodeContextMap (simple path; ANS-based path stubbed)
+- [x] dec_context_map.zig — DecodeContextMap (simple + ANS-coded non-simple path)
 - [ ] Brotli integration (C FFI) — deferred to when needed by frame decoding
 
 ## Phase 3: Core Decoder (in progress)
@@ -39,6 +39,9 @@
 - [x] Inverse transforms (RCT, Palette, Squeeze) — InvRCT, InvHSqueeze, InvVSqueeze, InvPalette, MetaSqueeze, MetaPalette
 - [x] TOC reader + permutation decoding (Lehmer codes)
 - [x] Frame-level decoding: FrameDecoder, ModularFrameDecoder, ModularStreamId, section dispatch
+- [x] Re-enable strict failing test for `lossless_300x200` (removed temporary `catch return`) — 2026-03-06 ~6:55 PM EST
+- [x] Add `PrecomputeReferences` path in `decodeModularChannel` for trees using reference properties — 2026-03-06 ~7:05 PM EST
+- [x] Resolve 300x200 ANS final-state divergence in channel 0 (weighted predictor rounding parity via arithmetic right shift) — 2026-03-06 ~9:25 PM EST
 - [ ] End-to-end lossless decode test (real JXL → pixel data)
 - [ ] Multi-group frame decoding verification
 
