@@ -234,6 +234,25 @@ pub fn storeVarLenUint16(value: u16, writer: anytype) !void {
 	}
 }
 
+/// Emits the smallest histogram bundle `decodeHistograms` can read: one
+/// context, ANS mode, one uint config, and a degenerate single-symbol histogram.
+pub fn writeSingleContextDegenerateHistogram(
+	degenerate_symbol: u8,
+	uint_config: HybridUintConfig,
+	log_alpha_size: u5,
+	writer: *BitWriter,
+) !void {
+	std.debug.assert(log_alpha_size >= 5 and log_alpha_size <= 8);
+	try writer.write(1, 0); // LZ77 disabled
+	try writer.write(1, 0); // use_prefix_code = false (ANS mode)
+	try writer.write(2, log_alpha_size - 5);
+	try encodeUintConfig(uint_config, writer, log_alpha_size);
+
+	try writer.write(1, 1); // histogram simple_code = true
+	try writer.write(1, 0); // num_symbols = 1
+	try storeVarLenUint8(degenerate_symbol, writer);
+}
+
 const testing = std.testing;
 
 test "encodeUintConfigs round-trips a mixed config set" {
@@ -353,6 +372,35 @@ test "storeVarLenUint16 exhaustively round-trips through decoder helper" {
 		try testing.expectEqual(@as(u32, @intCast(value)), dec_ans.decodeVarLenUint16(&reader));
 	}
 	try reader.close();
+}
+
+test "writeSingleContextDegenerateHistogram round-trips through decodeHistograms" {
+	const allocator = testing.allocator;
+	const want_cfg = HybridUintConfig.init(5, 0, 0);
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writeSingleContextDegenerateHistogram(5, want_cfg, 5, &writer);
+	try writer.zeroPadToByte();
+
+	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+	var code = dec_ans.ANSCode.init(allocator);
+	defer code.deinit();
+	const context_map = try dec_ans.decodeHistograms(allocator, &br, 1, &code);
+	defer allocator.free(context_map);
+
+	try testing.expectEqual(@as(usize, 1), context_map.len);
+	try testing.expectEqual(@as(u8, 0), context_map[0]);
+	try testing.expect(!code.use_prefix_code);
+	try testing.expectEqual(@as(u5, 5), code.log_alpha_size);
+	try testing.expectEqual(@as(usize, 1), code.uint_config.len);
+	try testing.expectEqual(want_cfg.split_exponent, code.uint_config[0].split_exponent);
+	try testing.expectEqual(want_cfg.msb_in_token, code.uint_config[0].msb_in_token);
+	try testing.expectEqual(want_cfg.lsb_in_token, code.uint_config[0].lsb_in_token);
+	try testing.expectEqual(@as(usize, 1), code.degenerate_symbols.len);
+	try testing.expectEqual(@as(i32, 5), code.degenerate_symbols[0]);
+	try br.jumpToByteBoundary();
+	try br.close();
 }
 
 test "SizeWriter matches BitWriter bit count for varlen integers" {
