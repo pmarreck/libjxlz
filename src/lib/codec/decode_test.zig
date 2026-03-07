@@ -19,6 +19,14 @@ const PreparedFrame = struct {
     frame_data: []const u8,
 };
 
+fn expectedRgbFixturePixel(x: usize, y: usize) [3]i32 {
+    return .{
+        @intCast(x * 255 / 599),
+        @intCast(y * 255 / 299),
+        @intCast((x + y) * 255 / 898),
+    };
+}
+
 fn prepareFrame(data: []const u8) !PreparedFrame {
     var br = BitReader.init(data[2..]);
 
@@ -409,6 +417,39 @@ test "decode truncated 600x10 multi-section frame errors" {
     try testing.expectError(error.GenericError, frame_dec.decodeFrame(prepared.frame_data[0 .. prepared.frame_data.len - 1]));
 }
 
+test "decode lossless 600x300 multi-group rgb fixture" {
+    const data = @embedFile("../testdata/lossless_600x300_multigroup_rgb.jxl");
+    const allocator = testing.allocator;
+    const prepared = try prepareFrame(data);
+
+    var frame_dec = dec_frame.FrameDecoder.init(allocator, &prepared.codec_meta);
+    defer frame_dec.deinit();
+
+    try frame_dec.decodeFrame(prepared.frame_data);
+
+    const img = frame_dec.getDecodedImage();
+    try testing.expectEqual(@as(usize, 3), img.channels.items.len);
+    try testing.expectEqual(@as(usize, 600), img.w);
+    try testing.expectEqual(@as(usize, 300), img.h);
+
+    const points = [_][2]usize{
+        .{ 0, 0 },
+        .{ 255, 0 },
+        .{ 256, 0 },
+        .{ 511, 255 },
+        .{ 512, 256 },
+        .{ 300, 150 },
+        .{ 599, 299 },
+    };
+
+    for (points) |point| {
+        const expected = expectedRgbFixturePixel(point[0], point[1]);
+        try testing.expectEqual(expected[0], img.channels.items[0].rowConst(point[1])[point[0]]);
+        try testing.expectEqual(expected[1], img.channels.items[1].rowConst(point[1])[point[0]]);
+        try testing.expectEqual(expected[2], img.channels.items[2].rowConst(point[1])[point[0]]);
+    }
+}
+
 test "reference and specialized reader strategies decode identical lossless corpus" {
     const allocator = testing.allocator;
     const cases = [_]struct {
@@ -420,6 +461,7 @@ test "reference and specialized reader strategies decode identical lossless corp
         .{ .name = "lossless_64x64", .data = @embedFile("../testdata/lossless_64x64.jxl") },
         .{ .name = "lossless_300x200", .data = @embedFile("../testdata/lossless_300x200.jxl") },
         .{ .name = "lossless_600x10_multisection", .data = @embedFile("../testdata/lossless_600x10_multisection.jxl") },
+        .{ .name = "lossless_600x300_multigroup_rgb", .data = @embedFile("../testdata/lossless_600x300_multigroup_rgb.jxl") },
     };
 
     for (cases) |tc| {

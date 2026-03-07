@@ -1,16 +1,16 @@
 # Code Minimap
 
 ## Build Infrastructure
-- `build.zig` — Zig build config: static lib + test step, ReleaseFast default
+- `build.zig` — Zig build config: static lib + `test` step, ReleaseFast default; `zig build test` now runs both `src/lib/root.zig` and `bench_decode_runtime.zig` tests
 - `build.zig.zon` — Package manifest
 - `flake.nix` — Nix dev shell, Garnix CI checks, package definition
 - `build` — Bash: `nix develop -c zig build` with --test/--debug flags
 - `test` — Bash: runs Zig unit tests + CLI tests, accumulates errors
-- `bench_decode_runtime.zig` — Runtime decode benchmark harness (`--repeat`, `--reader reference|specialized`, preloaded inputs, full frame decode) for apples-to-apples corpus benchmarking/profiling and A/B reader-strategy comparisons
+- `bench_decode_runtime.zig` — Runtime decode benchmark harness (`--repeat`, `--reader reference|specialized`, preloaded inputs, full frame decode) with sampled image fingerprints plus known-fixture checksum verification (`--no-verify-known`, `--print-checksum`) so benchmarking catches partial/zero decodes instead of timing them
 
 ## src/lib/
 - `root.zig` — Module root, re-exports all submodules via refAllDecls
-- `testdata/` — Small committed raw codestream fixtures used by decode integration tests, including a real 3-group grayscale frame (`lossless_600x10_multisection.jxl`) for validated multi-section dispatch/truncation coverage
+- `testdata/` — Committed raw codestream fixtures used by decode integration tests, including a real 3-group grayscale frame (`lossless_600x10_multisection.jxl`) for validated multi-section dispatch/truncation coverage and a real 6-group RGB frame (`lossless_600x300_multigroup_rgb.jxl`) for large multi-group boundary/pixel coverage
 
 ### src/lib/base/
 - `status.zig` — StatusCode enum, JxlError error set, Status struct for FFI bridging
@@ -43,7 +43,7 @@
 - `toc.zig` — TOC reading (section sizes + Lehmer-coded permutation via ANS), numTocEntries, acGroupIndex, `computeGroupOffsets` for validated section-layout construction
 - `dec_frame.zig` — FrameDecoder (frame header + validated TOC section layout + exact section slicing + error-propagating dispatch in `decodeFrameWithReaderStrategy`), ModularFrameDecoder (`decodeGlobalInfoWithReaderStrategy`, explicit unsupported-feature rejection, YCbCr chroma-channel sizing, global tree + per-group decode), ModularStreamId
 - `codestream_test.zig` — Integration test: parses real JXL codestream (SizeHeader + ImageMetadata + FrameHeader)
-- `decode_test.zig` — End-to-end lossless decode tests for small/single-section and real multi-section codestreams, truncated-frame failure coverage, and reference-vs-specialized parity over the committed corpus
+- `decode_test.zig` — End-to-end lossless decode tests for small/single-section and real multi-section codestreams, including exact sampled-pixel coverage for the committed 600x300 RGB multi-group fixture, truncated-frame failure coverage, and reference-vs-specialized parity over the committed corpus
 
 ### src/lib/modular/
 - `ma_common.zig` — MATreeContext enum (6 contexts), kMaxTreeSize, kNumTreeContexts
