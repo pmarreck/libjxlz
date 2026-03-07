@@ -42,6 +42,7 @@ pub const modular = struct {
 	pub const options = @import("modular/options.zig");
 	pub const weighted = @import("modular/weighted.zig");
 	pub const dec_ma = @import("modular/dec_ma.zig");
+	pub const enc_ma = @import("modular/enc_ma.zig");
 	pub const context_predict = @import("modular/context_predict.zig");
 	pub const transform = @import("modular/transform.zig");
 	pub const modular_image = @import("modular/modular_image.zig");
@@ -95,6 +96,7 @@ test {
 	_ = @import("modular/options.zig");
 	_ = @import("modular/weighted.zig");
 	_ = @import("modular/dec_ma.zig");
+	_ = @import("modular/enc_ma.zig");
 	_ = @import("modular/context_predict.zig");
 	_ = @import("modular/transform.zig");
 	_ = @import("modular/modular_image.zig");

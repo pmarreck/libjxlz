@@ -72,6 +72,7 @@
 - `options.zig` — Predictor enum (14 decoders + 2 encoder-only), pixel_type, PropertyVal, ModularOptions
 - `weighted.zig` — Weighted predictor Header (7 coefficients + 4 weights) reading, State (predict + updateErrors with division-free approximation, fixed-4 loops forced to `inline for` after hotspot profiling, plus tested `predictNoProps` / `predictNoWPProp` specializations so decode can skip dead WP-property work)
 - `dec_ma.zig` — PropertyDecisionNode, Tree, DecodeTree (reads own ANS histograms, decodes nodes, validates height/ranges)
+- `enc_ma.zig` — first encoder-side MA-tree writer, currently just the smallest single-leaf tree surface (shared histogram, zero offset, multiplier 1) with a roundtrip test through `dec_ma.decodeTree`; intended as the bridge from histogram/context primitives to real local-tree modular groups
 - `context_predict.zig` — ClampedGradient, Select, PredictOne (14 predictors), FlatDecisionNode, MATreeLookup, FilterTree (static property elimination + tree flattening), `PropertyUsePlan` (tracks exactly which dynamic properties survive filtering so decode can skip unused per-pixel materialization)
 - `transform.zig` — TransformId (RCT/Palette/Squeeze), SqueezeParams, Transform reading; InvRCT (42 variants), InvHSqueeze, InvVSqueeze, InvPalette, SmoothTendency; MetaSqueeze, MetaPalette, DefaultSqueezeParameters; undoTransforms, metaApply
 - `modular_image.zig` — Channel (2D pixel storage with row/shrink access), Image (multi-channel container with transforms)
