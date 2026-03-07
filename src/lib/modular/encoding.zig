@@ -87,9 +87,19 @@ fn precomputeReferences(
     y: usize,
     image: *const Image,
     chan: usize,
+    property_use: *const context_predict.PropertyUsePlan,
     references: *Channel,
 ) void {
-    references.zeroFill();
+    const reference_props = property_use.referenceProps();
+    if (reference_props.len == 0) return;
+
+    for (0..channel.w) |x| {
+        const rp = references.row(x);
+        for (reference_props) |property_index_u8| {
+            rp[@as(usize, property_index_u8) - context_predict.kNumNonrefProperties] = 0;
+        }
+    }
+
     var offset: usize = 0;
     const num_extra_props = references.w;
 
@@ -100,25 +110,37 @@ fn precomputeReferences(
         if (ref_chan.w != channel.w or ref_chan.h != channel.h) continue;
         if (ref_chan.hshift != channel.hshift or ref_chan.vshift != channel.vshift) continue;
 
+        const base_property = context_predict.kNumNonrefProperties + offset;
+        const use_abs_value = property_use.uses(base_property);
+        const use_value = property_use.uses(base_property + 1);
+        const use_abs_diff = property_use.uses(base_property + 2);
+        const use_diff = property_use.uses(base_property + 3);
+        if (!use_abs_value and !use_value and !use_abs_diff and !use_diff) {
+            offset += context_predict.kExtraPropsPerChannel;
+            continue;
+        }
+
         const rpp = ref_chan.rowConst(y);
         const rpprev = ref_chan.rowConst(if (y > 0) y - 1 else 0);
         for (0..channel.w) |x| {
             const rp = references.row(x);
             const v: pixel_type_w = rpp[x];
-            rp[offset + 0] = absPixel(v);
-            rp[offset + 1] = @intCast(v);
+            if (use_abs_value) rp[offset + 0] = absPixel(v);
+            if (use_value) rp[offset + 1] = @intCast(v);
 
-            const vleft: pixel_type_w = if (x > 0) rpp[x - 1] else 0;
-            const vtop: pixel_type_w = if (y > 0) rpprev[x] else vleft;
-            const vtopleft: pixel_type_w = if (x > 0 and y > 0) rpprev[x - 1] else vleft;
-            const vpredicted: pixel_type_w = context_predict.clampedGradient(
-                @as(pixel_type, @intCast(vleft)),
-                @as(pixel_type, @intCast(vtop)),
-                @as(pixel_type, @intCast(vtopleft)),
-            );
-            const vdiff: pixel_type_w = v - vpredicted;
-            rp[offset + 2] = absPixel(vdiff);
-            rp[offset + 3] = @intCast(vdiff);
+            if (use_abs_diff or use_diff) {
+                const vleft: pixel_type_w = if (x > 0) rpp[x - 1] else 0;
+                const vtop: pixel_type_w = if (y > 0) rpprev[x] else vleft;
+                const vtopleft: pixel_type_w = if (x > 0 and y > 0) rpprev[x - 1] else vleft;
+                const vpredicted: pixel_type_w = context_predict.clampedGradient(
+                    @as(pixel_type, @intCast(vleft)),
+                    @as(pixel_type, @intCast(vtop)),
+                    @as(pixel_type, @intCast(vtopleft)),
+                );
+                const vdiff: pixel_type_w = v - vpredicted;
+                if (use_abs_diff) rp[offset + 2] = absPixel(vdiff);
+                if (use_diff) rp[offset + 3] = @intCast(vdiff);
+            }
         }
 
         offset += context_predict.kExtraPropsPerChannel;
@@ -176,6 +198,7 @@ fn decodeModularChannelImpl(
     var use_wp: bool = false;
     var wp_only: bool = false;
     var gradient_only: bool = false;
+    var property_use = context_predict.PropertyUsePlan{};
     var flat_tree = context_predict.filterTree(
         allocator,
         global_tree,
@@ -184,6 +207,7 @@ fn decodeModularChannelImpl(
         &use_wp,
         &wp_only,
         &gradient_only,
+        &property_use,
     ) catch return error.GenericError;
     defer flat_tree.deinit(allocator);
 
@@ -246,7 +270,24 @@ fn decodeModularChannelImpl(
     defer allocator.free(properties);
     @memset(properties, 0);
 
-    const num_extra_props = if (num_props > context_predict.kNumNonrefProperties)
+    const use_prop_y = property_use.uses(2);
+    const use_prop_x = property_use.uses(3);
+    const use_prop_abs_top = property_use.uses(4);
+    const use_prop_abs_left = property_use.uses(5);
+    const use_prop_top = property_use.uses(6);
+    const use_prop_left = property_use.uses(7);
+    const use_prop_left_minus_gradient = property_use.uses(8);
+    const use_prop_gradient = property_use.uses(9);
+    const use_prop_left_minus_topleft = property_use.uses(10);
+    const use_prop_topleft_minus_top = property_use.uses(11);
+    const use_prop_top_minus_topright = property_use.uses(12);
+    const use_prop_top_minus_toptop = property_use.uses(13);
+    const use_prop_left_minus_leftleft = property_use.uses(14);
+    const use_prop_wp = property_use.uses(context_predict.kWPProp);
+    const use_local_gradient_history = property_use.needsLocalGradientHistory();
+    const reference_props = property_use.referenceProps();
+
+    const num_extra_props = if (reference_props.len > 0 and num_props > context_predict.kNumNonrefProperties)
         num_props - context_predict.kNumNonrefProperties
     else
         0;
@@ -269,14 +310,11 @@ fn decodeModularChannelImpl(
     for (0..channel.h) |y| {
         const r = channel.row(y);
         if (references) |*refs| {
-            precomputeReferences(channel, y, image, chan, refs);
+            precomputeReferences(channel, y, image, chan, &property_use, refs);
         }
 
-        // Init static properties for this row
-        if (properties.len > 0) properties[0] = @intCast(chan);
-        if (properties.len > 1) properties[1] = @intCast(group_id);
-        if (properties.len > 2) properties[2] = @intCast(y);
-        if (properties.len > 9) properties[9] = 0; // local gradient
+        if (use_prop_y) properties[2] = @intCast(y);
+        var local_gradient: pixel_type_w = 0;
 
         for (0..channel.w) |x| {
             const left: pixel_type_w = if (x > 0) r[x - 1] else if (y > 0) channel.row(y - 1)[x] else 0;
@@ -287,38 +325,37 @@ fn decodeModularChannelImpl(
             const toptop: pixel_type_w = if (y > 1) channel.row(y - 2)[x] else top;
             const toprightright: pixel_type_w = if (x + 2 < channel.w and y > 0) channel.row(y - 1)[x + 2] else topright;
 
-            // Compute properties
-            if (properties.len > 3) properties[3] = @intCast(x);
-            if (properties.len > 4) properties[4] = @intCast(if (top >= 0) top else -top);
-            if (properties.len > 5) properties[5] = @intCast(if (left >= 0) left else -left);
-            if (properties.len > 6) properties[6] = @intCast(top);
-            if (properties.len > 7) properties[7] = @intCast(left);
-            if (properties.len > 8) {
-                const prev_gradient = properties[9];
-                properties[8] = @intCast(left - @as(pixel_type_w, prev_gradient));
-                properties[9] = @intCast(left + top - topleft); // local gradient for next
+            if (use_prop_x) properties[3] = @intCast(x);
+            if (use_prop_abs_top) properties[4] = absPixel(top);
+            if (use_prop_abs_left) properties[5] = absPixel(left);
+            if (use_prop_top) properties[6] = @intCast(top);
+            if (use_prop_left) properties[7] = @intCast(left);
+            if (use_local_gradient_history) {
+                const prev_gradient = local_gradient;
+                const next_gradient = left + top - topleft;
+                if (use_prop_left_minus_gradient) properties[8] = @intCast(left - prev_gradient);
+                local_gradient = next_gradient;
+                if (use_prop_gradient) properties[9] = @intCast(next_gradient);
             }
-            if (properties.len > 10) properties[10] = @intCast(left - topleft);
-            if (properties.len > 11) properties[11] = @intCast(topleft - top);
-            if (properties.len > 12) properties[12] = @intCast(top - topright);
-            if (properties.len > 13) properties[13] = @intCast(top - toptop);
-            if (properties.len > 14) properties[14] = @intCast(left - leftleft);
+            if (use_prop_left_minus_topleft) properties[10] = @intCast(left - topleft);
+            if (use_prop_topleft_minus_top) properties[11] = @intCast(topleft - top);
+            if (use_prop_top_minus_topright) properties[12] = @intCast(top - topright);
+            if (use_prop_top_minus_toptop) properties[13] = @intCast(top - toptop);
+            if (use_prop_left_minus_leftleft) properties[14] = @intCast(left - leftleft);
 
             var wp_pred: pixel_type_w = 0;
             if (wp_state) |*ws| {
                 wp_pred = ws.predict(x, y, channel.w, top, left, topright, topleft, toptop, null, 0);
-                // Set WP property (property kWPProp = 15) for tree lookup
-                if (properties.len > context_predict.kWPProp) {
+                if (use_prop_wp) {
                     properties[context_predict.kWPProp] = ws.getWPProp();
                 }
             }
 
             if (references) |*refs| {
                 const ref_props = refs.rowConst(x);
-                var pi: usize = context_predict.kNumNonrefProperties;
-                for (ref_props) |v| {
-                    properties[pi] = v;
-                    pi += 1;
+                for (reference_props) |property_index_u8| {
+                    const property_index: usize = property_index_u8;
+                    properties[property_index] = ref_props[property_index - context_predict.kNumNonrefProperties];
                 }
             }
 
@@ -326,8 +363,14 @@ fn decodeModularChannelImpl(
             const lr = tree_lookup.lookup(properties);
             const pred = context_predict.predictOne(
                 lr.predictor,
-                left, top, toptop, topleft, topright,
-                leftleft, toprightright, wp_pred,
+                left,
+                top,
+                toptop,
+                topleft,
+                topright,
+                leftleft,
+                toprightright,
+                wp_pred,
             );
 
             const v: u32 = @intCast(read_next(reader, lr.context, br));

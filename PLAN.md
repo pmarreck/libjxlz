@@ -45,7 +45,9 @@
 - [x] Add strict runtime decode benchmark harness (`bench_decode_runtime.zig`) and baseline-vs-`djxl` corpus benchmark — 2026-03-06 ~8:45 PM EST
 - [x] Improve benchmark harness for profiling fidelity (`--repeat`, preload inputs, `c_allocator`) and capture hotspot sample + LLVM IR dump — 2026-03-06 ~8:50 PM EST
 - [x] Split modular decode between retained `reference` and compile-time-specialized ANS/LZ77 reader strategies; add parity test, benchmark switch, and `x86_64` compile check; specialized path measured ~2% faster on the 6-file modular corpus — 2026-03-06 ~9:05 PM EST
-- [ ] Continue hand-optimization on the modular channel general-case loop (`decodeModularChannelImpl`) using updated LLVM IR + hotspot samples
+- [x] Add per-filtered-tree property-use planning so the modular general-case loop only materializes properties that the filtered MA tree can read — 2026-03-06 ~9:45 PM EST
+- [x] Benchmark property-use planning against checkpoint `df498e70`; keep it because the 6-file corpus improved from 209.3 ms to 204.6 ms (`~1.02x`) and the large-only subset improved from 287.4 ms to 284.3 ms (`~1.01x`) — 2026-03-06 ~9:45 PM EST
+- [ ] Generalize the MA-tree LUT fast path beyond `gradient_only` / `wp_only`, starting with any filtered tree that reads exactly one non-reference property
 - [ ] End-to-end lossless decode test (real JXL → pixel data)
 - [ ] Multi-group frame decoding verification
 

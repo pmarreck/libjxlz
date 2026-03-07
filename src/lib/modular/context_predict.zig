@@ -16,6 +16,56 @@ pub const kExtraPropsPerChannel: usize = 4;
 pub const kNumNonrefProperties: usize = kNumStaticProperties + 13 + weighted.kNumProperties;
 pub const kWPProp: usize = kNumNonrefProperties - weighted.kNumProperties;
 pub const kGradientProp: usize = 9;
+pub const kMaxPropertyIndex: usize = 256;
+
+pub const PropertyUsePlan = struct {
+    used: [kMaxPropertyIndex]bool = [_]bool{false} ** kMaxPropertyIndex,
+    reference_props: [kMaxPropertyIndex - kNumNonrefProperties]u8 = undefined,
+    reference_prop_count: usize = 0,
+
+    /// Tracks the dynamic properties that can be consulted after static tree pruning.
+    /// The decoder uses this to avoid materializing per-pixel state that the filtered tree never reads.
+    pub fn mark(self: *PropertyUsePlan, property: i32) void {
+        if (property < @as(i32, @intCast(kNumStaticProperties))) return;
+
+        const idx: usize = @intCast(property);
+        if (idx >= self.used.len or self.used[idx]) return;
+
+        self.used[idx] = true;
+        if (idx >= kNumNonrefProperties) {
+            self.reference_props[self.reference_prop_count] = @intCast(idx);
+            self.reference_prop_count += 1;
+        }
+    }
+
+    pub fn finalize(self: *PropertyUsePlan) void {
+        var i: usize = 1;
+        while (i < self.reference_prop_count) : (i += 1) {
+            const value = self.reference_props[i];
+            var j = i;
+            while (j > 0 and self.reference_props[j - 1] > value) : (j -= 1) {
+                self.reference_props[j] = self.reference_props[j - 1];
+            }
+            self.reference_props[j] = value;
+        }
+    }
+
+    pub inline fn uses(self: *const PropertyUsePlan, property: usize) bool {
+        return property < self.used.len and self.used[property];
+    }
+
+    pub inline fn needsLocalGradientHistory(self: *const PropertyUsePlan) bool {
+        return self.uses(8) or self.uses(9);
+    }
+
+    pub inline fn usesReferenceProps(self: *const PropertyUsePlan) bool {
+        return self.reference_prop_count != 0;
+    }
+
+    pub fn referenceProps(self: *const PropertyUsePlan) []const u8 {
+        return self.reference_props[0..self.reference_prop_count];
+    }
+};
 
 // ── ClampedGradient ──
 
@@ -148,11 +198,13 @@ pub fn filterTree(
     use_wp: *bool,
     wp_only: *bool,
     gradient_only: *bool,
+    property_use: *PropertyUsePlan,
 ) !FlatTree {
     num_props.* = 0;
     var has_wp = false;
     var has_non_wp = false;
     gradient_only.* = true;
+    property_use.* = .{};
 
     var output: FlatTree = .{};
 
@@ -234,6 +286,7 @@ pub fn filterTree(
             if (prop >= @as(i32, @intCast(kNumStaticProperties)) and prop != @as(i32, @intCast(kGradientProp))) {
                 gradient_only.* = false;
             }
+            property_use.mark(prop);
         }
 
         try output.append(allocator, flat);
@@ -246,6 +299,7 @@ pub fn filterTree(
     }
     use_wp.* = has_wp;
     wp_only.* = has_wp and !has_non_wp;
+    property_use.finalize();
 
     return output;
 }
@@ -279,4 +333,80 @@ test "predictOne zero" {
 test "predictOne gradient" {
     // clampedGradient(left=10, top=20, topleft=15) = 15
     try testing.expectEqual(@as(pixel_type_w, 15), predictOne(.gradient, 10, 20, 0, 15, 0, 0, 0, 0));
+}
+
+test "filterTree property use ignores static-pruned branches" {
+    const allocator = testing.allocator;
+    const global_tree = [_]dec_ma.PropertyDecisionNode{
+        dec_ma.PropertyDecisionNode.split(0, 0, 1, 4),
+        dec_ma.PropertyDecisionNode.split(4, 10, 2, 3),
+        dec_ma.PropertyDecisionNode.leaf(.weighted, 0, 1),
+        dec_ma.PropertyDecisionNode.leaf(.gradient, 0, 1),
+        dec_ma.PropertyDecisionNode.split(18, 2, 5, 6),
+        dec_ma.PropertyDecisionNode.leaf(.zero, 0, 1),
+        dec_ma.PropertyDecisionNode.leaf(.left, 0, 1),
+    };
+
+    var num_props: usize = 0;
+    var use_wp = false;
+    var wp_only = false;
+    var gradient_only = false;
+    var property_use = PropertyUsePlan{};
+    var flat_tree = try filterTree(
+        allocator,
+        &global_tree,
+        .{ 1, 0 },
+        &num_props,
+        &use_wp,
+        &wp_only,
+        &gradient_only,
+        &property_use,
+    );
+    defer flat_tree.deinit(allocator);
+
+    try testing.expectEqual(kNumNonrefProperties, num_props);
+    try testing.expect(use_wp);
+    try testing.expect(!wp_only);
+    try testing.expect(!gradient_only);
+    try testing.expect(property_use.uses(4));
+    try testing.expect(!property_use.uses(18));
+    try testing.expectEqual(@as(usize, 0), property_use.reference_prop_count);
+}
+
+test "filterTree property use tracks unique sorted reference properties" {
+    const allocator = testing.allocator;
+    const global_tree = [_]dec_ma.PropertyDecisionNode{
+        dec_ma.PropertyDecisionNode.split(18, 0, 1, 2),
+        dec_ma.PropertyDecisionNode.leaf(.gradient, 0, 1),
+        dec_ma.PropertyDecisionNode.split(21, 1, 3, 4),
+        dec_ma.PropertyDecisionNode.leaf(.gradient, 0, 1),
+        dec_ma.PropertyDecisionNode.leaf(.gradient, 0, 1),
+    };
+
+    var num_props: usize = 0;
+    var use_wp = false;
+    var wp_only = false;
+    var gradient_only = false;
+    var property_use = PropertyUsePlan{};
+    var flat_tree = try filterTree(
+        allocator,
+        &global_tree,
+        .{ 0, 0 },
+        &num_props,
+        &use_wp,
+        &wp_only,
+        &gradient_only,
+        &property_use,
+    );
+    defer flat_tree.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 24), num_props);
+    try testing.expect(!use_wp);
+    try testing.expect(!wp_only);
+    try testing.expect(!gradient_only);
+    try testing.expect(property_use.uses(18));
+    try testing.expect(property_use.uses(21));
+    try testing.expectEqual(@as(usize, 2), property_use.reference_prop_count);
+    try testing.expectEqual(@as(u8, 18), property_use.reference_props[0]);
+    try testing.expectEqual(@as(u8, 21), property_use.reference_props[1]);
 }
