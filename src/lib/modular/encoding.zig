@@ -309,6 +309,10 @@ fn decodeModularChannelImpl(
 
     for (0..channel.h) |y| {
         const r = channel.row(y);
+        const has_top = y > 0;
+        const has_toptop = y > 1;
+        const top_row = if (has_top) channel.rowConst(y - 1) else &[_]pixel_type{};
+        const top2_row = if (has_toptop) channel.rowConst(y - 2) else &[_]pixel_type{};
         if (references) |*refs| {
             precomputeReferences(channel, y, image, chan, &property_use, refs);
         }
@@ -317,13 +321,13 @@ fn decodeModularChannelImpl(
         var local_gradient: pixel_type_w = 0;
 
         for (0..channel.w) |x| {
-            const left: pixel_type_w = if (x > 0) r[x - 1] else if (y > 0) channel.row(y - 1)[x] else 0;
-            const top: pixel_type_w = if (y > 0) channel.row(y - 1)[x] else left;
-            const topleft: pixel_type_w = if (x > 0 and y > 0) channel.row(y - 1)[x - 1] else left;
-            const topright: pixel_type_w = if (x + 1 < channel.w and y > 0) channel.row(y - 1)[x + 1] else top;
+            const left: pixel_type_w = if (x > 0) r[x - 1] else if (has_top) top_row[x] else 0;
+            const top: pixel_type_w = if (has_top) top_row[x] else left;
+            const topleft: pixel_type_w = if (x > 0 and has_top) top_row[x - 1] else left;
+            const topright: pixel_type_w = if (x + 1 < channel.w and has_top) top_row[x + 1] else top;
             const leftleft: pixel_type_w = if (x > 1) r[x - 2] else left;
-            const toptop: pixel_type_w = if (y > 1) channel.row(y - 2)[x] else top;
-            const toprightright: pixel_type_w = if (x + 2 < channel.w and y > 0) channel.row(y - 1)[x + 2] else topright;
+            const toptop: pixel_type_w = if (has_toptop) top2_row[x] else top;
+            const toprightright: pixel_type_w = if (x + 2 < channel.w and has_top) top_row[x + 2] else topright;
 
             if (use_prop_x) properties[3] = @intCast(x);
             if (use_prop_abs_top) properties[4] = absPixel(top);
