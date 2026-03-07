@@ -358,6 +358,8 @@ pub const ModularFrameDecoder = struct {
             if (fch.w > self.frame_dim.grp_dim or fch.h > self.frame_dim.grp_dim) break;
         }
         const beginc = c;
+        const group_channel_capacity = self.full_image.channels.items.len - beginc;
+        try gi.channels.ensureTotalCapacity(self.allocator, group_channel_capacity);
 
         while (c < self.full_image.channels.items.len) : (c += 1) {
             const fch = &self.full_image.channels.items[c];
@@ -396,16 +398,17 @@ pub const ModularFrameDecoder = struct {
             const gch = &gi.channels.items[gi_c];
             const rx0 = if (fch.hshift >= 0) x0 >> @intCast(fch.hshift) else x0;
             const ry0 = if (fch.vshift >= 0) y0 >> @intCast(fch.vshift) else y0;
+            const copy_w = @min(gch.w, if (fch.w > rx0) fch.w - rx0 else 0);
+            const copy_h = @min(gch.h, if (fch.h > ry0) fch.h - ry0 else 0);
+            if (copy_w == 0 or copy_h == 0) {
+                gi_c += 1;
+                continue;
+            }
 
-            for (0..gch.h) |y| {
+            for (0..copy_h) |y| {
                 const src = gch.rowConst(y);
-                const dst_y = ry0 + y;
-                if (dst_y >= fch.h) break;
-                const dst = fch.row(dst_y);
-                const copy_w = @min(gch.w, if (fch.w > rx0) fch.w - rx0 else 0);
-                if (copy_w > 0) {
-                    @memcpy(dst[rx0 .. rx0 + copy_w], src[0..copy_w]);
-                }
+                const dst = fch.row(ry0 + y);
+                @memcpy(dst[rx0 .. rx0 + copy_w], src[0..copy_w]);
             }
             gi_c += 1;
         }

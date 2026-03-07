@@ -53,7 +53,7 @@
 - `color_encoding.zig` — ColorSpace, WhitePoint, Primaries, TransferFunction, RenderingIntent, Customxy, CustomTransferFunction, ColorEncoding with full readFromBitStream
 - `frame_header.zig` — FrameEncoding, ColorTransform, FrameType, BlendMode, BlendingInfo, YCbCrChromaSubsampling, Passes, AnimationFrame, FrameHeader with full readFromBitStream
 - `toc.zig` — TOC reading (section sizes + Lehmer-coded permutation via ANS), numTocEntries, acGroupIndex, `computeGroupOffsets` for validated section-layout construction
-- `dec_frame.zig` — FrameDecoder (frame header + validated TOC section layout + exact section slicing + error-propagating dispatch in `decodeFrameWithReaderStrategy`), ModularFrameDecoder (`decodeGlobalInfoWithReaderStrategy`, explicit unsupported-feature rejection, YCbCr chroma-channel sizing, global tree + per-group decode), ModularStreamId
+- `dec_frame.zig` — FrameDecoder (frame header + validated TOC section layout + exact section slicing + error-propagating dispatch in `decodeFrameWithReaderStrategy`), ModularFrameDecoder (`decodeGlobalInfoWithReaderStrategy`, explicit unsupported-feature rejection, YCbCr chroma-channel sizing, global tree + per-group decode with pre-reserved scratch channel storage and copy-width/copy-height hoisted out of the row loop in `decodeGroup`), ModularStreamId
 - `codestream_test.zig` — Integration test: parses real JXL codestream (SizeHeader + ImageMetadata + FrameHeader)
 - `decode_test.zig` — End-to-end lossless decode tests for small/single-section and real multi-section codestreams, including exact sampled-pixel coverage for the committed 600x300 RGB multi-group fixture, truncated-frame failure coverage, and reference-vs-specialized parity over the committed corpus
 
