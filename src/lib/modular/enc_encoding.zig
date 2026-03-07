@@ -10,6 +10,7 @@ const dec_ans = @import("../entropy/dec_ans.zig");
 const enc_ans = @import("../entropy/enc_ans.zig");
 const HybridUintConfig = @import("../entropy/hybrid_uint.zig").HybridUintConfig;
 const context_predict = @import("context_predict.zig");
+const enc_ma = @import("enc_ma.zig");
 const modular_image = @import("modular_image.zig");
 const options = @import("options.zig");
 
@@ -100,6 +101,41 @@ pub fn writeSingleNodeGlobalTreeGroup(
 	try writer.write(1, 1); // weighted header all-default
 	try writer.write(2, 0); // num_transforms = 0 via selector 0
 	return writeSingleNodeChannelTokens(allocator, channel, predictor, ctx_id, info, uint_config, writer);
+}
+
+/// Emits the smallest local-tree modular group currently supported: one
+/// single-leaf tree plus a degenerate one-context channel histogram.
+pub fn writeSingleNodeLocalTreeGroup(
+	allocator: std.mem.Allocator,
+	channel: *const Channel,
+	predictor: Predictor,
+	writer: *BitWriter,
+) !usize {
+	const uint_config = HybridUintConfig.init(5, 0, 0);
+	const tokens = try tokenizeSingleNodeChannel(allocator, channel, predictor, 0);
+	defer allocator.free(tokens);
+	if (tokens.len == 0) return error.GenericError;
+
+	const symbol = tokens[0].value;
+	for (tokens) |token| {
+		if (token.context != 0 or token.value != symbol) return error.GenericError;
+	}
+	if (symbol > std.math.maxInt(u8)) return error.GenericError;
+
+	try writer.write(1, 0); // use_global_tree = false
+	try writer.write(1, 1); // weighted header all-default
+	try writer.write(2, 0); // num_transforms = 0 via selector 0
+	try enc_ma.writeSingleLeafTree(allocator, predictor, writer);
+	try enc_ans.writeSingleContextDegenerateHistogram(@intCast(symbol), uint_config, 5, writer);
+
+	const counts = try allocator.alloc(i32, symbol + 1);
+	defer allocator.free(counts);
+	@memset(counts, 0);
+	counts[symbol] = @intCast(ans_params.ans_tab_size);
+
+	const info = try enc_ans.buildANSEncSymbolInfoTable(allocator, counts, 5);
+	defer enc_ans.freeANSEncSymbolInfoTable(allocator, info);
+	return enc_ans.writeSingleHistogramTokens(tokens, info, uint_config, writer);
 }
 
 const testing = std.testing;
@@ -308,6 +344,44 @@ test "writeSingleNodeGlobalTreeGroup round-trips through modularDecode with inje
 		global_tree[0..],
 		&code,
 		context_map[0..],
+		allocator,
+	);
+	try br.jumpToByteBoundary();
+	try br.close();
+
+	try testing.expectEqualSlices(i32, channel.data, image.channels.items[0].data);
+}
+
+test "writeSingleNodeLocalTreeGroup round-trips a minimal zero pixel through modularDecode" {
+	const allocator = testing.allocator;
+	var channel = try Channel.create(allocator, 1, 1, 0, 0);
+	defer channel.deinit();
+	channel.row(0)[0] = 0;
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try testing.expectEqual(@as(usize, 0), try writeSingleNodeLocalTreeGroup(
+		allocator,
+		&channel,
+		.zero,
+		&writer,
+	));
+	try writer.zeroPadToByte();
+
+	var image = try modular_image.Image.create(allocator, 1, 1, 8, 1);
+	defer image.deinit();
+	var header = @import("encoding.zig").GroupHeader{};
+	defer header.deinit();
+	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+	try @import("encoding.zig").modularDecode(
+		&br,
+		&image,
+		&header,
+		0,
+		&options.ModularOptions{},
+		null,
+		null,
+		null,
 		allocator,
 	);
 	try br.jumpToByteBoundary();
