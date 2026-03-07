@@ -1,6 +1,8 @@
 # Code Minimap
 
 ## Build Infrastructure
+- `README.md` — top-level project status, current measured wins vs upstream `libjxl`, threading status, build/benchmark entrypoints, and links to upstream-facing optimization notes
+- `.github/workflows/libjxlz_ci.yml` — repo-specific GitHub Actions workflow running Linux `x86_64` flake/full-suite checks plus native `aarch64` test runs on Linux and macOS, matching the README CI badge
 - `build.zig` — Zig build config: core static lib (`lib`), C-FFI static lib (`capi`), ReleaseFast default; `zig build test` now runs the core library tests, both benchmark harness tests, and the C-FFI unit tests
 - `build.zig.zon` — Package manifest
 - `flake.nix` — Nix dev shell, Garnix CI checks, package definition
@@ -68,5 +70,6 @@
 - `encoding.zig` — GroupHeader reading, ModularDecode/ModularGenericDecompress with retained `ReaderStrategy.reference` path and compile-time-specialized hot-path dispatch for per-channel decoding with WP/reference properties + sparse property/reference materialization driven by `PropertyUsePlan` + narrow no-reference property-mask specializations for the dominant filtered-tree `WP` masks, now with filtered-tree property IDs remapped into tiny local slot spaces and optional inline compact-node MA-tree lookup for the hot no-reference trees + scanline-hoisted top-row slices in the inner pixel loop + `predictNoWPProp` routing when the filtered tree does not consume WP property 15 + MetaApply + transform undo
 
 ## docs/plans/
+- `doc/upstream_optimization_notes.md` — upstream-facing summary of kept decode optimizations, including which wins are portable back to C/C++, where Zig aided specialization/layout work, and where Zig still has tradeoffs
 - `2026-03-06-libjxlz-design.md` — Overall project design document
 - `2026-03-06-phase1-foundation.md` — Phase 1 implementation plan

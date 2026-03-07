@@ -77,6 +77,7 @@
 - [x] Add `djxlz`, a C CLI that dogfoods only the public C FFI, with `--help`, `--about`, `--output_format`, stdin/stdout path aliases, debug-build warning, and PPM/PGM/PAM output verified by CLI smoke tests — 2026-03-07 ~7:15 AM EST
 - [x] Check in a permanent public-API decode benchmark harness (`tests/benchmark/decode_public_api.c`) plus `./bm`, compile it against both `libjxlz_capi` and upstream `libjxl`, log benchmark history, and add a deterministic checksum smoke test — 2026-03-07 ~7:30 AM EST
 - [x] Optimize the common C-API `UINT8` output path (RGB and grayscale expansion) and fix correct 8-bit scaling for high-bit-depth input; public-API benchmarks improved from `80.8 ms -> 76.2 ms` on the full corpus and `1.294 s -> 1.206 s` on the large multigroup case, reaching parity/slight lead vs upstream in the checked-in harness — 2026-03-07 ~7:40 AM EST
+- [x] Add a repo-specific GitHub Actions workflow (`libjxlz_ci.yml`), keep Garnix on the existing flake checks, and update the README with repo-owned CI badges plus an upstream-facing optimization note and honest current project status — 2026-03-07 ~10:20 AM EST
 - [ ] Conformance tests
 
 ## Phase 6: Encoder

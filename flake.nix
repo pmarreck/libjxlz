@@ -28,8 +28,9 @@
             buildPhase = ''
               export HOME=$TMPDIR
               export XDG_CACHE_HOME=$TMPDIR/cache
+              mkdir -p $out
               ${lib.optionalString stdenv.isDarwin "unset NIX_CFLAGS_COMPILE NIX_LDFLAGS"}
-              zig build -Doptimize=ReleaseFast --prefix $out
+              zig build install -Doptimize=ReleaseFast --prefix $out
             '';
             dontInstall = true;
           };
