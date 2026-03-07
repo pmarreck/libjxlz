@@ -112,7 +112,7 @@ pub const State = struct {
         return @intCast(63 - @clz(v));
     }
 
-    fn errorWeight(self: *const State, x: u64, maxweight: u32) u32 {
+    inline fn errorWeight(self: *const State, x: u64, maxweight: u32) u32 {
         _ = self;
         const shift_raw: i32 = @as(i32, @intCast(floorLog2Nonzero(x + 1))) - 5;
         const shift: u6 = if (shift_raw < 0) 0 else @intCast(shift_raw);
@@ -120,22 +120,22 @@ pub const State = struct {
         return 4 + ((maxweight * divlookup[x >> shift]) >> shift5);
     }
 
-    fn weightedAverage(self: *const State, p: *const [kNumPredictors]pixel_type_w, w_in: [kNumPredictors]u32) pixel_type_w {
+    inline fn weightedAverage(self: *const State, p: *const [kNumPredictors]pixel_type_w, w_in: [kNumPredictors]u32) pixel_type_w {
         _ = self;
         var w = w_in;
         var weight_sum: u32 = 0;
-        for (0..kNumPredictors) |i| {
+        inline for (0..kNumPredictors) |i| {
             weight_sum += w[i];
         }
         const log_weight = floorLog2Nonzero(weight_sum);
         const shift: u5 = if (log_weight >= 4) @intCast(log_weight - 4) else 0;
         weight_sum = 0;
-        for (0..kNumPredictors) |i| {
+        inline for (0..kNumPredictors) |i| {
             w[i] >>= shift;
             weight_sum += w[i];
         }
         var sum: pixel_type_w = @intCast((weight_sum >> 1) -% 1);
-        for (0..kNumPredictors) |i| {
+        inline for (0..kNumPredictors) |i| {
             sum += p[i] * @as(pixel_type_w, @intCast(w[i]));
         }
         return @intCast((@as(i128, sum) * @as(i128, divlookup[weight_sum -% 1])) >> 24);
@@ -149,7 +149,7 @@ pub const State = struct {
         const pos_NW = if (x > 0) pos_N - 1 else pos_N;
 
         var weights: [kNumPredictors]u32 = undefined;
-        for (0..kNumPredictors) |i| {
+        inline for (0..kNumPredictors) |i| {
             const err_sum: u64 = @as(u64, self.pred_errors[i][pos_N]) +
                 @as(u64, self.pred_errors[i][pos_NE]) +
                 @as(u64, self.pred_errors[i][pos_NW]);
@@ -211,7 +211,7 @@ pub const State = struct {
         const prev_row: usize = if (y & 1 != 0) (xsize + 2) else 0;
         const val = addBits(val_in);
         self.errors[cur_row + x] = @intCast(self.pred - val);
-        for (0..kNumPredictors) |i| {
+        inline for (0..kNumPredictors) |i| {
             const abs_diff = absW(self.prediction[i] - val);
             const err: u32 = @intCast((abs_diff + kPredictionRound) >> @as(u6, @intCast(kPredExtraBits)));
             self.pred_errors[i][cur_row + x] = err;

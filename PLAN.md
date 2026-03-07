@@ -47,6 +47,7 @@
 - [x] Split modular decode between retained `reference` and compile-time-specialized ANS/LZ77 reader strategies; add parity test, benchmark switch, and `x86_64` compile check; specialized path measured ~2% faster on the 6-file modular corpus — 2026-03-06 ~9:05 PM EST
 - [x] Add per-filtered-tree property-use planning so the modular general-case loop only materializes properties that the filtered MA tree can read — 2026-03-06 ~9:45 PM EST
 - [x] Benchmark property-use planning against checkpoint `df498e70`; keep it because the 6-file corpus improved from 209.3 ms to 204.6 ms (`~1.02x`) and the large-only subset improved from 287.4 ms to 284.3 ms (`~1.01x`) — 2026-03-06 ~9:45 PM EST
+- [x] Re-profile the modular decode hotspot stack and keep a Zig-level weighted predictor loop-unrolling pass because it improved the 6-file corpus from 209.9 ms to 207.5 ms and the large-only subset from 286.4 ms to 284.0 ms (`~1.01x` on both) while preserving `x86_64` ReleaseFast compilation — 2026-03-06 ~10:07 PM EST
 - [ ] Generalize the MA-tree LUT fast path beyond `gradient_only` / `wp_only`, starting with any filtered tree that reads exactly one non-reference property
 - [ ] End-to-end lossless decode test (real JXL → pixel data)
 - [ ] Multi-group frame decoding verification
