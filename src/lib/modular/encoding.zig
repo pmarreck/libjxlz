@@ -12,6 +12,7 @@ const pack_signed = @import("../base/pack_signed.zig");
 const options = @import("options.zig");
 const pixel_type = options.pixel_type;
 const pixel_type_w = options.pixel_type_w;
+const PropertyVal = options.PropertyVal;
 const Predictor = options.Predictor;
 const ModularOptions = options.ModularOptions;
 const weighted = @import("weighted.zig");
@@ -131,6 +132,23 @@ inline fn remapPropertyIndex(comptime property_mask: u8, property_index: i32) i1
     };
 }
 
+const kCompactNoRefLeaf = std.math.maxInt(u8);
+const kInlineCompactNoRefTreeNodes = 128;
+
+const CompactNoRefNode = struct {
+    property0: u8 = kCompactNoRefLeaf,
+    property1: u8 = 0,
+    property2: u8 = 0,
+    predictor_tag: u8 = 0,
+    child_id: u16 = 0,
+    _pad: u16 = 0,
+    splitval0: PropertyVal = 0,
+    splitval1: PropertyVal = 0,
+    splitval2: PropertyVal = 0,
+    multiplier: i32 = 1,
+    predictor_offset: i64 = 0,
+};
+
 /// Compacts a filtered no-reference tree into the local property-id space used by
 /// the hot mask-specialized loops, keeping slot zero as the always-zero sentinel.
 fn remapNoRefMaskTree(comptime property_mask: u8, flat_tree: []context_predict.FlatDecisionNode) void {
@@ -140,6 +158,63 @@ fn remapNoRefMaskTree(comptime property_mask: u8, flat_tree: []context_predict.F
         inline for (0..2) |i| {
             node.properties[i] = remapPropertyIndex(property_mask, node.properties[i]);
         }
+    }
+}
+
+/// Re-encodes remapped no-reference trees into a denser node layout so the hot
+/// specialized lookup loop touches less metadata per pixel.
+fn compactNoRefTree(
+    flat_tree: []const context_predict.FlatDecisionNode,
+    storage: []CompactNoRefNode,
+) ?[]const CompactNoRefNode {
+    if (flat_tree.len > storage.len or flat_tree.len > std.math.maxInt(u16)) return null;
+
+    for (flat_tree, 0..) |node, i| {
+        var compact = CompactNoRefNode{};
+        if (node.property0 < 0) {
+            if (node.childID > std.math.maxInt(u16)) return null;
+            compact.predictor_tag = @intCast(@intFromEnum(node.predictor));
+            compact.child_id = @intCast(node.childID);
+            compact.multiplier = node.multiplier;
+            compact.predictor_offset = node.predictor_offset;
+        } else {
+            if (node.property0 < 0 or node.property0 > std.math.maxInt(u8)) return null;
+            if (node.properties[0] < 0 or node.properties[0] > std.math.maxInt(u8)) return null;
+            if (node.properties[1] < 0 or node.properties[1] > std.math.maxInt(u8)) return null;
+            if (node.childID > std.math.maxInt(u16)) return null;
+
+            compact.property0 = @intCast(node.property0);
+            compact.property1 = @intCast(node.properties[0]);
+            compact.property2 = @intCast(node.properties[1]);
+            compact.child_id = @intCast(node.childID);
+            compact.splitval0 = node.splitval0;
+            compact.splitval1 = node.splitvals[0];
+            compact.splitval2 = node.splitvals[1];
+        }
+        storage[i] = compact;
+    }
+    return storage[0..flat_tree.len];
+}
+
+inline fn compactNoRefLookup(
+    nodes: []const CompactNoRefNode,
+    properties: []const pixel_type,
+) context_predict.MATreeLookup.LookupResult {
+    var pos: usize = 0;
+    while (true) {
+        const node = nodes[pos];
+        if (node.property0 == kCompactNoRefLeaf) {
+            return .{
+                .context = node.child_id,
+                .predictor = @enumFromInt(node.predictor_tag),
+                .offset = node.predictor_offset,
+                .multiplier = node.multiplier,
+            };
+        }
+        const p0 = properties[@as(usize, node.property0)] <= node.splitval0;
+        const off0: usize = if (properties[@as(usize, node.property1)] <= node.splitval1) 1 else 0;
+        const off1: usize = 2 | (if (properties[@as(usize, node.property2)] <= node.splitval2) @as(usize, 1) else 0);
+        pos = @as(usize, node.child_id) + (if (p0) off1 else off0);
     }
 }
 
@@ -240,12 +315,13 @@ inline fn readHybridUintClusteredLZ77Huff(reader: *ANSSymbolReader, ctx: usize, 
 /// Handles the common filtered-tree cases that use only non-reference properties
 /// from a small fixed mask, letting Zig constant-fold the property writes in the
 /// inner pixel loop while keeping the generic tree lookup and predictor logic.
-fn decodeModularChannelNoRefsMask(
+fn decodeModularChannelNoRefsMaskLoop(
     comptime read_next: anytype,
     comptime property_mask: u8,
+    comptime use_compact_tree: bool,
+    lookup_ctx: anytype,
     br: *BitReader,
     reader: *ANSSymbolReader,
-    flat_tree: []context_predict.FlatDecisionNode,
     wp_header: *const weighted.Header,
     channel: *Channel,
     allocator: std.mem.Allocator,
@@ -264,9 +340,6 @@ fn decodeModularChannelNoRefsMask(
     const slot_prop13 = compactPropertySlot(property_mask, kMaskProp13);
     const slot_prop15 = compactPropertySlot(property_mask, kMaskProp15);
     const compact_prop_count: usize = 1 + @as(usize, @popCount(property_mask));
-
-    remapNoRefMaskTree(property_mask, flat_tree);
-    const tree_lookup = context_predict.MATreeLookup.init(flat_tree);
     var properties = [_]pixel_type{0} ** compact_prop_count;
 
     var wp_state: ?weighted.State = null;
@@ -313,7 +386,10 @@ fn decodeModularChannelNoRefsMask(
                 }
             }
 
-            const lr = tree_lookup.lookup(&properties);
+            const lr = if (comptime use_compact_tree)
+                compactNoRefLookup(lookup_ctx, &properties)
+            else
+                lookup_ctx.lookup(&properties);
             const pred = context_predict.predictOne(
                 lr.predictor,
                 left,
@@ -334,6 +410,50 @@ fn decodeModularChannelNoRefsMask(
             }
         }
     }
+}
+
+fn decodeModularChannelNoRefsMask(
+    comptime read_next: anytype,
+    comptime property_mask: u8,
+    br: *BitReader,
+    reader: *ANSSymbolReader,
+    flat_tree: []context_predict.FlatDecisionNode,
+    wp_header: *const weighted.Header,
+    channel: *Channel,
+    allocator: std.mem.Allocator,
+    use_wp: bool,
+) JxlError!void {
+    remapNoRefMaskTree(property_mask, flat_tree);
+
+    var compact_storage: [kInlineCompactNoRefTreeNodes]CompactNoRefNode = undefined;
+    if (compactNoRefTree(flat_tree, &compact_storage)) |compact_tree| {
+        return decodeModularChannelNoRefsMaskLoop(
+            read_next,
+            property_mask,
+            true,
+            compact_tree,
+            br,
+            reader,
+            wp_header,
+            channel,
+            allocator,
+            use_wp,
+        );
+    }
+
+    const tree_lookup = context_predict.MATreeLookup.init(flat_tree);
+    return decodeModularChannelNoRefsMaskLoop(
+        read_next,
+        property_mask,
+        false,
+        tree_lookup,
+        br,
+        reader,
+        wp_header,
+        channel,
+        allocator,
+        use_wp,
+    );
 }
 
 // ── Decode a single modular channel ──
@@ -999,4 +1119,61 @@ test "remapNoRefMaskTree keeps zero sentinel at local slot zero" {
     try testing.expectEqual(@as(i16, 0), remapped[0].properties[0]);
     try testing.expectEqual(@as(i32, compactPropertySlot(mask, kMaskProp9)), remapped[0].property0);
     try testing.expectEqual(@as(i16, @intCast(compactPropertySlot(mask, kMaskProp15))), remapped[0].properties[1]);
+}
+
+test "compactNoRefTree preserves lookup for remapped tree" {
+    const mask = kMaskProp10 | kMaskProp11 | kMaskProp13 | kMaskProp15;
+    const original = [_]context_predict.FlatDecisionNode{
+        .{
+            .property0 = 13,
+            .splitval0 = 4,
+            .properties = .{ 10, 15 },
+            .splitvals = .{ 1, 7 },
+            .childID = 1,
+        },
+        .{ .property0 = -1, .predictor = .gradient, .childID = 3, .multiplier = 1 },
+        .{ .property0 = -1, .predictor = .weighted, .childID = 5, .multiplier = 2 },
+        .{ .property0 = -1, .predictor = .gradient, .childID = 7, .multiplier = 3 },
+        .{ .property0 = -1, .predictor = .weighted, .childID = 9, .multiplier = 4 },
+    };
+    var remapped = original;
+    remapNoRefMaskTree(mask, &remapped);
+
+    var compact_storage: [8]CompactNoRefNode = undefined;
+    const compact_tree = compactNoRefTree(&remapped, &compact_storage) orelse unreachable;
+
+    var generic_props = [_]pixel_type{0} ** context_predict.kNumNonrefProperties;
+    generic_props[10] = 3;
+    generic_props[11] = -2;
+    generic_props[13] = 6;
+    generic_props[context_predict.kWPProp] = 2;
+
+    var compact_props = [_]pixel_type{0} ** 5;
+    compact_props[compactPropertySlot(mask, kMaskProp10)] = generic_props[10];
+    compact_props[compactPropertySlot(mask, kMaskProp11)] = generic_props[11];
+    compact_props[compactPropertySlot(mask, kMaskProp13)] = generic_props[13];
+    compact_props[compactPropertySlot(mask, kMaskProp15)] = generic_props[context_predict.kWPProp];
+
+    const expected = context_predict.MATreeLookup.init(&remapped).lookup(&compact_props);
+    const actual = compactNoRefLookup(compact_tree, &compact_props);
+    try testing.expectEqualDeep(expected, actual);
+}
+
+test "compactNoRefTree returns null when inline storage is too small" {
+    const mask = kMaskProp13 | kMaskProp15;
+    var remapped = [_]context_predict.FlatDecisionNode{
+        .{
+            .property0 = 13,
+            .splitval0 = 4,
+            .properties = .{ 15, 0 },
+            .splitvals = .{ 7, 0 },
+            .childID = 1,
+        },
+        .{ .property0 = -1, .predictor = .gradient, .childID = 3, .multiplier = 1 },
+        .{ .property0 = -1, .predictor = .weighted, .childID = 5, .multiplier = 2 },
+    };
+    remapNoRefMaskTree(mask, &remapped);
+
+    var compact_storage: [2]CompactNoRefNode = undefined;
+    try testing.expectEqual(@as(?[]const CompactNoRefNode, null), compactNoRefTree(&remapped, &compact_storage));
 }
