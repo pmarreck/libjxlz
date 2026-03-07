@@ -83,6 +83,7 @@
 - [x] Add the first encoder-side benchmark/profiling scaffold (`bench_modular_encode_prep.zig`) for modular predictor selection plus hybrid-uint tokenization, wire it into `zig build test`, `./test`, and `./bm`, and log the initial baseline (`1024x768x3`, repeat `24`: `1.1987 s`) — 2026-03-07 ~11:20 AM EST
 - [x] Fix Linux CI for the encoder scaffold by keeping it pure-library (no `capi_root` import leak) and adding an `x86_64-linux` compile-only smoke check so `./test` catches libc-linkage regressions before push — 2026-03-07 ~11:30 AM EST
 - [x] Add `x86_64-windows-gnu` compile-only coverage via a checked-in smoke test, wire it into `./test`, and expose it through the Linux flake checks so both GitHub Actions and Garnix catch Windows portability regressions early — 2026-03-07 ~12:05 PM EST
+- [x] Investigate `bad_conversion_samples/*` producing apparently black JPEG XL outputs via the external `jpegxl` wrapper / `cjxl`; confirm the files are valid, `djxl`/`sips`/Preview decode them correctly, and narrow the black-screen issue to Finder Quick Look on grayscale JXL rather than a core encoder/decoder bug — 2026-03-07 ~12:35 PM EST
 - [ ] Conformance tests
 
 ## Phase 6: Encoder
@@ -94,6 +95,9 @@
 - [ ] Fast lossless encoder
 - [ ] C FFI encode API
 - [ ] cjxlz CLI
+- [x] Encoder perf follow-up option 1: extend `bench_weighted_predict.zig` with explicit `generic_null_props` vs `no_props` modes, add parity + stable-checksum coverage for the encoder-side `predictNoProps` path, and benchmark the two callsites; the longer `600x300 repeat=256` run came out essentially at parity, so the real win here is cleaner measurement rather than a kept speedup — 2026-03-07 ~12:45 PM EST
+- [ ] Encoder perf follow-up option 2: make benchmark-only checksum/profile bookkeeping optional on the fast path so the scaffold better approximates eventual encoder cost
+- [ ] Encoder perf follow-up option 3: start the first real modular writer slice and shift future optimization work from the synthetic scaffold to true bitstream-writing hot paths
 
 ## Phase 7: Extras
 - [ ] JPEG recompression (jpegli)

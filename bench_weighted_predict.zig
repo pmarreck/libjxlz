@@ -8,6 +8,11 @@ const pixel_type_w = options.pixel_type_w;
 
 const seed: u64 = 0xcbf29ce484222325;
 
+const WorkloadMode = enum {
+    generic_null_props,
+    no_props,
+};
+
 fn mix(acc: *u64, value: u64) void {
     acc.* = (acc.* ^ value) *% 0x100000001b3;
 }
@@ -41,11 +46,36 @@ fn resetState(state: *weighted.State) void {
     @memset(state.error_storage, 0);
 }
 
-fn runWorkload(
+/// Keeps the benchmark able to compare the generic null-properties callsite
+/// against the explicit encoder-side `predictNoProps` path without changing the
+/// surrounding synthetic workload.
+fn predictForMode(
+    state: *weighted.State,
+    mode: WorkloadMode,
+    x: usize,
+    y: usize,
+    width: usize,
+    top: pixel_type_w,
+    left: pixel_type_w,
+    topright: pixel_type_w,
+    topleft: pixel_type_w,
+    toptop: pixel_type_w,
+) pixel_type_w {
+    return switch (mode) {
+        .generic_null_props => state.predict(x, y, width, top, left, topright, topleft, toptop, null, 0),
+        .no_props => state.predictNoProps(x, y, width, top, left, topright, topleft, toptop),
+    };
+}
+
+/// Runs the synthetic weighted-predictor workload in one of two callsite modes
+/// so future tuning can measure the real encoder `predictNoProps` path against
+/// the older generic-null-properties route.
+fn runWorkloadMode(
     allocator: std.mem.Allocator,
     width: usize,
     height: usize,
     repeat: usize,
+    mode: WorkloadMode,
 ) !u64 {
     var state = try weighted.State.init(allocator, weighted.Header{}, width, height);
     defer state.deinit();
@@ -71,7 +101,7 @@ fn runWorkload(
                 const topright: pixel_type_w = if (x + 1 < width and y > 0) prev_row[x + 1] else top;
                 const toptop: pixel_type_w = if (y > 1) prev2_row[x] else top;
 
-                const pred = state.predict(x, y, width, top, left, topright, topleft, toptop, null, 0);
+                const pred = predictForMode(&state, mode, x, y, width, top, left, topright, topleft, toptop);
                 const value = syntheticPixel(x, y);
                 row[x] = value;
                 state.updateErrors(value, x, y, width);
@@ -85,6 +115,16 @@ fn runWorkload(
     return checksum;
 }
 
+fn parseMode(arg: []const u8) !WorkloadMode {
+    if (std.mem.eql(u8, arg, "generic") or std.mem.eql(u8, arg, "generic_null_props")) {
+        return .generic_null_props;
+    }
+    if (std.mem.eql(u8, arg, "no_props")) {
+        return .no_props;
+    }
+    return error.InvalidArgs;
+}
+
 pub fn main() !void {
     const allocator = std.heap.c_allocator;
     const args = try std.process.argsAlloc(allocator);
@@ -93,6 +133,7 @@ pub fn main() !void {
     var repeat: usize = 1;
     var width: usize = 600;
     var height: usize = 300;
+    var mode: WorkloadMode = .generic_null_props;
     var print_checksum = false;
     var arg_i: usize = 1;
     while (arg_i < args.len and std.mem.startsWith(u8, args[arg_i], "--")) {
@@ -117,6 +158,12 @@ pub fn main() !void {
             arg_i += 2;
             continue;
         }
+        if (std.mem.eql(u8, args[arg_i], "--mode")) {
+            if (arg_i + 1 >= args.len) return error.InvalidArgs;
+            mode = try parseMode(args[arg_i + 1]);
+            arg_i += 2;
+            continue;
+        }
         if (std.mem.eql(u8, args[arg_i], "--print-checksum")) {
             print_checksum = true;
             arg_i += 1;
@@ -126,13 +173,24 @@ pub fn main() !void {
     }
     if (arg_i != args.len) return error.InvalidArgs;
 
-    const checksum = try runWorkload(allocator, width, height, repeat);
+    const checksum = try runWorkloadMode(allocator, width, height, repeat, mode);
     if (print_checksum or checksum == 0xDEADBEEFDEADBEEF) {
         std.debug.print("checksum={x}\n", .{checksum});
     }
 }
 
 test "weighted predictor workload checksum stays stable" {
-    const checksum = try runWorkload(std.testing.allocator, 32, 24, 2);
+    const checksum = try runWorkloadMode(std.testing.allocator, 32, 24, 2, .generic_null_props);
+    try std.testing.expectEqual(@as(u64, 0x2d36a9a2826f8f4d), checksum);
+}
+
+test "weighted predictor no-props workload matches generic null-properties path" {
+    const generic = try runWorkloadMode(std.testing.allocator, 32, 24, 2, .generic_null_props);
+    const no_props = try runWorkloadMode(std.testing.allocator, 32, 24, 2, .no_props);
+    try std.testing.expectEqual(generic, no_props);
+}
+
+test "weighted predictor no-props workload checksum stays stable" {
+    const checksum = try runWorkloadMode(std.testing.allocator, 32, 24, 2, .no_props);
     try std.testing.expectEqual(@as(u64, 0x2d36a9a2826f8f4d), checksum);
 }
