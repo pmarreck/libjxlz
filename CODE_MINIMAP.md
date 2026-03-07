@@ -7,6 +7,7 @@
 - `build` — Bash: `nix develop -c zig build` with --test/--debug flags
 - `test` — Bash: runs Zig unit tests + CLI tests, accumulates errors
 - `bench_decode_runtime.zig` — Runtime decode benchmark harness (`--repeat`, `--reader reference|specialized`, preloaded inputs, full frame decode) with sampled image fingerprints plus known-fixture checksum verification (`--no-verify-known`, `--print-checksum`) so benchmarking catches partial/zero decodes instead of timing them
+- `bench_weighted_predict.zig` — Synthetic weighted-predictor microbenchmark (`--repeat`, `--width`, `--height`) that isolates `weighted.State.predict` + `updateErrors` with a stable checksum, for measuring predictor-only changes before they are tried in full-frame decode
 
 ## src/lib/
 - `root.zig` — Module root, re-exports all submodules via refAllDecls

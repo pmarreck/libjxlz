@@ -56,6 +56,7 @@
 - [x] Harden `bench_decode_runtime.zig` with sampled image fingerprints, known-fixture checksum verification, and explicit checksum-print/skip-verification switches so benchmarks fail on partial or zero decodes — 2026-03-07 ~12:15 AM EST
 - [x] Make `zig build test` run the benchmark harness tests in addition to the library unit/integration suite — 2026-03-07 ~12:20 AM EST
 - [x] Re-profile the corrected multi-group modular path, reject three losing weighted-predictor micro-optimizations, and keep a low-risk scanline row-slice hoist in `decodeModularChannelImpl` because stricter benchmarks showed it improving both the 600x300 fixture and the full committed corpus by about `~1%` while preserving `x86_64-macos` compilation — 2026-03-07 ~1:35 AM EST
+- [x] Add a dedicated weighted-predictor microbenchmark harness (`bench_weighted_predict.zig`) with a stable synthetic-workload checksum and include its tests in `zig build test` so predictor-only changes can be evaluated without full-frame decode noise — 2026-03-07 ~12:25 AM EST
 - [ ] Generalize the MA-tree LUT fast path beyond `gradient_only` / `wp_only`, starting with any filtered tree that reads exactly one non-reference property
 - [x] End-to-end lossless decode test (real JXL → exact pixel data) — 2026-03-06 ~11:20 PM EST
 - [x] Multi-group frame decoding verification — 2026-03-06 ~11:20 PM EST
