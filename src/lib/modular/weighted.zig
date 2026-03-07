@@ -239,41 +239,20 @@ test "Header all default" {
 }
 
 test "Header non-default" {
-    // AllDefault=0, then 7 x 5-bit values + 4 x 4-bit values = 51 bits total
-    // p1C=8(01000), p2C=8(01000), p3Ca=4(00100), p3Cb=0(00000), p3Cc=3(00011), p3Cd=23(10111), p3Ce=2(00010)
-    // w[0]=0xd(1101), w[1]=0xb(1011), w[2]=0xc(1100), w[3]=0xc(1100)
-    // bit0=0 (not all_default)
-    // bits 1-5: p1C=8 = 01000 -> bits 1-5
-    // bits 6-10: p2C=8 = 01000
-    // etc. - let's just check it doesn't crash on non-default
-    // Construct: 0 | 01000 | 01000 | 00100 | 00000 | 00011 | 10111 | 00010 | 1101 | 1011 | 1100 | 1100
-    // That's 52 bits. Let me pack them properly.
-    // bit 0: 0 (not all default)
-    // bits 1-5: 01000 (p1C=8)
-    // bits 6-10: 01000 (p2C=8)
-    // bits 11-15: 00100 (p3Ca=4)
-    // bits 16-20: 00000 (p3Cb=0)
-    // bits 21-25: 00011 (p3Cc=3)
-    // bits 26-30: 10111 (p3Cd=23)
-    // bits 31-35: 00010 (p3Ce=2)
-    // bits 36-39: 1101 (w0=13)
-    // bits 40-43: 1011 (w1=11)
-    // bits 44-47: 1100 (w2=12)
-    // bits 48-51: 1100 (w3=12)
     var data = [_]u8{
-        // bits 0-7:  0_01000_01 = 0b01000010 = 0x42... wait let me be more careful
-        // LSB first in BitReader
-        // bit0=0, bit1=0,bit2=0,bit3=1,bit4=0,bit5=0 (p1C=8: 01000 LSB first = 00010... no)
-        // Actually BitReader reads LSB first. p1C=8 in binary is 01000.
-        // readBits(5) reads 5 LSB bits. So for value 8: binary 01000, read as bits 0-4.
-        // byte0 bits 0-7: bit0=0(not default), bits1-5=p1C(8=01000), bits6-7=low 2 of p2C(8=01000)
-        // p1C=8: 5 bits = 0b01000. In LSB order in byte: bits 1-5 of byte0.
-        // byte0: bit0=0, bit1-5=01000 -> 10000 in positions 1-5 = 0b0_01000_0 = reversed...
-        // This is getting complex. Let me just test that non-default reading doesn't panic.
         0x10, 0x10, 0x80, 0xB8, 0x42, 0xDB, 0x0C, 0x00,
     };
     var br = BitReader.init(&data);
     const h = Header.readFromBitStream(&br);
-    // Just verify it read something (not all default)
-    _ = h;
+    try testing.expectEqual(@as(pixel_type, 8), h.p1C);
+    try testing.expectEqual(@as(pixel_type, 0), h.p2C);
+    try testing.expectEqual(@as(pixel_type, 2), h.p3Ca);
+    try testing.expectEqual(@as(pixel_type, 0), h.p3Cb);
+    try testing.expectEqual(@as(pixel_type, 4), h.p3Cc);
+    try testing.expectEqual(@as(pixel_type, 14), h.p3Cd);
+    try testing.expectEqual(@as(pixel_type, 5), h.p3Ce);
+    try testing.expectEqual(@as(u32, 4), h.w[0]);
+    try testing.expectEqual(@as(u32, 11), h.w[1]);
+    try testing.expectEqual(@as(u32, 13), h.w[2]);
+    try testing.expectEqual(@as(u32, 12), h.w[3]);
 }

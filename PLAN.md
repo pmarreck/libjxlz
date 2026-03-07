@@ -48,9 +48,13 @@
 - [x] Add per-filtered-tree property-use planning so the modular general-case loop only materializes properties that the filtered MA tree can read — 2026-03-06 ~9:45 PM EST
 - [x] Benchmark property-use planning against checkpoint `df498e70`; keep it because the 6-file corpus improved from 209.3 ms to 204.6 ms (`~1.02x`) and the large-only subset improved from 287.4 ms to 284.3 ms (`~1.01x`) — 2026-03-06 ~9:45 PM EST
 - [x] Re-profile the modular decode hotspot stack and keep a Zig-level weighted predictor loop-unrolling pass because it improved the 6-file corpus from 209.9 ms to 207.5 ms and the large-only subset from 286.4 ms to 284.0 ms (`~1.01x` on both) while preserving `x86_64` ReleaseFast compilation — 2026-03-06 ~10:07 PM EST
+- [x] Validate TOC section boundaries, propagate multi-section section-reader errors, and add exact-pixel + truncation regression coverage for a real 3-group grayscale frame (`lossless_600x10_multisection.jxl`) — 2026-03-06 ~11:20 PM EST
+- [x] Reject unsupported DC-global patches/splines/noise flags explicitly and size modular YCbCr channels to their chroma-subsampled dimensions before group decode — 2026-03-06 ~11:25 PM EST
+- [x] Tighten weak decode/frame/weighted tests to assert exact values instead of conditional/non-asserting behavior, and re-verify `x86_64-macos` compilation — 2026-03-06 ~11:30 PM EST
+- [x] Re-benchmark after the multi-section fix and confirm the old large-corpus baseline was invalid because multi-group channels were not actually being decoded (`grad_2048_raw.jxl` old baseline ended at `pLast=0/0/0`) — 2026-03-06 ~11:35 PM EST
 - [ ] Generalize the MA-tree LUT fast path beyond `gradient_only` / `wp_only`, starting with any filtered tree that reads exactly one non-reference property
-- [ ] End-to-end lossless decode test (real JXL → pixel data)
-- [ ] Multi-group frame decoding verification
+- [x] End-to-end lossless decode test (real JXL → exact pixel data) — 2026-03-06 ~11:20 PM EST
+- [x] Multi-group frame decoding verification — 2026-03-06 ~11:20 PM EST
 
 ## Phase 4: Render Pipeline
 - [ ] Inverse DCT (SIMD)

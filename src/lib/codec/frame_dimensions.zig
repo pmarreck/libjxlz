@@ -124,7 +124,10 @@ test "FrameDimensions basic VarDCT" {
     // 13 * 8 = 104 padded
     try testing.expectEqual(@as(usize, 104), fd.xsize_padded);
     try testing.expectEqual(@as(usize, 104), fd.ysize_padded);
-    try testing.expect(fd.num_groups >= 1);
+    try testing.expectEqual(@as(usize, 256), fd.grp_dim);
+    try testing.expectEqual(@as(usize, 1), fd.xsize_groups);
+    try testing.expectEqual(@as(usize, 1), fd.ysize_groups);
+    try testing.expectEqual(@as(usize, 1), fd.num_groups);
 }
 
 test "FrameDimensions modular mode no padding" {
@@ -149,6 +152,6 @@ test "FrameDimensions groupRect" {
     const r = fd.groupRect(0);
     try testing.expectEqual(@as(usize, 0), r.x0());
     try testing.expectEqual(@as(usize, 0), r.y0());
-    try testing.expect(r.xsize() > 0);
-    try testing.expect(r.ysize() > 0);
+    try testing.expectEqual(@as(usize, 256), r.xsize());
+    try testing.expectEqual(@as(usize, 256), r.ysize());
 }

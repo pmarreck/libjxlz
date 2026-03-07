@@ -30,6 +30,85 @@ const ModularOptions = options_mod.ModularOptions;
 const transform_mod = @import("../modular/transform.zig");
 const float_utils = @import("../base/float.zig");
 
+const SectionLayout = struct {
+    offsets: []u64,
+    total_size: u64,
+};
+
+/// Computes per-section byte offsets and validates that TOC-declared section sizes
+/// stay within the provided frame buffer before any slice is taken.
+fn computeSectionLayout(
+    allocator: std.mem.Allocator,
+    header_byte_offset: usize,
+    data_len: usize,
+    toc_entries: []const TocEntry,
+) JxlError!SectionLayout {
+    if (header_byte_offset > data_len) return error.GenericError;
+
+    const layout = try toc.computeGroupOffsets(allocator, toc_entries);
+    errdefer allocator.free(layout.offsets);
+
+    const payload_len: u64 = @intCast(data_len - header_byte_offset);
+    if (layout.total_size > payload_len) return error.GenericError;
+
+    var i: usize = 0;
+    while (i < toc_entries.len) : (i += 1) {
+        const end = common.safeAdd(layout.offsets[i], toc_entries[i].size) orelse return error.GenericError;
+        if (end > payload_len) return error.GenericError;
+    }
+
+    return .{
+        .offsets = layout.offsets,
+        .total_size = layout.total_size,
+    };
+}
+
+fn sectionData(
+    data: []const u8,
+    header_byte_offset: usize,
+    relative_offset: u64,
+    size: u32,
+) JxlError![]const u8 {
+    const start_u64 = common.safeAdd(@as(u64, @intCast(header_byte_offset)), relative_offset) orelse return error.GenericError;
+    const end_u64 = common.safeAdd(start_u64, size) orelse return error.GenericError;
+    const start: usize = @intCast(start_u64);
+    const end: usize = @intCast(end_u64);
+    if (end > data.len) return error.GenericError;
+    return data[start..end];
+}
+
+fn subsampledSize(size: usize, shift: i32) usize {
+    return if (shift >= 0)
+        common.divCeil(size, @as(usize, 1) << @intCast(shift))
+    else
+        size;
+}
+
+/// Resizes the color channels for modular YCbCr so the in-memory image matches
+/// the chroma-subsampled geometry expected by per-group decoding and transforms.
+fn applyYCbCrChromaSubsampling(
+    allocator: std.mem.Allocator,
+    image: *Image,
+    frame_dim: FrameDimensions,
+    chroma_subsampling: frame_header_mod.YCbCrChromaSubsampling,
+    nb_chans: usize,
+) JxlError!void {
+    for (0..nb_chans) |c| {
+        const hshift: i32 = @intCast(chroma_subsampling.hShift(@intCast(c)));
+        const vshift: i32 = @intCast(chroma_subsampling.vShift(@intCast(c)));
+        const width = subsampledSize(frame_dim.xsize, hshift);
+        const height = subsampledSize(frame_dim.ysize, vshift);
+
+        var ch = &image.channels.items[c];
+        ch.hshift = hshift;
+        ch.vshift = vshift;
+        if (ch.w == width and ch.h == height and ch.row_stride == width) continue;
+
+        ch.deinit();
+        ch.* = try Channel.create(allocator, width, height, hshift, vshift);
+    }
+}
+
 // ── DequantMatrices DC quantization ──
 // Transliterated from lib/jxl/quant_weights.cc DequantMatrices::DecodeDC
 
@@ -188,16 +267,13 @@ pub const ModularFrameDecoder = struct {
 
         // Set up channel subsampling for YCbCr
         if (frame_header.color_transform == .ycbcr) {
-            for (0..nb_chans) |c| {
-                var ch = &self.full_image.channels.items[c];
-                ch.hshift = @intCast(frame_header.chroma_subsampling.hShift(@intCast(c)));
-                ch.vshift = @intCast(frame_header.chroma_subsampling.vShift(@intCast(c)));
-                const xsize_shifted = common.divCeil(self.frame_dim.xsize, @as(usize, 1) << @intCast(ch.hshift));
-                const ysize_shifted = common.divCeil(self.frame_dim.ysize, @as(usize, 1) << @intCast(ch.vshift));
-                _ = xsize_shifted;
-                _ = ysize_shifted;
-                // TODO: shrink channel to shifted size
-            }
+            try applyYCbCrChromaSubsampling(
+                self.allocator,
+                &self.full_image,
+                self.frame_dim,
+                frame_header.chroma_subsampling,
+                nb_chans,
+            );
         }
 
         // Decode global modular image
@@ -273,18 +349,20 @@ pub const ModularFrameDecoder = struct {
         var gi = try Image.create(self.allocator, xsize, ysize, self.full_image.bitdepth, 0);
         defer gi.deinit();
 
-        // Find channels that need per-group decoding
+        // Find channels that need per-group decoding.
+        // Channels larger than the group dimensions are tiled across sections;
+        // small channels are already fully represented in the global image.
         var c = self.full_image.nb_meta_channels;
         while (c < self.full_image.channels.items.len) : (c += 1) {
             const fch = &self.full_image.channels.items[c];
-            if (fch.w <= self.frame_dim.grp_dim and fch.h <= self.frame_dim.grp_dim) break;
+            if (fch.w > self.frame_dim.grp_dim or fch.h > self.frame_dim.grp_dim) break;
         }
         const beginc = c;
 
         while (c < self.full_image.channels.items.len) : (c += 1) {
             const fch = &self.full_image.channels.items[c];
-            const rw = if (fch.hshift >= 0) xsize >> @intCast(fch.hshift) else xsize;
-            const rh = if (fch.vshift >= 0) ysize >> @intCast(fch.vshift) else ysize;
+            const rw = subsampledSize(xsize, fch.hshift);
+            const rh = subsampledSize(ysize, fch.vshift);
             if (rw == 0 or rh == 0) continue;
             var gc = try Channel.create(self.allocator, rw, rh, fch.hshift, fch.vshift);
             _ = &gc;
@@ -392,7 +470,12 @@ pub const FrameDecoder = struct {
         comptime reader_strategy: ReaderStrategy,
         br: *BitReader,
     ) JxlError!void {
-        // TODO: decode patches, splines, noise if frame_header.flags indicate them
+        const unsupported_flags = frame_header_mod.FrameFlags.noise |
+            frame_header_mod.FrameFlags.patches |
+            frame_header_mod.FrameFlags.splines;
+        if ((self.frame_header.flags & unsupported_flags) != 0) {
+            return error.Unsupported;
+        }
 
         // DequantMatrices::DecodeDC — always called, even for modular frames
         var matrices = DequantMatrices{};
@@ -421,62 +504,48 @@ pub const FrameDecoder = struct {
         var header_br = BitReader.init(data);
         try self.initFrame(&header_br);
         const header_byte_offset = self.headerBytes(&header_br);
-        header_br.close() catch {};
+        try header_br.close();
 
-        const num_toc = self.toc_entries.len;
+        const layout = try computeSectionLayout(self.allocator, header_byte_offset, data.len, self.toc_entries);
+        defer self.allocator.free(layout.offsets);
 
-        if (num_toc == 1) {
-            // Single-section frame (common for small lossless images)
-            const section_data = data[header_byte_offset..];
-            var section_br = BitReader.init(section_data);
+        var found_dc_global = false;
+        for (self.toc_entries, 0..) |entry, i| {
+            if (entry.id != 0) continue;
+            if (entry.size == 0) continue;
+
+            const data_slice = try sectionData(data, header_byte_offset, layout.offsets[i], entry.size);
+            var section_br = BitReader.init(data_slice);
             try self.processDCGlobalWithReaderStrategy(reader_strategy, &section_br);
-            section_br.close() catch {};
-        } else {
-            // Multi-section frame: compute offsets and process in order
-            var pos = header_byte_offset;
+            try section_br.close();
+            found_dc_global = true;
+            break;
+        }
+        if (!found_dc_global) return error.GenericError;
 
-            // Find DC Global section (id=0) and process it first
-            for (0..num_toc) |i| {
-                if (self.toc_entries[i].id == 0) {
-                    const section_data = data[pos..];
-                    var section_br = BitReader.init(section_data);
-                    try self.processDCGlobalWithReaderStrategy(reader_strategy, &section_br);
-                    section_br.close() catch {};
-                    break;
-                }
-                pos += self.toc_entries[i].size;
-            }
+        for (self.toc_entries, 0..) |entry, i| {
+            if (entry.id < 1 or entry.id > self.frame_dim.num_dc_groups) continue;
+            if (entry.size == 0) continue;
 
-            // Process DC groups
-            pos = header_byte_offset;
-            for (0..num_toc) |i| {
-                const entry = self.toc_entries[i];
-                if (entry.id >= 1 and entry.id <= self.frame_dim.num_dc_groups) {
-                    const group_id = entry.id - 1;
-                    const section_data = data[pos .. pos + entry.size];
-                    var section_br = BitReader.init(section_data);
-                    self.modular_decoder.decodeGroup(&section_br, group_id, 0, true) catch {};
-                    section_br.close() catch {};
-                }
-                pos += entry.size;
-            }
+            const group_id = entry.id - 1;
+            const data_slice = try sectionData(data, header_byte_offset, layout.offsets[i], entry.size);
+            var section_br = BitReader.init(data_slice);
+            try self.modular_decoder.decodeGroup(&section_br, group_id, 0, true);
+            try section_br.close();
+        }
 
-            // Process AC groups
-            const ac_global_index = 1 + self.frame_dim.num_dc_groups;
-            pos = header_byte_offset;
-            for (0..num_toc) |i| {
-                const entry = self.toc_entries[i];
-                if (entry.id > ac_global_index) {
-                    const ac_idx = entry.id - ac_global_index - 1;
-                    const group_id = ac_idx % self.frame_dim.num_groups;
-                    const pass_id = ac_idx / self.frame_dim.num_groups;
-                    const section_data = data[pos .. pos + entry.size];
-                    var section_br = BitReader.init(section_data);
-                    self.modular_decoder.decodeGroup(&section_br, group_id, pass_id, false) catch {};
-                    section_br.close() catch {};
-                }
-                pos += entry.size;
-            }
+        const ac_global_index = 1 + self.frame_dim.num_dc_groups;
+        for (self.toc_entries, 0..) |entry, i| {
+            if (entry.id <= ac_global_index) continue;
+            if (entry.size == 0) continue;
+
+            const ac_idx = entry.id - ac_global_index - 1;
+            const group_id = ac_idx % self.frame_dim.num_groups;
+            const pass_id = ac_idx / self.frame_dim.num_groups;
+            const data_slice = try sectionData(data, header_byte_offset, layout.offsets[i], entry.size);
+            var section_br = BitReader.init(data_slice);
+            try self.modular_decoder.decodeGroup(&section_br, group_id, pass_id, false);
+            try section_br.close();
         }
 
         // Finalize: undo transforms on full image
@@ -533,4 +602,71 @@ test "FrameDecoder init/deinit" {
     var dec = FrameDecoder.init(allocator, &metadata);
     defer dec.deinit();
     try testing.expect(!dec.decoded_dc_global);
+}
+
+test "computeSectionLayout computes exact offsets" {
+    const allocator = testing.allocator;
+    const entries = [_]TocEntry{
+        .{ .id = 0, .size = 4 },
+        .{ .id = 1, .size = 0 },
+        .{ .id = 2, .size = 3 },
+    };
+
+    const layout = try computeSectionLayout(allocator, 5, 12, &entries);
+    defer allocator.free(layout.offsets);
+
+    try testing.expectEqual(@as(u64, 7), layout.total_size);
+    try testing.expectEqual(@as(u64, 0), layout.offsets[0]);
+    try testing.expectEqual(@as(u64, 4), layout.offsets[1]);
+    try testing.expectEqual(@as(u64, 4), layout.offsets[2]);
+}
+
+test "computeSectionLayout rejects truncated payload" {
+    const allocator = testing.allocator;
+    const entries = [_]TocEntry{
+        .{ .id = 0, .size = 4 },
+        .{ .id = 1, .size = 12 },
+    };
+
+    try testing.expectError(error.GenericError, computeSectionLayout(allocator, 5, 16, &entries));
+}
+
+test "processDCGlobal rejects unsupported frame features" {
+    const allocator = testing.allocator;
+    var metadata = CodecMetadata{};
+    var dec = FrameDecoder.init(allocator, &metadata);
+    defer dec.deinit();
+    dec.frame_header.flags = frame_header_mod.FrameFlags.noise;
+
+    var data = [_]u8{0x01};
+    var br = BitReader.init(&data);
+
+    try testing.expectError(error.Unsupported, dec.processDCGlobalWithReaderStrategy(.specialized, &br));
+}
+
+test "applyYCbCrChromaSubsampling shrinks chroma channels" {
+    const allocator = testing.allocator;
+    var image = try Image.create(allocator, 13, 9, 8, 3);
+    defer image.deinit();
+
+    var frame_dim = FrameDimensions{};
+    frame_dim.set(13, 9, 1, 0, 0, true, 1);
+    const subsampling = frame_header_mod.YCbCrChromaSubsampling{
+        .channel_mode = .{ 0, 1, 1 },
+        .maxhs = 1,
+        .maxvs = 1,
+    };
+
+    try applyYCbCrChromaSubsampling(allocator, &image, frame_dim, subsampling, 3);
+
+    try testing.expectEqual(@as(usize, 13), image.channels.items[0].w);
+    try testing.expectEqual(@as(usize, 9), image.channels.items[0].h);
+    try testing.expectEqual(@as(i32, 0), image.channels.items[0].hshift);
+    try testing.expectEqual(@as(i32, 0), image.channels.items[0].vshift);
+    try testing.expectEqual(@as(usize, 7), image.channels.items[1].w);
+    try testing.expectEqual(@as(usize, 5), image.channels.items[1].h);
+    try testing.expectEqual(@as(i32, 1), image.channels.items[1].hshift);
+    try testing.expectEqual(@as(i32, 1), image.channels.items[1].vshift);
+    try testing.expectEqual(@as(usize, 7), image.channels.items[2].w);
+    try testing.expectEqual(@as(usize, 5), image.channels.items[2].h);
 }

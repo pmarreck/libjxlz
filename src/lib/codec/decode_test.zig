@@ -148,7 +148,7 @@ test "decode lossless 4x4 modular global info" {
 
     // After global decode, full_image should have channels
     // Before undo transforms, channel count may differ (palette reduces 3 to 2)
-    try testing.expect(mod_dec.full_image.channels.items.len >= 1);
+    try testing.expectEqual(@as(usize, 2), mod_dec.full_image.channels.items.len);
     try testing.expectEqual(@as(usize, 4), mod_dec.full_image.w);
     try testing.expectEqual(@as(usize, 4), mod_dec.full_image.h);
 
@@ -159,24 +159,26 @@ test "decode lossless 4x4 modular global info" {
     try transform_zig.undoTransforms(&mod_dec.full_image, &wp_hdr);
 
     // After undo transforms (palette inverse), should have 3 RGB channels
-    try testing.expect(mod_dec.full_image.channels.items.len >= 3);
-    if (mod_dec.full_image.channels.items.len >= 3) {
-        const ch_r = &mod_dec.full_image.channels.items[0];
-        const ch_g = &mod_dec.full_image.channels.items[1];
-        const ch_b = &mod_dec.full_image.channels.items[2];
+    try testing.expectEqual(@as(usize, 3), mod_dec.full_image.channels.items.len);
+    const ch_r = &mod_dec.full_image.channels.items[0];
+    const ch_g = &mod_dec.full_image.channels.items[1];
+    const ch_b = &mod_dec.full_image.channels.items[2];
+    try testing.expectEqual(@as(usize, 4), ch_r.w);
+    try testing.expectEqual(@as(usize, 4), ch_r.h);
+    try testing.expectEqual(@as(usize, 4), ch_g.w);
+    try testing.expectEqual(@as(usize, 4), ch_g.h);
+    try testing.expectEqual(@as(usize, 4), ch_b.w);
+    try testing.expectEqual(@as(usize, 4), ch_b.h);
 
-        if (ch_r.w == 4 and ch_r.h == 4) {
-            // Verify pixel (0,0) = (0, 0, 128)
-            try testing.expectEqual(@as(i32, 0), ch_r.rowConst(0)[0]);
-            try testing.expectEqual(@as(i32, 0), ch_g.rowConst(0)[0]);
-            try testing.expectEqual(@as(i32, 128), ch_b.rowConst(0)[0]);
+    // Verify pixel (0,0) = (0, 0, 128)
+    try testing.expectEqual(@as(i32, 0), ch_r.rowConst(0)[0]);
+    try testing.expectEqual(@as(i32, 0), ch_g.rowConst(0)[0]);
+    try testing.expectEqual(@as(i32, 128), ch_b.rowConst(0)[0]);
 
-            // Verify pixel (3,3) = (255, 255, 128)
-            try testing.expectEqual(@as(i32, 255), ch_r.rowConst(3)[3]);
-            try testing.expectEqual(@as(i32, 255), ch_g.rowConst(3)[3]);
-            try testing.expectEqual(@as(i32, 128), ch_b.rowConst(3)[3]);
-        }
-    }
+    // Verify pixel (3,3) = (255, 255, 128)
+    try testing.expectEqual(@as(i32, 255), ch_r.rowConst(3)[3]);
+    try testing.expectEqual(@as(i32, 255), ch_g.rowConst(3)[3]);
+    try testing.expectEqual(@as(i32, 128), ch_b.rowConst(3)[3]);
 }
 
 test "decode lossless 16x16 modular" {
@@ -229,7 +231,7 @@ test "decode lossless 16x16 modular" {
     try transform_zig.undoTransforms(&mod_dec.full_image, &wp_hdr);
 
     // Verify dimensions
-    try testing.expect(mod_dec.full_image.channels.items.len >= 3);
+    try testing.expectEqual(@as(usize, 3), mod_dec.full_image.channels.items.len);
     const ch_r = &mod_dec.full_image.channels.items[0];
     try testing.expectEqual(@as(usize, 16), ch_r.w);
     try testing.expectEqual(@as(usize, 16), ch_r.h);
@@ -292,7 +294,7 @@ test "decode lossless 64x64 modular (may use squeeze)" {
     try transform_zig.undoTransforms(&mod_dec.full_image, &wp_hdr);
 
     // Verify dimensions
-    try testing.expect(mod_dec.full_image.channels.items.len >= 3);
+    try testing.expectEqual(@as(usize, 3), mod_dec.full_image.channels.items.len);
     const ch_r = &mod_dec.full_image.channels.items[0];
     const ch_g = &mod_dec.full_image.channels.items[1];
     const ch_b = &mod_dec.full_image.channels.items[2];
@@ -310,7 +312,7 @@ test "decode lossless 64x64 modular (may use squeeze)" {
     try testing.expectEqual(@as(i32, 252), ch_b.rowConst(63)[63]);
 }
 
-test "decode lossless 300x200 multi-group" {
+test "decode lossless 300x200 single-section" {
     const data = @embedFile("../testdata/lossless_300x200.jxl");
     const allocator = testing.allocator;
 
@@ -339,8 +341,8 @@ test "decode lossless 300x200 multi-group" {
     const fh = try frame_header_mod.FrameHeader.readFromBitStream(&br, &codec_meta, false);
     try testing.expectEqual(frame_header_mod.FrameEncoding.modular, fh.encoding);
     const frame_dim = fh.toFrameDimensions(&codec_meta, false);
-    // group_size_shift=2 means grp_dim=512, so 300x200 fits in one group
-    try testing.expect(frame_dim.num_groups >= 1);
+    // group_size_shift=2 means grp_dim=512, so 300x200 fits in one group/section.
+    try testing.expectEqual(@as(usize, 1), frame_dim.num_groups);
 
     // Full frame decode using FrameDecoder — pass data starting at frame header
     const frame_data = data[2 + frame_header_byte_offset ..];
@@ -350,9 +352,61 @@ test "decode lossless 300x200 multi-group" {
     try frame_dec.decodeFrame(frame_data);
 
     const img = frame_dec.getDecodedImage();
-    try testing.expect(img.channels.items.len >= 3);
+    try testing.expectEqual(@as(usize, 3), img.channels.items.len);
     try testing.expectEqual(@as(usize, 300), img.w);
     try testing.expectEqual(@as(usize, 200), img.h);
+    try testing.expectEqual(@as(i32, 0), img.channels.items[0].rowConst(0)[0]);
+    try testing.expectEqual(@as(i32, 0), img.channels.items[1].rowConst(0)[0]);
+    try testing.expectEqual(@as(i32, 0), img.channels.items[2].rowConst(0)[0]);
+    try testing.expectEqual(@as(i32, 43), img.channels.items[0].rowConst(0)[299]);
+    try testing.expectEqual(@as(i32, 0), img.channels.items[1].rowConst(0)[299]);
+    try testing.expectEqual(@as(i32, 0), img.channels.items[2].rowConst(0)[299]);
+    try testing.expectEqual(@as(i32, 0), img.channels.items[0].rowConst(199)[0]);
+    try testing.expectEqual(@as(i32, 199), img.channels.items[1].rowConst(199)[0]);
+    try testing.expectEqual(@as(i32, 0), img.channels.items[2].rowConst(199)[0]);
+    try testing.expectEqual(@as(i32, 43), img.channels.items[0].rowConst(199)[299]);
+    try testing.expectEqual(@as(i32, 199), img.channels.items[1].rowConst(199)[299]);
+    try testing.expectEqual(@as(i32, 109), img.channels.items[2].rowConst(199)[299]);
+    try testing.expectEqual(@as(i32, 150), img.channels.items[0].rowConst(100)[150]);
+    try testing.expectEqual(@as(i32, 100), img.channels.items[1].rowConst(100)[150]);
+    try testing.expectEqual(@as(i32, 152), img.channels.items[2].rowConst(100)[150]);
+}
+
+test "decode lossless 600x10 multi-section grayscale" {
+    const data = @embedFile("../testdata/lossless_600x10_multisection.jxl");
+    const allocator = testing.allocator;
+    const prepared = try prepareFrame(data);
+
+    var frame_dec = dec_frame.FrameDecoder.init(allocator, &prepared.codec_meta);
+    defer frame_dec.deinit();
+
+    try frame_dec.decodeFrame(prepared.frame_data);
+
+    const img = frame_dec.getDecodedImage();
+    try testing.expectEqual(@as(usize, 1), img.channels.items.len);
+    try testing.expectEqual(@as(usize, 600), img.w);
+    try testing.expectEqual(@as(usize, 10), img.h);
+
+    const ch = &img.channels.items[0];
+    try testing.expectEqual(@as(usize, 600), ch.w);
+    try testing.expectEqual(@as(usize, 10), ch.h);
+    try testing.expectEqual(@as(i32, 255), ch.rowConst(0)[0]);
+    try testing.expectEqual(@as(i32, 255), ch.rowConst(0)[599]);
+    try testing.expectEqual(@as(i32, 227), ch.rowConst(1)[0]);
+    try testing.expectEqual(@as(i32, 113), ch.rowConst(5)[123]);
+    try testing.expectEqual(@as(i32, 0), ch.rowConst(9)[0]);
+    try testing.expectEqual(@as(i32, 0), ch.rowConst(9)[599]);
+}
+
+test "decode truncated 600x10 multi-section frame errors" {
+    const data = @embedFile("../testdata/lossless_600x10_multisection.jxl");
+    const allocator = testing.allocator;
+    const prepared = try prepareFrame(data);
+
+    var frame_dec = dec_frame.FrameDecoder.init(allocator, &prepared.codec_meta);
+    defer frame_dec.deinit();
+
+    try testing.expectError(error.GenericError, frame_dec.decodeFrame(prepared.frame_data[0 .. prepared.frame_data.len - 1]));
 }
 
 test "reference and specialized reader strategies decode identical lossless corpus" {
@@ -365,6 +419,7 @@ test "reference and specialized reader strategies decode identical lossless corp
         .{ .name = "lossless_16x16", .data = @embedFile("../testdata/lossless_16x16.jxl") },
         .{ .name = "lossless_64x64", .data = @embedFile("../testdata/lossless_64x64.jxl") },
         .{ .name = "lossless_300x200", .data = @embedFile("../testdata/lossless_300x200.jxl") },
+        .{ .name = "lossless_600x10_multisection", .data = @embedFile("../testdata/lossless_600x10_multisection.jxl") },
     };
 
     for (cases) |tc| {

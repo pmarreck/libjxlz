@@ -10,6 +10,7 @@
 
 ## src/lib/
 - `root.zig` — Module root, re-exports all submodules via refAllDecls
+- `testdata/` — Small committed raw codestream fixtures used by decode integration tests, including a real 3-group grayscale frame (`lossless_600x10_multisection.jxl`) for validated multi-section dispatch/truncation coverage
 
 ### src/lib/base/
 - `status.zig` — StatusCode enum, JxlError error set, Status struct for FFI bridging
@@ -39,9 +40,10 @@
 - `image_metadata.zig` — BitDepth, ExtraChannel enum, ExtraChannelInfo, ToneMapping, Orientation, ImageMetadata, CodecMetadata, OpsinInverseMatrix, CustomTransformData
 - `color_encoding.zig` — ColorSpace, WhitePoint, Primaries, TransferFunction, RenderingIntent, Customxy, CustomTransferFunction, ColorEncoding with full readFromBitStream
 - `frame_header.zig` — FrameEncoding, ColorTransform, FrameType, BlendMode, BlendingInfo, YCbCrChromaSubsampling, Passes, AnimationFrame, FrameHeader with full readFromBitStream
-- `toc.zig` — TOC reading (section sizes + Lehmer-coded permutation via ANS), numTocEntries, acGroupIndex
-- `dec_frame.zig` — FrameDecoder (frame header + TOC + section dispatch, `decodeFrameWithReaderStrategy`), ModularFrameDecoder (`decodeGlobalInfoWithReaderStrategy`, global tree + per-group decode), ModularStreamId
+- `toc.zig` — TOC reading (section sizes + Lehmer-coded permutation via ANS), numTocEntries, acGroupIndex, `computeGroupOffsets` for validated section-layout construction
+- `dec_frame.zig` — FrameDecoder (frame header + validated TOC section layout + exact section slicing + error-propagating dispatch in `decodeFrameWithReaderStrategy`), ModularFrameDecoder (`decodeGlobalInfoWithReaderStrategy`, explicit unsupported-feature rejection, YCbCr chroma-channel sizing, global tree + per-group decode), ModularStreamId
 - `codestream_test.zig` — Integration test: parses real JXL codestream (SizeHeader + ImageMetadata + FrameHeader)
+- `decode_test.zig` — End-to-end lossless decode tests for small/single-section and real multi-section codestreams, truncated-frame failure coverage, and reference-vs-specialized parity over the committed corpus
 
 ### src/lib/modular/
 - `ma_common.zig` — MATreeContext enum (6 contexts), kMaxTreeSize, kNumTreeContexts
