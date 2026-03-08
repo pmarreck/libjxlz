@@ -1,0 +1,211 @@
+// Encoder-side codestream-shell helpers.
+// Starts with a real SizeHeader writer plus borrowed metadata bits.
+
+const std = @import("std");
+const BitReader = @import("../base/bit_reader.zig").BitReader;
+const BitWriter = @import("../base/bit_writer.zig").BitWriter;
+const headers = @import("headers.zig");
+const image_metadata = @import("image_metadata.zig");
+const frame_header_mod = @import("frame_header.zig");
+const dec_frame = @import("dec_frame.zig");
+const enc_frame = @import("enc_frame.zig");
+const enc_toc = @import("enc_toc.zig");
+const enc_encoding = @import("../modular/enc_encoding.zig");
+const modular_image = @import("../modular/modular_image.zig");
+
+const Channel = modular_image.Channel;
+
+fn prepareFrame(data: []const u8) !struct {
+	codec_meta: image_metadata.CodecMetadata,
+	frame_data: []const u8,
+} {
+	var br = BitReader.init(data[2..]);
+	const size = headers.SizeHeader.readFromBitStream(&br);
+	const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+	const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+	try br.jumpToByteBoundary();
+
+	var codec_meta = image_metadata.CodecMetadata{};
+	codec_meta.m = metadata;
+	codec_meta.size = size;
+	codec_meta.transform_data = transform_data;
+	const frame_header_byte_offset = br.totalBitsConsumed() / 8;
+	return .{
+		.codec_meta = codec_meta,
+		.frame_data = data[2 + frame_header_byte_offset ..],
+	};
+}
+
+fn extractSizeHeaderBits(data: []const u8) usize {
+	var br = BitReader.init(data[2..]);
+	_ = headers.SizeHeader.readFromBitStream(&br);
+	return br.totalBitsConsumed();
+}
+
+fn extractMetadataBits(data: []const u8) !struct { offset_bits: usize, len_bits: usize } {
+	var br = BitReader.init(data[2..]);
+	_ = headers.SizeHeader.readFromBitStream(&br);
+	const start = br.totalBitsConsumed();
+	const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+	_ = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+	const end = br.totalBitsConsumed();
+	return .{ .offset_bits = start, .len_bits = end - start };
+}
+
+fn appendRawBits(writer: *BitWriter, source: []const u8, bit_offset: usize, bit_count: usize) !void {
+	var br = BitReader.init(source);
+	if (bit_offset > 0) {
+		_ = br.readBits(bit_offset);
+	}
+	var remaining = bit_count;
+	while (remaining > 0) {
+		const chunk = @min(remaining, BitWriter.kMaxBitsPerCall);
+		try writer.write(chunk, br.readBits(chunk));
+		remaining -= chunk;
+	}
+}
+
+fn writeSizeRawValue(value: u32, writer: *BitWriter) !void {
+	if (value < (1 << 9) + 1) {
+		try writer.write(2, 0);
+		try writer.write(9, value - 1);
+		return;
+	}
+	if (value < (1 << 13) + 1) {
+		try writer.write(2, 1);
+		try writer.write(13, value - 1);
+		return;
+	}
+	if (value < (1 << 18) + 1) {
+		try writer.write(2, 2);
+		try writer.write(18, value - 1);
+		return;
+	}
+	try writer.write(2, 3);
+	try writer.write(30, value - 1);
+}
+
+/// Emits the non-small ratio-0 SizeHeader form for arbitrary dimensions.
+pub fn writeRawSizeHeader(xsize: u32, ysize: u32, writer: *BitWriter) !void {
+	std.debug.assert(xsize > 0 and ysize > 0);
+	try writer.write(1, 0); // non-small
+	try writeSizeRawValue(ysize, writer);
+	try writer.write(3, 0); // ratio = 0, xsize written explicitly
+	try writeSizeRawValue(xsize, writer);
+}
+
+/// Writes a complete codestream by combining a freshly generated SizeHeader and
+/// borrowed grayscale metadata bits with a caller-provided frame payload.
+pub fn writeBorrowedMetadataCodestream(
+	xsize: u32,
+	ysize: u32,
+	metadata_source: []const u8,
+	metadata_offset_bits: usize,
+	metadata_len_bits: usize,
+	frame_data: []const u8,
+	writer: *BitWriter,
+) !void {
+	try writer.write(8, 0xFF);
+	try writer.write(8, headers.codestream_marker);
+	try writeRawSizeHeader(xsize, ysize, writer);
+	try appendRawBits(writer, metadata_source, metadata_offset_bits, metadata_len_bits);
+	try writer.zeroPadToByte();
+	for (frame_data) |byte| {
+		try writer.write(8, byte);
+	}
+}
+
+const testing = std.testing;
+
+test "writeBorrowedMetadataCodestream round-trips a grayscale codestream through header parse and FrameDecoder" {
+	const allocator = testing.allocator;
+	const source_data = @embedFile("../testdata/lossless_600x10_multisection.jxl");
+	const prepared = try prepareFrame(source_data);
+	const metadata_bits = try extractMetadataBits(source_data);
+
+	var codec_meta = prepared.codec_meta;
+	codec_meta.size = .{
+		.small = false,
+		.ysize_raw = 3,
+		.ratio = 0,
+		.xsize_raw = 3,
+	};
+
+	const frame_header_bits = blk: {
+		var br = BitReader.init(prepared.frame_data);
+		_ = try frame_header_mod.FrameHeader.readFromBitStream(&br, &codec_meta, false);
+		break :blk br.totalBitsConsumed();
+	};
+
+	var channel = try Channel.create(allocator, 3, 3, 0, 0);
+	defer channel.deinit();
+	channel.row(0)[0] = 10;
+	channel.row(0)[1] = 12;
+	channel.row(0)[2] = 14;
+	channel.row(1)[0] = 11;
+	channel.row(1)[1] = 13;
+	channel.row(1)[2] = 15;
+	channel.row(2)[0] = 13;
+	channel.row(2)[1] = 14;
+	channel.row(2)[2] = 18;
+
+	var dc_global = BitWriter.init(allocator);
+	defer dc_global.deinit();
+	try dc_global.write(1, 1); // DequantMatrices all_default
+	try dc_global.write(1, 0); // no global tree
+	try testing.expectEqual(@as(usize, 0), try enc_encoding.writeSingleNodeLocalTreeGroup(
+		allocator,
+		&channel,
+		.gradient,
+		&dc_global,
+	));
+	try dc_global.zeroPadToByte();
+
+	const sections = [_][]const u8{dc_global.bytes()};
+	var frame_writer = BitWriter.init(allocator);
+	defer frame_writer.deinit();
+	try enc_frame.writeBorrowedHeaderFrame(prepared.frame_data, frame_header_bits, &sections, &frame_writer);
+	try frame_writer.zeroPadToByte();
+
+	var codestream = BitWriter.init(allocator);
+	defer codestream.deinit();
+	try writeBorrowedMetadataCodestream(
+		3,
+		3,
+		source_data[2..],
+		metadata_bits.offset_bits,
+		metadata_bits.len_bits,
+		frame_writer.bytes(),
+		&codestream,
+	);
+	try codestream.zeroPadToByte();
+
+	const bytes = codestream.bytes();
+	try testing.expectEqual(@as(u8, 0xFF), bytes[0]);
+	try testing.expectEqual(@as(u8, 0x0A), bytes[1]);
+
+	var br = BitReader.init(bytes[2..]);
+	const size = headers.SizeHeader.readFromBitStream(&br);
+	try testing.expectEqual(@as(usize, 3), size.xsize());
+	try testing.expectEqual(@as(usize, 3), size.ysize());
+	const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+	const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+	try br.jumpToByteBoundary();
+
+	var parsed_meta = image_metadata.CodecMetadata{};
+	parsed_meta.m = metadata;
+	parsed_meta.size = size;
+	parsed_meta.transform_data = transform_data;
+
+	const frame_offset = br.totalBitsConsumed() / 8;
+	try testing.expectEqualSlices(u8, frame_writer.bytes(), bytes[2 + frame_offset ..]);
+	var frame_dec = dec_frame.FrameDecoder.init(allocator, &parsed_meta);
+	defer frame_dec.deinit();
+	try frame_dec.decodeFrame(bytes[2 + frame_offset ..]);
+
+	const image = frame_dec.getDecodedImage();
+	try testing.expectEqual(@as(usize, 1), image.channels.items.len);
+	try testing.expectEqual(@as(usize, 3), image.w);
+	try testing.expectEqual(@as(usize, 3), image.h);
+	try testing.expectEqualSlices(i32, channel.data, image.channels.items[0].data);
+}
