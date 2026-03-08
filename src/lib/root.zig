@@ -32,6 +32,7 @@ pub const codec = struct {
 	pub const color_encoding = @import("codec/color_encoding.zig");
 	pub const frame_header = @import("codec/frame_header.zig");
 	pub const toc = @import("codec/toc.zig");
+	pub const enc_toc = @import("codec/enc_toc.zig");
 	pub const dec_frame = @import("codec/dec_frame.zig");
 	pub const codestream_test = @import("codec/codestream_test.zig");
 	pub const decode_test = @import("codec/decode_test.zig");
@@ -87,6 +88,7 @@ test {
 	_ = @import("codec/color_encoding.zig");
 	_ = @import("codec/frame_header.zig");
 	_ = @import("codec/toc.zig");
+	_ = @import("codec/enc_toc.zig");
 	_ = @import("codec/dec_frame.zig");
 	_ = @import("codec/codestream_test.zig");
 	_ = @import("codec/decode_test.zig");
