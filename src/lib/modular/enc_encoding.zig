@@ -111,29 +111,38 @@ pub fn writeSingleNodeLocalTreeGroup(
 	predictor: Predictor,
 	writer: *BitWriter,
 ) !usize {
-	const uint_config = HybridUintConfig.init(5, 0, 0);
 	const tokens = try tokenizeSingleNodeChannel(allocator, channel, predictor, 0);
 	defer allocator.free(tokens);
 	if (tokens.len == 0) return error.GenericError;
 
-	const symbol = tokens[0].value;
+	var max_token: u32 = 0;
 	for (tokens) |token| {
-		if (token.context != 0 or token.value != symbol) return error.GenericError;
+		if (token.context != 0) return error.GenericError;
+		max_token = @max(max_token, token.value);
 	}
-	if (symbol > std.math.maxInt(u8)) return error.GenericError;
+
+	const alphabet_size = max_token + 1;
+	const log_alpha_size: u5 = if (alphabet_size <= 32)
+		5
+	else if (alphabet_size <= 64)
+		6
+	else if (alphabet_size <= 128)
+		7
+	else if (alphabet_size <= 256)
+		8
+	else
+		return error.GenericError;
+	const uint_config = HybridUintConfig.init(log_alpha_size, 0, 0);
 
 	try writer.write(1, 0); // use_global_tree = false
 	try writer.write(1, 1); // weighted header all-default
 	try writer.write(2, 0); // num_transforms = 0 via selector 0
 	try enc_ma.writeSingleLeafTree(allocator, predictor, writer);
-	try enc_ans.writeSingleContextDegenerateHistogram(@intCast(symbol), uint_config, 5, writer);
+	try enc_ans.writeSingleContextFlatHistogram(@intCast(alphabet_size), uint_config, log_alpha_size, writer);
 
-	const counts = try allocator.alloc(i32, symbol + 1);
+	const counts = try ans_common.createFlatHistogram(allocator, alphabet_size, ans_params.ans_tab_size);
 	defer allocator.free(counts);
-	@memset(counts, 0);
-	counts[symbol] = @intCast(ans_params.ans_tab_size);
-
-	const info = try enc_ans.buildANSEncSymbolInfoTable(allocator, counts, 5);
+	const info = try enc_ans.buildANSEncSymbolInfoTable(allocator, counts, log_alpha_size);
 	defer enc_ans.freeANSEncSymbolInfoTable(allocator, info);
 	return enc_ans.writeSingleHistogramTokens(tokens, info, uint_config, writer);
 }
@@ -369,6 +378,47 @@ test "writeSingleNodeLocalTreeGroup round-trips a minimal zero pixel through mod
 	try writer.zeroPadToByte();
 
 	var image = try modular_image.Image.create(allocator, 1, 1, 8, 1);
+	defer image.deinit();
+	var header = @import("encoding.zig").GroupHeader{};
+	defer header.deinit();
+	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+	try @import("encoding.zig").modularDecode(
+		&br,
+		&image,
+		&header,
+		0,
+		&options.ModularOptions{},
+		null,
+		null,
+		null,
+		allocator,
+	);
+	try br.jumpToByteBoundary();
+	try br.close();
+
+	try testing.expectEqualSlices(i32, channel.data, image.channels.items[0].data);
+}
+
+test "writeSingleNodeLocalTreeGroup round-trips a small zero-predictor tile through modularDecode" {
+	const allocator = testing.allocator;
+	var channel = try Channel.create(allocator, 2, 2, 0, 0);
+	defer channel.deinit();
+	channel.row(0)[0] = 0;
+	channel.row(0)[1] = 1;
+	channel.row(1)[0] = 2;
+	channel.row(1)[1] = 3;
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try testing.expectEqual(@as(usize, 0), try writeSingleNodeLocalTreeGroup(
+		allocator,
+		&channel,
+		.zero,
+		&writer,
+	));
+	try writer.zeroPadToByte();
+
+	var image = try modular_image.Image.create(allocator, 2, 2, 8, 1);
 	defer image.deinit();
 	var header = @import("encoding.zig").GroupHeader{};
 	defer header.deinit();

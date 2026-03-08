@@ -278,6 +278,27 @@ pub fn writeSingleContextTwoSymbolHistogram(
 	try writer.write(params.ans_log_tab_size, count0);
 }
 
+/// Emits a one-context ANS histogram bundle using the decoder's flat-histogram
+/// branch, which spreads counts across a contiguous alphabet deterministically.
+pub fn writeSingleContextFlatHistogram(
+	alphabet_size: u8,
+	uint_config: HybridUintConfig,
+	log_alpha_size: u5,
+	writer: *BitWriter,
+) !void {
+	std.debug.assert(alphabet_size > 0);
+	std.debug.assert(alphabet_size <= (@as(u16, 1) << @as(u4, @intCast(log_alpha_size))));
+	std.debug.assert(log_alpha_size >= 5 and log_alpha_size <= 8);
+	try writer.write(1, 0); // LZ77 disabled
+	try writer.write(1, 0); // use_prefix_code = false (ANS mode)
+	try writer.write(2, log_alpha_size - 5);
+	try encodeUintConfig(uint_config, writer, log_alpha_size);
+
+	try writer.write(1, 0); // histogram simple_code = false
+	try writer.write(1, 1); // is_flat = true
+	try storeVarLenUint8(alphabet_size - 1, writer);
+}
+
 const testing = std.testing;
 
 test "encodeUintConfigs round-trips a mixed config set" {
@@ -464,6 +485,43 @@ test "writeSingleContextTwoSymbolHistogram round-trips exact recovered counts th
 	try testing.expectEqual(@as(usize, 0), recovered[2]);
 	try testing.expectEqual(@as(usize, 0), recovered[3]);
 	try testing.expectEqual(@as(usize, 0), recovered[4]);
+	try br.jumpToByteBoundary();
+	try br.close();
+}
+
+test "writeSingleContextFlatHistogram round-trips recovered flat counts through decodeHistograms" {
+	const allocator = testing.allocator;
+	const want_cfg = HybridUintConfig.init(5, 0, 0);
+	const want_counts = try ans_common.createFlatHistogram(allocator, 5, params.ans_tab_size);
+	defer allocator.free(want_counts);
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writeSingleContextFlatHistogram(5, want_cfg, 5, &writer);
+	try writer.zeroPadToByte();
+
+	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+	var code = dec_ans.ANSCode.init(allocator);
+	defer code.deinit();
+	const context_map = try dec_ans.decodeHistograms(allocator, &br, 1, &code);
+	defer allocator.free(context_map);
+
+	try testing.expectEqual(@as(usize, 1), context_map.len);
+	try testing.expectEqual(@as(u8, 0), context_map[0]);
+	try testing.expectEqual(@as(i32, -1), code.degenerate_symbols[0]);
+
+	const table = code.alias_tables[0 .. (@as(usize, 1) << code.log_alpha_size)];
+	const log_entry_size = params.ans_log_tab_size - code.log_alpha_size;
+	const entry_size_minus_1 = (@as(usize, 1) << log_entry_size) - 1;
+	var recovered = [_]usize{0} ** 5;
+	for (0..params.ans_tab_size) |i| {
+		const sym = AliasTable.lookup(table.ptr, i, log_entry_size, entry_size_minus_1);
+		recovered[sym.value] += 1;
+	}
+
+	for (want_counts, 0..) |want, i| {
+		try testing.expectEqual(@as(usize, @intCast(want)), recovered[i]);
+	}
 	try br.jumpToByteBoundary();
 	try br.close();
 }
