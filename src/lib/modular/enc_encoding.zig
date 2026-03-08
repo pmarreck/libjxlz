@@ -439,3 +439,49 @@ test "writeSingleNodeLocalTreeGroup round-trips a small zero-predictor tile thro
 
 	try testing.expectEqualSlices(i32, channel.data, image.channels.items[0].data);
 }
+
+test "writeSingleNodeLocalTreeGroup round-trips a small gradient tile through modularDecode" {
+	const allocator = testing.allocator;
+	var channel = try Channel.create(allocator, 3, 3, 0, 0);
+	defer channel.deinit();
+	channel.row(0)[0] = 10;
+	channel.row(0)[1] = 12;
+	channel.row(0)[2] = 14;
+	channel.row(1)[0] = 11;
+	channel.row(1)[1] = 13;
+	channel.row(1)[2] = 15;
+	channel.row(2)[0] = 13;
+	channel.row(2)[1] = 14;
+	channel.row(2)[2] = 18;
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try testing.expectEqual(@as(usize, 0), try writeSingleNodeLocalTreeGroup(
+		allocator,
+		&channel,
+		.gradient,
+		&writer,
+	));
+	try writer.zeroPadToByte();
+
+	var image = try modular_image.Image.create(allocator, 3, 3, 8, 1);
+	defer image.deinit();
+	var header = @import("encoding.zig").GroupHeader{};
+	defer header.deinit();
+	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+	try @import("encoding.zig").modularDecode(
+		&br,
+		&image,
+		&header,
+		0,
+		&options.ModularOptions{},
+		null,
+		null,
+		null,
+		allocator,
+	);
+	try br.jumpToByteBoundary();
+	try br.close();
+
+	try testing.expectEqualSlices(i32, channel.data, image.channels.items[0].data);
+}
