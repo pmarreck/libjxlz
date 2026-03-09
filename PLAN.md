@@ -102,6 +102,8 @@
 - [x] Frame-shell encoder slice: add a no-permutation TOC writer and prove it round-trips through `toc.readToc` for both single-entry and mixed-size multi-entry tables, so frame-level work can focus on section payload composition instead of size packing — 2026-03-08 ~12:45 AM EST
 - [x] Frame-shell encoder slice: add a borrowed-header frame wrapper that copies a proven grayscale frame-header bit prefix, appends our generated TOC and DC-global section, and prove a full `FrameDecoder.decodeFrame` grayscale image roundtrip on a `3x3` `.gradient` image — 2026-03-08 ~1:00 AM EST
 - [x] Codestream-shell encoder slice: add a raw `SizeHeader` writer plus a borrowed-metadata codestream wrapper, and prove a complete grayscale codestream roundtrip (marker → headers → `FrameDecoder.decodeFrame`) on a `3x3` `.gradient` image — 2026-03-08 ~1:15 AM EST
+- [x] Modular encoder slice: widen the fully local single-leaf group writer from one grayscale channel to multi-channel images by concatenating per-channel token streams under the same local tree/histogram, and prove a `3x2` RGB roundtrip through `encoding.modularDecode` — 2026-03-09 ~2:50 PM EST
+- [x] Codestream-shell encoder slice: prove the borrowed metadata + borrowed frame-header shell also works for color by round-tripping a `3x2` RGB codestream through full header parsing and `FrameDecoder.decodeFrame` — 2026-03-09 ~3:00 PM EST
 - [x] Modular encoder slice: add single-channel single-node grayscale tokenization for non-weighted predictors, with exact token assertions for `zero` and `gradient` paths so modular residual generation is proven before bitstream assembly — 2026-03-07 ~3:00 PM EST
 - [x] Modular encoder slice: bridge single-node grayscale tokenization into the ANS writer and prove an end-to-end gradient-channel roundtrip by reconstructing decoded pixels through the existing predictor path, so the first writable modular stream is validated before broader encoder assembly — 2026-03-07 ~3:10 PM EST
 - [x] Modular encoder slice: add the smallest real modular group writer in global-tree mode (default WP header, no transforms) and prove it round-trips through `encoding.modularDecode` with an injected one-leaf tree/histogram, so encoder work now crosses from token streams into a decodable modular group surface — 2026-03-07 ~3:20 PM EST
@@ -113,6 +115,7 @@
 - [x] Encoder bit-writer foundation: add `src/lib/base/bit_writer.zig` with LSB-first write + byte-pad semantics and roundtrip it against the existing `BitReader`, so future ANS/modular writer work has a real writable primitive instead of the synthetic prepass scaffold alone — 2026-03-07 ~1:55 PM EST
 - [ ] Replace synthetic encoder-prepass scaffold with real modular encoder profiling once the first writable bitstream slice exists
 - [ ] Frame encoder
+- [ ] Replace borrowed frame-header bits with a real `FrameHeader` writer using the same field-bundle surface upstream serializes through `WriteFrameHeader`
 - [ ] Fast lossless encoder
 - [ ] C FFI encode API
 - [ ] cjxlz CLI
