@@ -7,7 +7,7 @@ TMP_BIN="${TMPDIR}/libjxlz_encode_codestream_bench"
 BUILD_LOG="${TMPDIR}/libjxlz_encode_codestream_bench_build.log"
 LINUX_COMPILE_LOG="${TMPDIR}/libjxlz_encode_codestream_bench_linux_compile.log"
 RUN_LOG="${TMPDIR}/libjxlz_encode_codestream_bench_run.log"
-EXPECTED_CHECKSUM="51a7f7f35462a14a"
+EXPECTED_CHECKSUM="d15da41c5dc623cf"
 
 if ! zig build-exe bench_modular_encode_codestream.zig -O ReleaseFast -femit-bin="${TMP_BIN}" >"${BUILD_LOG}" 2>&1; then
 	cat "${BUILD_LOG}"

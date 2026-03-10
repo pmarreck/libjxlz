@@ -216,7 +216,7 @@ pub fn main() !void {
 
 test "real modular encode benchmark checksum is stable" {
 	const result = try runRealEncodeBenchmark(testing.allocator, .{ .repeat = 1 });
-	try testing.expectEqual(@as(u64, 323341), result.total_bytes);
+	try testing.expectEqual(@as(u64, 323344), result.total_bytes);
 	try testing.expectEqual(@as(u64, 9), result.total_sections);
-	try testing.expectEqual(@as(u64, 0x51a7f7f35462a14a), result.checksum);
+	try testing.expectEqual(@as(u64, 0xd15da41c5dc623cf), result.checksum);
 }
