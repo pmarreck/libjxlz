@@ -141,6 +141,68 @@ fn extractImageRect(
 	return tile;
 }
 
+fn tokenizeSingleNodeChannelRect(
+	allocator: std.mem.Allocator,
+	channel: *const Channel,
+	rect: Rect,
+	predictor: Predictor,
+	ctx_id: u32,
+) ![]Token {
+	if (predictor == .weighted or predictor == .best or predictor == .variable) {
+		return error.GenericError;
+	}
+	if (channel.hshift < 0 or channel.vshift < 0) return error.Unsupported;
+
+	const shift_x: u6 = @intCast(channel.hshift);
+	const shift_y: u6 = @intCast(channel.vshift);
+	const align_x = (@as(usize, 1) << shift_x) - 1;
+	const align_y = (@as(usize, 1) << shift_y) - 1;
+	if ((rect.x0() & align_x) != 0 or (rect.y0() & align_y) != 0) return error.Unsupported;
+
+	const rx0 = rect.x0() >> shift_x;
+	const ry0 = rect.y0() >> shift_y;
+	const rw = subsampledSize(rect.xsize(), channel.hshift);
+	const rh = subsampledSize(rect.ysize(), channel.vshift);
+	const tokens = try allocator.alloc(Token, rw * rh);
+	var token_index: usize = 0;
+
+	for (0..rh) |y| {
+		const global_y = ry0 + y;
+		const row = channel.rowConst(global_y);
+		const has_top = y > 0;
+		const has_toptop = y > 1;
+		const top_row = if (has_top) channel.rowConst(global_y - 1) else &[_]i32{};
+		const top2_row = if (has_toptop) channel.rowConst(global_y - 2) else &[_]i32{};
+
+		for (0..rw) |x| {
+			const global_x = rx0 + x;
+			const left: pixel_type_w = if (x > 0) row[global_x - 1] else if (has_top) top_row[global_x] else 0;
+			const top: pixel_type_w = if (has_top) top_row[global_x] else left;
+			const topleft: pixel_type_w = if (x > 0 and has_top) top_row[global_x - 1] else left;
+			const topright: pixel_type_w = if (x + 1 < rw and has_top) top_row[global_x + 1] else top;
+			const leftleft: pixel_type_w = if (x > 1) row[global_x - 2] else left;
+			const toptop: pixel_type_w = if (has_toptop) top2_row[global_x] else top;
+			const toprightright: pixel_type_w = if (x + 2 < rw and has_top) top_row[global_x + 2] else topright;
+			const guess = context_predict.predictOne(
+				predictor,
+				left,
+				top,
+				toptop,
+				topleft,
+				topright,
+				leftleft,
+				toprightright,
+				0,
+			);
+			const residual: i32 = @intCast(@as(pixel_type_w, row[global_x]) - guess);
+			tokens[token_index] = Token.init(ctx_id, pack_signed.packSigned(residual));
+			token_index += 1;
+		}
+	}
+
+	return tokens;
+}
+
 fn selectLocalHistogramConfig(tokens: []const Token) !LocalHistogramConfig {
 	var max_value: u32 = 0;
 	for (tokens) |token| {
@@ -360,9 +422,18 @@ pub fn writeSingleNodeLocalTreeGroupImageRectWithCache(
 	cache: ?*FlatHistogramInfoCache,
 	writer: *BitWriter,
 ) !usize {
-	var tile = try extractImageRect(allocator, image, rect);
-	defer tile.deinit();
-	return writeSingleNodeLocalTreeGroupImageWithCache(allocator, &tile, predictor, cache, writer);
+	if (image.channels.items.len == 0) return error.GenericError;
+
+	var tokens: std.ArrayList(Token) = .{};
+	defer tokens.deinit(allocator);
+
+	for (image.channels.items) |*channel| {
+		const channel_tokens = try tokenizeSingleNodeChannelRect(allocator, channel, rect, predictor, 0);
+		defer allocator.free(channel_tokens);
+		try tokens.appendSlice(allocator, channel_tokens);
+	}
+
+	return writeSingleNodeLocalTreeGroupTokens(allocator, tokens.items, predictor, cache, writer);
 }
 
 const testing = std.testing;
