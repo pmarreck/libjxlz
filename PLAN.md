@@ -118,7 +118,7 @@
 - [ ] Frame encoder
 - [x] Replace borrowed metadata bits with native Zig `ImageMetadata` / `CustomTransformData` writers for the simple modular grayscale/RGB codestream path, prove exact metadata-bit matches on the committed grayscale/RGB fixtures, and rerun both full codestream roundtrips through the native shell — 2026-03-09 ~8:05 PM EST
 - [x] Widen the native codestream writer from tiny single-group fixtures to a real multi-group RGB image by emitting repeated local modular group sections and proving full `FrameDecoder.decodeFrame` pixel equality on a `600x300` image — 2026-03-09 ~8:35 PM EST
-- [x] Profile the real `bench_modular_encode_codestream` hotspot stack, identify `enc_ans.writeSingleHistogramTokens` / `addReversedBits` as the first encode bottleneck, and keep a chunk-buffer refactor there because the real encode harness improved from about `11.35 ms` to about `10.81 ms` (`~1.05x`) after the benchmark baseline was re-accepted — 2026-03-09 ~9:20 PM EST
+- [x] Profile the real `bench_modular_encode_codestream` hotspot stack, identify `enc_ans.writeSingleHistogramTokens` / `addReversedBits` as the first encode bottleneck, and keep two successive packing-buffer simplifications there (paired arrays -> chunk buffer, then `ArrayList` -> fixed-capacity chunk slice) because the real encode harness improved from about `11.35 ms` to about `10.27 ms` (`~1.10x`) after the benchmark baselines were re-accepted — 2026-03-09 ~9:35 PM EST
 - [ ] Re-profile the real encode harness after the token-packing win and choose the next hotspot from measured data rather than the old synthetic prepass
 - [ ] Fast lossless encoder
 - [ ] C FFI encode API

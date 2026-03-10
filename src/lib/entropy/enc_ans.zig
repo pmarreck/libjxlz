@@ -124,20 +124,21 @@ pub fn freeANSEncSymbolInfoTable(allocator: std.mem.Allocator, info: []ANSEncSym
 /// Packs reversed ANS/extra-bit chunks into a forward bitstream order suitable
 /// for `BitWriter`, matching libjxl's `WriteTokens` buffering discipline.
 fn addReversedBits(
-	out: *std.ArrayList(ReversedChunk),
+	out: []ReversedChunk,
+	out_len: *usize,
 	allbits: *u64,
 	numallbits: *usize,
 	bits: u64,
 	nbits: usize,
-	allocator: std.mem.Allocator,
 ) !void {
 	if (nbits == 0) return;
 	std.debug.assert(bits >> @intCast(nbits) == 0);
 	if (numallbits.* + nbits > BitWriter.kMaxBitsPerCall) {
-		try out.append(allocator, .{
+		out[out_len.*] = .{
 			.bits = allbits.*,
 			.nbits = @intCast(numallbits.*),
-		});
+		};
+		out_len.* += 1;
 		allbits.* = 0;
 		numallbits.* = 0;
 	}
@@ -157,8 +158,9 @@ pub fn writeSingleHistogramTokens(
 	uint_config: HybridUintConfig,
 	writer: *BitWriter,
 ) !usize {
-	var out: std.ArrayList(ReversedChunk) = .{};
-	defer out.deinit(writer.allocator);
+	const out = try writer.allocator.alloc(ReversedChunk, tokens.len * 2);
+	defer writer.allocator.free(out);
+	var out_len: usize = 0;
 
 	var allbits: u64 = 0;
 	var numallbits: usize = 0;
@@ -173,19 +175,19 @@ pub fn writeSingleHistogramTokens(
 		std.debug.assert(token.context == 0);
 
 		const encoded = uint_config.encode(token.value);
-		try addReversedBits(&out, &allbits, &numallbits, encoded.bits, encoded.nbits, writer.allocator);
+		try addReversedBits(out, &out_len, &allbits, &numallbits, encoded.bits, encoded.nbits);
 		num_extra_bits += encoded.nbits;
 
 		const ans_bits = ans.putSymbol(&info[encoded.token]);
-		try addReversedBits(&out, &allbits, &numallbits, ans_bits.bits, ans_bits.nbits, writer.allocator);
+		try addReversedBits(out, &out_len, &allbits, &numallbits, ans_bits.bits, ans_bits.nbits);
 	}
 
 	try writer.write(32, ans.getState());
 	try writer.write(numallbits, allbits);
-	var chunk_index = out.items.len;
+	var chunk_index = out_len;
 	while (chunk_index > 0) {
 		chunk_index -= 1;
-		try writer.write(out.items[chunk_index].nbits, out.items[chunk_index].bits);
+		try writer.write(out[chunk_index].nbits, out[chunk_index].bits);
 	}
 	return num_extra_bits;
 }
