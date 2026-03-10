@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const BitReader = @import("../base/bit_reader.zig").BitReader;
+const BitWriter = @import("../base/bit_writer.zig").BitWriter;
 const JxlError = @import("../base/status.zig").JxlError;
 const float16_mod = @import("../base/float.zig");
 
@@ -73,6 +74,10 @@ pub const BitsCoder = struct {
     pub fn read(nbits: u5, reader: *BitReader) u32 {
         return @intCast(reader.readBits(nbits));
     }
+
+    pub fn write(nbits: u5, value: u32, writer: anytype) !void {
+        try writer.write(nbits, value);
+    }
 };
 
 // ── U32Coder ──
@@ -85,6 +90,53 @@ pub const U32Coder = struct {
             return d.direct();
         }
         return @as(u32, @intCast(reader.readBits(d.extraBits()))) + d.offset();
+    }
+
+    /// Chooses the shortest valid selector form for a field-coded integer and
+    /// emits the selector plus payload bits in the same canonical layout the
+    /// decoder expects.
+    pub fn write(enc: U32Enc, value: u32, writer: anytype) !void {
+        var found = false;
+        var best_selector: u2 = 0;
+        var best_extra_bits: u5 = 0;
+        var best_extra_value: u32 = 0;
+        var best_total_bits: usize = std.math.maxInt(usize);
+
+        var selector_index: u8 = 0;
+        while (selector_index < 4) : (selector_index += 1) {
+            const selector: u2 = @intCast(selector_index);
+            const d = enc.getDistr(selector);
+
+            var extra_bits: u5 = 0;
+            var extra_value: u32 = 0;
+            if (d.isDirect()) {
+                if (value != d.direct()) continue;
+            } else {
+                const offset = d.offset();
+                if (value < offset) continue;
+                const candidate = value - offset;
+                const range = @as(u64, 1) << @intCast(d.extraBits());
+                if (@as(u64, candidate) >= range) continue;
+                extra_bits = d.extraBits();
+                extra_value = candidate;
+            }
+
+            const total_bits = 2 + extra_bits;
+            if (!found or total_bits < best_total_bits) {
+                found = true;
+                best_selector = selector;
+                best_extra_bits = extra_bits;
+                best_extra_value = extra_value;
+                best_total_bits = total_bits;
+            }
+        }
+
+        if (!found) return error.GenericError;
+
+        try writer.write(2, best_selector);
+        if (best_extra_bits != 0) {
+            try writer.write(best_extra_bits, best_extra_value);
+        }
     }
 };
 
@@ -109,6 +161,44 @@ pub const U64Coder = struct {
             shift += 8;
         }
         return result;
+    }
+
+    /// Emits the shortest standard JXL U64 encoding, matching the selector
+    /// structure that `read` consumes on the decode side.
+    pub fn write(value: u64, writer: anytype) !void {
+        if (value == 0) {
+            try writer.write(2, 0);
+            return;
+        }
+        if (value <= 16) {
+            try writer.write(2, 1);
+            try writer.write(4, value - 1);
+            return;
+        }
+        if (value <= 272) {
+            try writer.write(2, 2);
+            try writer.write(8, value - 17);
+            return;
+        }
+
+        try writer.write(2, 3);
+        try writer.write(12, value & 0xfff);
+
+        var remaining = value >> 12;
+        var shift: u6 = 12;
+        while (remaining != 0) {
+            try writer.write(1, 1);
+            if (shift == 60) {
+                try writer.write(4, remaining & 0xf);
+                return;
+            }
+
+            try writer.write(8, remaining & 0xff);
+            remaining >>= 8;
+            shift += 8;
+        }
+
+        try writer.write(1, 0);
     }
 };
 
@@ -176,6 +266,15 @@ pub fn readAllDefault(reader: *BitReader) bool {
     return reader.readBits(1) != 0;
 }
 
+pub fn writeExtensions(extensions: u64, writer: anytype) !void {
+    if (extensions != 0) return error.Unsupported;
+    try U64Coder.write(extensions, writer);
+}
+
+pub fn writeAllDefault(all_default: bool, writer: anytype) !void {
+    try writer.write(1, @intFromBool(all_default));
+}
+
 // ── Tests ──
 
 const testing = std.testing;
@@ -226,6 +325,25 @@ test "U32Coder read with extra bits" {
     try testing.expectEqual(@as(u32, 5), result);
 }
 
+test "U32Coder write round-trips direct and ranged values" {
+    const enc = U32Enc.init(val(42), val(7), bits(4), bitsOffset(8, 32));
+    const values = [_]u32{ 42, 7, 11, 200 };
+
+    var writer = BitWriter.init(testing.allocator);
+    defer writer.deinit();
+    for (values) |value| {
+        try U32Coder.write(enc, value, &writer);
+    }
+    try writer.zeroPadToByte();
+
+    var br = BitReader.init(writer.bytes());
+    for (values) |value| {
+        try testing.expectEqual(value, U32Coder.read(enc, &br));
+    }
+    try br.jumpToByteBoundary();
+    try br.close();
+}
+
 test "U64Coder read zero" {
     // selector 0 = 00 -> value 0
     var data = [_]u8{ 0b00000000, 0, 0, 0, 0, 0, 0, 0 };
@@ -249,6 +367,24 @@ test "U64Coder read selector 2" {
     var br = BitReader.init(&data);
     const result = U64Coder.read(&br);
     try testing.expectEqual(@as(u64, 17), result);
+}
+
+test "U64Coder write round-trips mixed values" {
+    const values = [_]u64{ 0, 1, 16, 17, 42, 272, 273, 0x12345, 0x123456789abcdef };
+
+    var writer = BitWriter.init(testing.allocator);
+    defer writer.deinit();
+    for (values) |value| {
+        try U64Coder.write(value, &writer);
+    }
+    try writer.zeroPadToByte();
+
+    var br = BitReader.init(writer.bytes());
+    for (values) |value| {
+        try testing.expectEqual(value, U64Coder.read(&br));
+    }
+    try br.jumpToByteBoundary();
+    try br.close();
 }
 
 test "F16Coder read zero" {

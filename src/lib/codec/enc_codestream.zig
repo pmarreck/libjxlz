@@ -131,10 +131,9 @@ test "writeBorrowedMetadataCodestream round-trips a grayscale codestream through
         .xsize_raw = 3,
     };
 
-    const frame_header_bits = blk: {
+    const frame_header = blk: {
         var br = BitReader.init(prepared.frame_data);
-        _ = try frame_header_mod.FrameHeader.readFromBitStream(&br, &codec_meta, false);
-        break :blk br.totalBitsConsumed();
+        break :blk try frame_header_mod.FrameHeader.readFromBitStream(&br, &codec_meta, false);
     };
 
     var channel = try Channel.create(allocator, 3, 3, 0, 0);
@@ -164,7 +163,7 @@ test "writeBorrowedMetadataCodestream round-trips a grayscale codestream through
     const sections = [_][]const u8{dc_global.bytes()};
     var frame_writer = BitWriter.init(allocator);
     defer frame_writer.deinit();
-    try enc_frame.writeBorrowedHeaderFrame(prepared.frame_data, frame_header_bits, &sections, &frame_writer);
+    try enc_frame.writeFrame(&frame_header, &codec_meta, &sections, &frame_writer);
     try frame_writer.zeroPadToByte();
 
     var codestream = BitWriter.init(allocator);
@@ -224,10 +223,9 @@ test "writeBorrowedMetadataCodestream round-trips an RGB codestream through head
         .xsize_raw = 3,
     };
 
-    const frame_header_bits = blk: {
+    const frame_header = blk: {
         var br = BitReader.init(prepared.frame_data);
-        _ = try frame_header_mod.FrameHeader.readFromBitStream(&br, &codec_meta, false);
-        break :blk br.totalBitsConsumed();
+        break :blk try frame_header_mod.FrameHeader.readFromBitStream(&br, &codec_meta, false);
     };
 
     var source = try modular_image.Image.create(allocator, 3, 2, 8, 3);
@@ -269,7 +267,7 @@ test "writeBorrowedMetadataCodestream round-trips an RGB codestream through head
     const sections = [_][]const u8{dc_global.bytes()};
     var frame_writer = BitWriter.init(allocator);
     defer frame_writer.deinit();
-    try enc_frame.writeBorrowedHeaderFrame(prepared.frame_data, frame_header_bits, &sections, &frame_writer);
+    try enc_frame.writeFrame(&frame_header, &codec_meta, &sections, &frame_writer);
     try frame_writer.zeroPadToByte();
 
     var codestream = BitWriter.init(allocator);
