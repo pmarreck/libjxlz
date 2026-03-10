@@ -124,8 +124,7 @@ pub fn freeANSEncSymbolInfoTable(allocator: std.mem.Allocator, info: []ANSEncSym
 /// Packs reversed ANS/extra-bit chunks into a forward bitstream order suitable
 /// for `BitWriter`, matching libjxl's `WriteTokens` buffering discipline.
 fn addReversedBits(
-	out: *std.ArrayList(u64),
-	out_nbits: *std.ArrayList(u8),
+	out: *std.ArrayList(ReversedChunk),
 	allbits: *u64,
 	numallbits: *usize,
 	bits: u64,
@@ -135,8 +134,10 @@ fn addReversedBits(
 	if (nbits == 0) return;
 	std.debug.assert(bits >> @intCast(nbits) == 0);
 	if (numallbits.* + nbits > BitWriter.kMaxBitsPerCall) {
-		try out.append(allocator, allbits.*);
-		try out_nbits.append(allocator, @intCast(numallbits.*));
+		try out.append(allocator, .{
+			.bits = allbits.*,
+			.nbits = @intCast(numallbits.*),
+		});
 		allbits.* = 0;
 		numallbits.* = 0;
 	}
@@ -145,16 +146,19 @@ fn addReversedBits(
 	numallbits.* += nbits;
 }
 
+const ReversedChunk = struct {
+	bits: u64,
+	nbits: u8,
+};
+
 pub fn writeSingleHistogramTokens(
 	tokens: []const Token,
 	info: []const ANSEncSymbolInfo,
 	uint_config: HybridUintConfig,
 	writer: *BitWriter,
 ) !usize {
-	var out: std.ArrayList(u64) = .{};
+	var out: std.ArrayList(ReversedChunk) = .{};
 	defer out.deinit(writer.allocator);
-	var out_nbits: std.ArrayList(u8) = .{};
-	defer out_nbits.deinit(writer.allocator);
 
 	var allbits: u64 = 0;
 	var numallbits: usize = 0;
@@ -169,11 +173,11 @@ pub fn writeSingleHistogramTokens(
 		std.debug.assert(token.context == 0);
 
 		const encoded = uint_config.encode(token.value);
-		try addReversedBits(&out, &out_nbits, &allbits, &numallbits, encoded.bits, encoded.nbits, writer.allocator);
+		try addReversedBits(&out, &allbits, &numallbits, encoded.bits, encoded.nbits, writer.allocator);
 		num_extra_bits += encoded.nbits;
 
 		const ans_bits = ans.putSymbol(&info[encoded.token]);
-		try addReversedBits(&out, &out_nbits, &allbits, &numallbits, ans_bits.bits, ans_bits.nbits, writer.allocator);
+		try addReversedBits(&out, &allbits, &numallbits, ans_bits.bits, ans_bits.nbits, writer.allocator);
 	}
 
 	try writer.write(32, ans.getState());
@@ -181,7 +185,7 @@ pub fn writeSingleHistogramTokens(
 	var chunk_index = out.items.len;
 	while (chunk_index > 0) {
 		chunk_index -= 1;
-		try writer.write(out_nbits.items[chunk_index], out.items[chunk_index]);
+		try writer.write(out.items[chunk_index].nbits, out.items[chunk_index].bits);
 	}
 	return num_extra_bits;
 }
