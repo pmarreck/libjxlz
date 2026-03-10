@@ -117,7 +117,8 @@
 - [ ] Replace synthetic encoder-prepass scaffold with real modular encoder profiling once the first writable bitstream slice exists
 - [ ] Frame encoder
 - [x] Replace borrowed metadata bits with native Zig `ImageMetadata` / `CustomTransformData` writers for the simple modular grayscale/RGB codestream path, prove exact metadata-bit matches on the committed grayscale/RGB fixtures, and rerun both full codestream roundtrips through the native shell — 2026-03-09 ~8:05 PM EST
-- [ ] Widen the native codestream writer from tiny single-group fixtures to a real multi-group RGB image by emitting repeated local modular group sections and proving full `FrameDecoder.decodeFrame` pixel equality
+- [x] Widen the native codestream writer from tiny single-group fixtures to a real multi-group RGB image by emitting repeated local modular group sections and proving full `FrameDecoder.decodeFrame` pixel equality on a `600x300` image — 2026-03-09 ~8:35 PM EST
+- [ ] Replace the synthetic encoder-prepass benchmark with a real narrow lossless modular encode benchmark built on the working multigroup RGB codestream path
 - [ ] Fast lossless encoder
 - [ ] C FFI encode API
 - [ ] cjxlz CLI

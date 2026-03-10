@@ -7,17 +7,25 @@ const BitWriter = @import("../base/bit_writer.zig").BitWriter;
 const headers = @import("headers.zig");
 const image_metadata = @import("image_metadata.zig");
 const frame_header_mod = @import("frame_header.zig");
+const toc = @import("toc.zig");
 const dec_frame = @import("dec_frame.zig");
 const enc_frame = @import("enc_frame.zig");
-const enc_toc = @import("enc_toc.zig");
 const enc_encoding = @import("../modular/enc_encoding.zig");
 const modular_image = @import("../modular/modular_image.zig");
 
 const Channel = modular_image.Channel;
 
+fn expectedRgbFixturePixel(x: usize, y: usize) [3]i32 {
+	return .{
+		@intCast(x * 255 / 599),
+		@intCast(y * 255 / 299),
+		@intCast((x + y) * 255 / 898),
+	};
+}
+
 fn prepareFrame(data: []const u8) !struct {
-    codec_meta: image_metadata.CodecMetadata,
-    frame_data: []const u8,
+	codec_meta: image_metadata.CodecMetadata,
+	frame_data: []const u8,
 } {
     var br = BitReader.init(data[2..]);
     const size = headers.SizeHeader.readFromBitStream(&br);
@@ -261,7 +269,98 @@ test "writeCodestream round-trips an RGB codestream through header parse and Fra
     try testing.expectEqual(@as(usize, 3), image.w);
     try testing.expectEqual(@as(usize, 2), image.h);
 
-    for (source.channels.items, image.channels.items) |want, got| {
-        try testing.expectEqualSlices(i32, want.data, got.data);
-    }
+	for (source.channels.items, image.channels.items) |want, got| {
+		try testing.expectEqualSlices(i32, want.data, got.data);
+	}
+}
+
+test "writeCodestream round-trips a multi-group RGB codestream through header parse and FrameDecoder" {
+	const allocator = testing.allocator;
+	const source_data = @embedFile("../testdata/lossless_600x300_multigroup_rgb.jxl");
+	const prepared = try prepareFrame(source_data);
+
+	const frame_header = blk: {
+		var br = BitReader.init(prepared.frame_data);
+		break :blk try frame_header_mod.FrameHeader.readFromBitStream(&br, &prepared.codec_meta, false);
+	};
+	const frame_dim = frame_header.toFrameDimensions(&prepared.codec_meta, false);
+	const num_sections = toc.numTocEntries(frame_dim.num_groups, frame_dim.num_dc_groups, frame_header.passes.num_passes);
+
+	var source = try modular_image.Image.create(allocator, prepared.codec_meta.xsize(), prepared.codec_meta.ysize(), 8, 3);
+	defer source.deinit();
+	for (0..source.h) |y| {
+		for (0..source.w) |x| {
+			const pixel = expectedRgbFixturePixel(x, y);
+			source.channels.items[0].row(y)[x] = pixel[0];
+			source.channels.items[1].row(y)[x] = pixel[1];
+			source.channels.items[2].row(y)[x] = pixel[2];
+		}
+	}
+
+	const section_writers = try allocator.alloc(BitWriter, num_sections);
+	defer allocator.free(section_writers);
+	for (section_writers) |*section_writer| {
+		section_writer.* = BitWriter.init(allocator);
+	}
+	defer for (section_writers) |*section_writer| {
+		section_writer.deinit();
+	};
+
+	try section_writers[0].write(1, 1); // DequantMatrices all_default
+	try section_writers[0].write(1, 0); // no global MA tree
+	try enc_encoding.writeEmptyModularGroup(&section_writers[0]);
+	try section_writers[0].zeroPadToByte();
+
+	const ac_global_index = 1 + frame_dim.num_dc_groups;
+	for (ac_global_index + 1..num_sections) |section_id| {
+		const group_id = (section_id - ac_global_index - 1) % frame_dim.num_groups;
+		_ = try enc_encoding.writeSingleNodeLocalTreeGroupImageRect(
+			allocator,
+			&source,
+			frame_dim.groupRect(group_id),
+			.gradient,
+			&section_writers[section_id],
+		);
+		try section_writers[section_id].zeroPadToByte();
+	}
+
+	const section_payloads = try allocator.alloc([]const u8, num_sections);
+	defer allocator.free(section_payloads);
+	for (section_writers, 0..) |*section_writer, i| {
+		section_payloads[i] = section_writer.bytes();
+	}
+
+	var frame_writer = BitWriter.init(allocator);
+	defer frame_writer.deinit();
+	try enc_frame.writeFrame(&frame_header, &prepared.codec_meta, section_payloads, &frame_writer);
+	try frame_writer.zeroPadToByte();
+
+	var codestream = BitWriter.init(allocator);
+	defer codestream.deinit();
+	try writeCodestream(&prepared.codec_meta, frame_writer.bytes(), &codestream);
+	try codestream.zeroPadToByte();
+
+	var br = BitReader.init(codestream.bytes()[2..]);
+	const size = headers.SizeHeader.readFromBitStream(&br);
+	const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+	const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+	try br.jumpToByteBoundary();
+
+	var parsed_meta = image_metadata.CodecMetadata{};
+	parsed_meta.m = metadata;
+	parsed_meta.size = size;
+	parsed_meta.transform_data = transform_data;
+
+	const frame_offset = br.totalBitsConsumed() / 8;
+	var frame_dec = dec_frame.FrameDecoder.init(allocator, &parsed_meta);
+	defer frame_dec.deinit();
+	try frame_dec.decodeFrame(codestream.bytes()[2 + frame_offset ..]);
+
+	const image = frame_dec.getDecodedImage();
+	try testing.expectEqual(@as(usize, 3), image.channels.items.len);
+	try testing.expectEqual(@as(usize, source.w), image.w);
+	try testing.expectEqual(@as(usize, source.h), image.h);
+	for (source.channels.items, image.channels.items) |want, got| {
+		try testing.expectEqualSlices(i32, want.data, got.data);
+	}
 }
