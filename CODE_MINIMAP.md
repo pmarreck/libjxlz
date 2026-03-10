@@ -43,7 +43,7 @@
 - `rect.zig` — Rect type for rectangular image regions with intersection/translate/shift
 - `float.zig` — IEEE 754 float16 to f32 conversion
 - `bit_reader.zig` — 64-bit buffered bitstream reader with deferred refill, bounds checking
-- `bit_writer.zig` — first encoder-side writable primitive: LSB-first bit packing with byte-padding semantics matching `BitReader`, proven by direct roundtrip tests and intended as the foundation for upcoming ANS/modular writer work
+- `bit_writer.zig` — first encoder-side writable primitive: LSB-first bit packing with byte-padding semantics matching `BitReader`, now with `ensureUnusedCapacityBits` so hot encode paths can reserve an entire bit burst before repeated `write` calls, proven by direct roundtrip tests and a reserve-without-exposed-bytes regression test
 - `pack_signed.zig` — PackSigned/UnpackSigned for zigzag encoding of signed frame offsets
 
 ### src/lib/entropy/
@@ -53,7 +53,7 @@
 - `hybrid_uint.zig` — HybridUintConfig: split-exponent scheme for variable-length integers, encode/decode
 - `inverse_mtf.zig` — Inverse move-to-front transform (scalar implementation)
 - `dec_ans.zig` — ANSCode, ANSSymbolReader (ANS + Huffman + LZ77 + hybrid uint), LZ77Params, ReadHistogram, public decoder-side varlen uint helpers for histogram metadata, DecodeUintConfig, special distance table, retained generic read path plus compile-time-specialized clustered uint readers, decodeHistograms (top-level)
-- `enc_ans.zig` — first encoder-side entropy-writing foundations: generic `encodeUintConfig(s)` and `storeVarLenUint8/16`, `SizeWriter`, `Token`, `ANSEncSymbolInfo`, an alias-table-backed ANS info-table builder, `ANSCoder.putSymbol`, minimal one-context degenerate/two-symbol/flat histogram metadata writers for `decodeHistograms`, and a minimal single-histogram token-stream writer that now packs reversed ANS/extra-bit chunks through a single fixed-capacity chunk slice after real encode profiling identified `writeSingleHistogramTokens` / `addReversedBits` as the first hotspot; tests prove metadata roundtrips, exact bit-count agreement, ANS state-update correctness, recovered histogram frequencies via alias tables, and decoder roundtrip of both histogram metadata and direct/extra-bit token streams
+- `enc_ans.zig` — first encoder-side entropy-writing foundations: generic `encodeUintConfig(s)` and `storeVarLenUint8/16`, `SizeWriter`, `Token`, `ANSEncSymbolInfo`, an alias-table-backed ANS info-table builder, `ANSCoder.putSymbol`, minimal one-context degenerate/two-symbol/flat histogram metadata writers for `decodeHistograms`, and a minimal single-histogram token-stream writer that now packs reversed ANS/extra-bit chunks through a single fixed-capacity chunk slice and pre-reserves the full outgoing bit burst before flushing chunks after real encode profiling identified `writeSingleHistogramTokens` / `BitWriter.write` growth churn as the current hotspot; tests prove metadata roundtrips, exact bit-count agreement, ANS state-update correctness, recovered histogram frequencies via alias tables, and decoder roundtrip of both histogram metadata and direct/extra-bit token streams
 - `enc_context_map.zig` — first encoder-side multi-context metadata helper, currently just the simple all-zero context-map writer (`is_simple=1`, `bits_per_entry=0`) with a decoder roundtrip test through `decodeContextMap`; intended as the smallest stepping stone toward MA-tree histogram/context-map emission
 - `dec_context_map.zig` — DecodeContextMap (simple + ANS-coded non-simple path), VerifyContextMap
 

@@ -182,6 +182,11 @@ pub fn writeSingleHistogramTokens(
 		try addReversedBits(out, &out_len, &allbits, &numallbits, ans_bits.bits, ans_bits.nbits);
 	}
 
+	var pending_bits: usize = 32 + numallbits;
+	for (out[0..out_len]) |chunk| {
+		pending_bits += chunk.nbits;
+	}
+	try writer.ensureUnusedCapacityBits(pending_bits);
 	try writer.write(32, ans.getState());
 	try writer.write(numallbits, allbits);
 	var chunk_index = out_len;

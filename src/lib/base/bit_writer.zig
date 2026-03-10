@@ -31,12 +31,9 @@ pub const BitWriter = struct {
 		return self.storage.items[0 .. self.bits_written / 8];
 	}
 
-	/// Writes little-endian bit patches in the same LSB-first byte layout that
-	/// `BitReader` expects, making encode/decode roundtrips deterministic.
-	pub fn write(self: *BitWriter, n_bits: usize, bits: u64) !void {
-		std.debug.assert(n_bits <= kMaxBitsPerCall);
-		if (n_bits == 0) return;
-
+	/// Reserves byte storage for an upcoming bit burst while keeping unwritten
+	/// bytes zeroed, so repeated `write` calls can avoid growth churn.
+	pub fn ensureUnusedCapacityBits(self: *BitWriter, n_bits: usize) !void {
 		const final_bits = self.bits_written + n_bits;
 		const needed_bytes = std.mem.alignForward(usize, final_bits, 8) / 8;
 		if (needed_bytes > self.storage.items.len) {
@@ -44,6 +41,16 @@ pub const BitWriter = struct {
 			try self.storage.resize(self.allocator, needed_bytes);
 			@memset(self.storage.items[old_len..], 0);
 		}
+	}
+
+	/// Writes little-endian bit patches in the same LSB-first byte layout that
+	/// `BitReader` expects, making encode/decode roundtrips deterministic.
+	pub fn write(self: *BitWriter, n_bits: usize, bits: u64) !void {
+		std.debug.assert(n_bits <= kMaxBitsPerCall);
+		if (n_bits == 0) return;
+
+		const final_bits = self.bits_written + n_bits;
+		try self.ensureUnusedCapacityBits(n_bits);
 
 		var remaining = n_bits;
 		var value = bits;
@@ -81,6 +88,18 @@ test "BitWriter zero-pads to byte boundary" {
 
 	try testing.expectEqual(@as(usize, 8), writer.bitsWritten());
 	try testing.expectEqualSlices(u8, &[_]u8{0b00000101}, writer.bytes());
+}
+
+test "BitWriter ensureUnusedCapacityBits reserves without exposing unwritten bytes" {
+	var writer = BitWriter.init(testing.allocator);
+	defer writer.deinit();
+
+	try writer.ensureUnusedCapacityBits(32);
+	try writer.write(4, 0b1010);
+	try writer.zeroPadToByte();
+
+	try testing.expectEqual(@as(usize, 8), writer.bitsWritten());
+	try testing.expectEqualSlices(u8, &[_]u8{0b00001010}, writer.bytes());
 }
 
 test "BitWriter round-trips a short sequence through BitReader" {
