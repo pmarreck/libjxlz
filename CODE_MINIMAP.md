@@ -55,17 +55,17 @@
 - `dec_context_map.zig` — DecodeContextMap (simple + ANS-coded non-simple path), VerifyContextMap
 
 ### src/lib/codec/
-- `field_coders.zig` — U32Distr, U32Enc, U32Coder, U64Coder, F16Coder, BitsCoder read functions, readEnum, readExtensions, readAllDefault
+- `field_coders.zig` — U32Distr, U32Enc, U32Coder, U64Coder, F16Coder, BitsCoder read functions plus the first matching write-side helpers (`writeEnum`, `writeExtensions`, `writeAllDefault`) used by the new metadata/frame serializers
 - `frame_dimensions.zig` — Block/group constants (kBlockDim=8, kGroupDim=256), FrameDimensions struct with Set, GroupRect, BlockGroupRect, DCGroupRect
 - `headers.zig` — SizeHeader (compact image dimensions), PreviewHeader, AnimationHeader readers; aspect ratio table
 - `loop_filter.zig` — LoopFilter (Gaborish + EPF parameters) with full readFromBitStream, extension support
-- `image_metadata.zig` — BitDepth, ExtraChannel enum, ExtraChannelInfo, ToneMapping, Orientation, ImageMetadata, CodecMetadata, OpsinInverseMatrix, CustomTransformData
-- `color_encoding.zig` — ColorSpace, WhitePoint, Primaries, TransferFunction, RenderingIntent, Customxy, CustomTransferFunction, ColorEncoding with full readFromBitStream
+- `image_metadata.zig` — BitDepth, ExtraChannel enum, ExtraChannelInfo, ToneMapping, Orientation, ImageMetadata, CodecMetadata, OpsinInverseMatrix, CustomTransformData, plus narrow write-side helpers for the current simple grayscale/RGB codestream surface (`writeBitDepth`, `writeImageMetadata`, `writeCustomTransformData`) with fixture-bit roundtrip coverage
+- `color_encoding.zig` — ColorSpace, WhitePoint, Primaries, TransferFunction, RenderingIntent, Customxy, CustomTransferFunction, ColorEncoding with full readFromBitStream plus narrow non-ICC write-side helpers for the current grayscale/RGB fixtures (`writeCustomTransferFunction`, `writeColorEncoding`)
 - `frame_header.zig` — FrameEncoding, ColorTransform, FrameType, BlendMode, BlendingInfo, YCbCrChromaSubsampling, Passes, AnimationFrame, FrameHeader with full readFromBitStream
 - `toc.zig` — TOC reading (section sizes + Lehmer-coded permutation via ANS), numTocEntries, acGroupIndex, `computeGroupOffsets` for validated section-layout construction
 - `enc_toc.zig` — first encoder-side frame-shell helper, currently just the no-permutation TOC writer with roundtrip coverage through `toc.readToc`; intended as the size/section-layout foundation for minimal frame wrappers
 - `enc_frame.zig` — encoder-side frame-shell helpers: exact-bit-tested native `writeFrameHeader` for the current simple modular grayscale/RGB surface, `writeFrame` for native frame assembly, and the older borrowed-header helper retained while broader header coverage is still incomplete
-- `enc_codestream.zig` — first encoder-side full codestream wrapper, currently built around a real raw `SizeHeader` writer plus borrowed metadata bits and the native `enc_frame.writeFrame` path; includes full borrowed-metadata codestream roundtrips through header parsing and `FrameDecoder.decodeFrame` for both grayscale and RGB
+- `enc_codestream.zig` — first encoder-side full codestream wrapper with native `SizeHeader`, `ImageMetadata`, `CustomTransformData`, and `enc_frame.writeFrame` serializers for the current simple grayscale/RGB modular path; includes full codestream roundtrips through header parsing and `FrameDecoder.decodeFrame` for both grayscale and RGB
 - `dec_frame.zig` — FrameDecoder (frame header + validated TOC section layout + exact section slicing + error-propagating dispatch in `decodeFrameWithReaderStrategy`), ModularFrameDecoder (`decodeGlobalInfoWithReaderStrategy`, explicit unsupported-feature rejection, YCbCr chroma-channel sizing, global tree + per-group decode with pre-reserved scratch channel storage and copy-width/copy-height hoisted out of the row loop in `decodeGroup`), ModularStreamId
 - `codestream_test.zig` — Integration test: parses real JXL codestream (SizeHeader + ImageMetadata + FrameHeader)
 - `decode_test.zig` — End-to-end lossless decode tests for small/single-section and real multi-section codestreams, including exact sampled-pixel coverage for the committed 600x300 RGB multi-group fixture, truncated-frame failure coverage, and reference-vs-specialized parity over the committed corpus

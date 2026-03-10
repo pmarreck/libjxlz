@@ -116,7 +116,8 @@
 - [x] Encoder bit-writer foundation: add `src/lib/base/bit_writer.zig` with LSB-first write + byte-pad semantics and roundtrip it against the existing `BitReader`, so future ANS/modular writer work has a real writable primitive instead of the synthetic prepass scaffold alone — 2026-03-07 ~1:55 PM EST
 - [ ] Replace synthetic encoder-prepass scaffold with real modular encoder profiling once the first writable bitstream slice exists
 - [ ] Frame encoder
-- [ ] Replace borrowed metadata bits with native Zig `ImageMetadata` / `CustomTransformData` writers for the simple modular grayscale/RGB codestream path
+- [x] Replace borrowed metadata bits with native Zig `ImageMetadata` / `CustomTransformData` writers for the simple modular grayscale/RGB codestream path, prove exact metadata-bit matches on the committed grayscale/RGB fixtures, and rerun both full codestream roundtrips through the native shell — 2026-03-09 ~8:05 PM EST
+- [ ] Widen the native codestream writer from tiny single-group fixtures to a real multi-group RGB image by emitting repeated local modular group sections and proving full `FrameDecoder.decodeFrame` pixel equality
 - [ ] Fast lossless encoder
 - [ ] C FFI encode API
 - [ ] cjxlz CLI

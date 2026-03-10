@@ -1,5 +1,5 @@
 // Encoder-side codestream-shell helpers.
-// Starts with a real SizeHeader writer plus borrowed metadata bits.
+// Starts with native SizeHeader/ImageMetadata/CustomTransformData writers.
 
 const std = @import("std");
 const BitReader = @import("../base/bit_reader.zig").BitReader;
@@ -36,35 +36,6 @@ fn prepareFrame(data: []const u8) !struct {
     };
 }
 
-fn extractSizeHeaderBits(data: []const u8) usize {
-    var br = BitReader.init(data[2..]);
-    _ = headers.SizeHeader.readFromBitStream(&br);
-    return br.totalBitsConsumed();
-}
-
-fn extractMetadataBits(data: []const u8) !struct { offset_bits: usize, len_bits: usize } {
-    var br = BitReader.init(data[2..]);
-    _ = headers.SizeHeader.readFromBitStream(&br);
-    const start = br.totalBitsConsumed();
-    const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
-    _ = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
-    const end = br.totalBitsConsumed();
-    return .{ .offset_bits = start, .len_bits = end - start };
-}
-
-fn appendRawBits(writer: *BitWriter, source: []const u8, bit_offset: usize, bit_count: usize) !void {
-    var br = BitReader.init(source);
-    if (bit_offset > 0) {
-        _ = br.readBits(bit_offset);
-    }
-    var remaining = bit_count;
-    while (remaining > 0) {
-        const chunk = @min(remaining, BitWriter.kMaxBitsPerCall);
-        try writer.write(chunk, br.readBits(chunk));
-        remaining -= chunk;
-    }
-}
-
 fn writeSizeRawValue(value: u32, writer: *BitWriter) !void {
     if (value < (1 << 9) + 1) {
         try writer.write(2, 0);
@@ -94,21 +65,18 @@ pub fn writeRawSizeHeader(xsize: u32, ysize: u32, writer: *BitWriter) !void {
     try writeSizeRawValue(xsize, writer);
 }
 
-/// Writes a complete codestream by combining a freshly generated SizeHeader and
-/// borrowed metadata bits with a caller-provided frame payload.
-pub fn writeBorrowedMetadataCodestream(
-    xsize: u32,
-    ysize: u32,
-    metadata_source: []const u8,
-    metadata_offset_bits: usize,
-    metadata_len_bits: usize,
+/// Writes a complete codestream using native Zig serializers for SizeHeader,
+/// ImageMetadata, CustomTransformData, and the already-assembled frame payload.
+pub fn writeCodestream(
+    codec_meta: *const image_metadata.CodecMetadata,
     frame_data: []const u8,
     writer: *BitWriter,
 ) !void {
     try writer.write(8, 0xFF);
     try writer.write(8, headers.codestream_marker);
-    try writeRawSizeHeader(xsize, ysize, writer);
-    try appendRawBits(writer, metadata_source, metadata_offset_bits, metadata_len_bits);
+    try writeRawSizeHeader(@intCast(codec_meta.xsize()), @intCast(codec_meta.ysize()), writer);
+    try image_metadata.writeImageMetadata(&codec_meta.m, writer);
+    try image_metadata.writeCustomTransformData(&codec_meta.transform_data, codec_meta.m.xyb_encoded, writer);
     try writer.zeroPadToByte();
     for (frame_data) |byte| {
         try writer.write(8, byte);
@@ -117,11 +85,10 @@ pub fn writeBorrowedMetadataCodestream(
 
 const testing = std.testing;
 
-test "writeBorrowedMetadataCodestream round-trips a grayscale codestream through header parse and FrameDecoder" {
+test "writeCodestream round-trips a grayscale codestream through header parse and FrameDecoder" {
     const allocator = testing.allocator;
     const source_data = @embedFile("../testdata/lossless_600x10_multisection.jxl");
     const prepared = try prepareFrame(source_data);
-    const metadata_bits = try extractMetadataBits(source_data);
 
     var codec_meta = prepared.codec_meta;
     codec_meta.size = .{
@@ -168,15 +135,7 @@ test "writeBorrowedMetadataCodestream round-trips a grayscale codestream through
 
     var codestream = BitWriter.init(allocator);
     defer codestream.deinit();
-    try writeBorrowedMetadataCodestream(
-        3,
-        3,
-        source_data[2..],
-        metadata_bits.offset_bits,
-        metadata_bits.len_bits,
-        frame_writer.bytes(),
-        &codestream,
-    );
+    try writeCodestream(&codec_meta, frame_writer.bytes(), &codestream);
     try codestream.zeroPadToByte();
 
     const bytes = codestream.bytes();
@@ -209,11 +168,10 @@ test "writeBorrowedMetadataCodestream round-trips a grayscale codestream through
     try testing.expectEqualSlices(i32, channel.data, image.channels.items[0].data);
 }
 
-test "writeBorrowedMetadataCodestream round-trips an RGB codestream through header parse and FrameDecoder" {
+test "writeCodestream round-trips an RGB codestream through header parse and FrameDecoder" {
     const allocator = testing.allocator;
     const source_data = @embedFile("../testdata/lossless_4x4.jxl");
     const prepared = try prepareFrame(source_data);
-    const metadata_bits = try extractMetadataBits(source_data);
 
     var codec_meta = prepared.codec_meta;
     codec_meta.size = .{
@@ -272,15 +230,7 @@ test "writeBorrowedMetadataCodestream round-trips an RGB codestream through head
 
     var codestream = BitWriter.init(allocator);
     defer codestream.deinit();
-    try writeBorrowedMetadataCodestream(
-        3,
-        2,
-        source_data[2..],
-        metadata_bits.offset_bits,
-        metadata_bits.len_bits,
-        frame_writer.bytes(),
-        &codestream,
-    );
+    try writeCodestream(&codec_meta, frame_writer.bytes(), &codestream);
     try codestream.zeroPadToByte();
 
     const bytes = codestream.bytes();

@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const BitReader = @import("../base/bit_reader.zig").BitReader;
+const BitWriter = @import("../base/bit_writer.zig").BitWriter;
 const JxlError = @import("../base/status.zig").JxlError;
 const fc = @import("field_coders.zig");
 const headers = @import("headers.zig");
@@ -93,6 +94,20 @@ pub const BitDepth = struct {
         return bd;
     }
 };
+
+pub fn writeBitDepth(bit_depth: *const BitDepth, writer: anytype) !void {
+    try writer.write(1, @intFromBool(bit_depth.floating_point_sample));
+
+    if (!bit_depth.floating_point_sample) {
+        const enc = fc.U32Enc.init(fc.val(8), fc.val(10), fc.val(12), fc.bitsOffset(6, 1));
+        try fc.U32Coder.write(enc, bit_depth.bits_per_sample, writer);
+        return;
+    }
+
+    const enc = fc.U32Enc.init(fc.val(32), fc.val(16), fc.val(24), fc.bitsOffset(6, 1));
+    try fc.U32Coder.write(enc, bit_depth.bits_per_sample, writer);
+    try writer.write(4, bit_depth.exponent_bits_per_sample - 1);
+}
 
 // ── ExtraChannelInfo ──
 
@@ -206,6 +221,13 @@ pub const ToneMapping = struct {
     }
 };
 
+fn isDefaultToneMapping(tone_mapping: *const ToneMapping) bool {
+    return tone_mapping.intensity_target == 255.0 and
+        tone_mapping.min_nits == 0.0 and
+        !tone_mapping.relative_to_max_display and
+        tone_mapping.linear_below == 0.0;
+}
+
 // ── ImageMetadata ──
 
 pub const ImageMetadata = struct {
@@ -307,6 +329,33 @@ pub const ImageMetadata = struct {
     }
 };
 
+/// Emits the currently-supported codestream metadata surface: no extra fields,
+/// no extra channels, non-XYB grayscale/RGB color encodings, and no extensions.
+pub fn writeImageMetadata(metadata: *const ImageMetadata, writer: anytype) !void {
+    if (metadata.extensions != 0) return error.Unsupported;
+    if (metadata.num_extra_channels != 0 or metadata.extra_channel_count != 0) return error.Unsupported;
+
+    const tone_mapping_default = isDefaultToneMapping(&metadata.tone_mapping);
+    const extra_fields = metadata.orientation != 1 or
+        metadata.have_preview or
+        metadata.have_animation or
+        metadata.have_intrinsic_size or
+        !tone_mapping_default;
+    if (extra_fields) return error.Unsupported;
+
+    try fc.writeAllDefault(false, writer);
+    try writer.write(1, 0); // extra_fields = false
+    try writeBitDepth(&metadata.bit_depth, writer);
+    try writer.write(1, @intFromBool(metadata.modular_16_bit_buffer_sufficient));
+
+    const extra_channels_enc = fc.U32Enc.init(fc.val(0), fc.val(1), fc.bitsOffset(4, 2), fc.bitsOffset(12, 1));
+    try fc.U32Coder.write(extra_channels_enc, metadata.num_extra_channels, writer);
+
+    try writer.write(1, @intFromBool(metadata.xyb_encoded));
+    try color_encoding_mod.writeColorEncoding(&metadata.color_encoding, writer);
+    try fc.writeExtensions(0, writer);
+}
+
 // ── CodecMetadata ──
 
 pub const CodecMetadata = struct {
@@ -404,9 +453,79 @@ pub const CustomTransformData = struct {
     }
 };
 
+pub fn writeCustomTransformData(transform_data: *const CustomTransformData, xyb_encoded: bool, writer: anytype) !void {
+    if (xyb_encoded) return error.Unsupported;
+    if (transform_data.custom_weights_mask != 0) return error.Unsupported;
+    try fc.writeAllDefault(true, writer);
+}
+
 // ── Tests ──
 
 const testing = std.testing;
+
+fn extractMetadataBits(data: []const u8) !struct {
+    size: headers.SizeHeader,
+    metadata: ImageMetadata,
+    transform_data: CustomTransformData,
+    offset_bits: usize,
+    len_bits: usize,
+} {
+    var br = BitReader.init(data[2..]);
+    const size = headers.SizeHeader.readFromBitStream(&br);
+    const offset_bits = br.totalBitsConsumed();
+    const metadata = try ImageMetadata.readFromBitStream(&br);
+    const transform_data = try CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+    const end_bits = br.totalBitsConsumed();
+    return .{
+        .size = size,
+        .metadata = metadata,
+        .transform_data = transform_data,
+        .offset_bits = offset_bits,
+        .len_bits = end_bits - offset_bits,
+    };
+}
+
+fn expectBitsEqual(expected_source: []const u8, expected_offset_bits: usize, expected_bits: usize, actual_source: []const u8) !void {
+    var expected = BitReader.init(expected_source);
+    _ = expected.readBits(expected_offset_bits);
+    var actual = BitReader.init(actual_source);
+    var remaining = expected_bits;
+    while (remaining > 0) {
+        const chunk = @min(remaining, BitWriter.kMaxBitsPerCall);
+        try testing.expectEqual(expected.readBits(chunk), actual.readBits(chunk));
+        remaining -= chunk;
+    }
+}
+
+test "writeImageMetadata plus CustomTransformData matches simple RGB fixture bits" {
+    const allocator = testing.allocator;
+    const data = @embedFile("../testdata/lossless_4x4.jxl");
+    const extracted = try extractMetadataBits(data);
+
+    var writer = BitWriter.init(allocator);
+    defer writer.deinit();
+    try writeImageMetadata(&extracted.metadata, &writer);
+    try writeCustomTransformData(&extracted.transform_data, extracted.metadata.xyb_encoded, &writer);
+    try writer.zeroPadToByte();
+
+    try testing.expectEqual(extracted.len_bits, writer.bitsWritten() - ((8 - (extracted.len_bits % 8)) % 8));
+    try expectBitsEqual(data[2..], extracted.offset_bits, extracted.len_bits, writer.bytes());
+}
+
+test "writeImageMetadata plus CustomTransformData matches simple grayscale fixture bits" {
+    const allocator = testing.allocator;
+    const data = @embedFile("../testdata/lossless_600x10_multisection.jxl");
+    const extracted = try extractMetadataBits(data);
+
+    var writer = BitWriter.init(allocator);
+    defer writer.deinit();
+    try writeImageMetadata(&extracted.metadata, &writer);
+    try writeCustomTransformData(&extracted.transform_data, extracted.metadata.xyb_encoded, &writer);
+    try writer.zeroPadToByte();
+
+    try testing.expectEqual(extracted.len_bits, writer.bitsWritten() - ((8 - (extracted.len_bits % 8)) % 8));
+    try expectBitsEqual(data[2..], extracted.offset_bits, extracted.len_bits, writer.bytes());
+}
 
 test "BitDepth default (8-bit uint)" {
     // floating_point=0, selector=00 -> Val(8)

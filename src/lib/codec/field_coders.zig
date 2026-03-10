@@ -237,6 +237,11 @@ pub fn readEnum(reader: *BitReader) u32 {
     return U32Coder.read(enc, reader);
 }
 
+pub fn writeEnum(value: u32, writer: anytype) !void {
+    const enc = U32Enc.init(val(0), val(1), bitsOffset(4, 2), bitsOffset(6, 18));
+    try U32Coder.write(enc, value, writer);
+}
+
 // ── Extensions reader ──
 
 /// Reads the extensions field (U64 bitmask). If non-zero, reads per-extension
@@ -422,4 +427,22 @@ test "readEnum values" {
     var data1 = [_]u8{ 0b00000001, 0, 0, 0, 0, 0, 0, 0 };
     var br1 = BitReader.init(&data1);
     try testing.expectEqual(@as(u32, 1), readEnum(&br1));
+}
+
+test "writeEnum round-trips mixed values" {
+    const values = [_]u32{ 0, 1, 2, 7, 13, 18, 47 };
+
+    var writer = BitWriter.init(testing.allocator);
+    defer writer.deinit();
+    for (values) |value| {
+        try writeEnum(value, &writer);
+    }
+    try writer.zeroPadToByte();
+
+    var br = BitReader.init(writer.bytes());
+    for (values) |value| {
+        try testing.expectEqual(value, readEnum(&br));
+    }
+    try br.jumpToByteBoundary();
+    try br.close();
 }

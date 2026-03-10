@@ -202,6 +202,60 @@ pub const ColorEncoding = struct {
     }
 };
 
+fn isDefaultColorEncoding(ce: *const ColorEncoding) bool {
+    return !ce.want_icc and
+        ce.color_space == .rgb and
+        ce.white_point == .d65 and
+        ce.primaries == .srgb and
+        !ce.tf.have_gamma and
+        ce.tf.transfer_function == .srgb and
+        ce.rendering_intent == .relative;
+}
+
+/// Emits the current non-ICC transfer-function surface, covering the standard
+/// enum-coded transfer functions and the optional explicit gamma form.
+pub fn writeCustomTransferFunction(tf: *const CustomTransferFunction, color_space: ColorSpace, writer: anytype) !void {
+    if (color_space == .xyb) return;
+
+    try writer.write(1, @intFromBool(tf.have_gamma));
+    if (tf.have_gamma) {
+        try writer.write(24, tf.gamma);
+        return;
+    }
+
+    if (tf.transfer_function == .unknown) return error.Unsupported;
+    try fc.writeEnum(@intFromEnum(tf.transfer_function), writer);
+}
+
+/// Emits the narrow color-encoding surface used by the current grayscale/RGB
+/// modular fixtures: non-ICC, implicit/default chromaticities, and standard
+/// transfer-function enums.
+pub fn writeColorEncoding(ce: *const ColorEncoding, writer: anytype) !void {
+    if (isDefaultColorEncoding(ce)) {
+        try fc.writeAllDefault(true, writer);
+        return;
+    }
+
+    try fc.writeAllDefault(false, writer);
+    try writer.write(1, @intFromBool(ce.want_icc));
+    try fc.writeEnum(@intFromEnum(ce.color_space), writer);
+
+    if (ce.want_icc) return;
+
+    if (ce.color_space != .xyb) {
+        if (ce.white_point == .custom) return error.Unsupported;
+        try fc.writeEnum(@intFromEnum(ce.white_point), writer);
+    }
+
+    if (ce.hasPrimaries()) {
+        if (ce.primaries == .custom) return error.Unsupported;
+        try fc.writeEnum(@intFromEnum(ce.primaries), writer);
+    }
+
+    try writeCustomTransferFunction(&ce.tf, ce.color_space, writer);
+    try fc.writeEnum(@intFromEnum(ce.rendering_intent), writer);
+}
+
 // ── Enum conversion helper ──
 
 fn enumFromU32(comptime E: type, val: u32) ?E {
@@ -291,6 +345,38 @@ test "Customxy readFromBitStream" {
     const xy = Customxy.readFromBitStream(&br);
     try testing.expectEqual(@as(i32, 0), xy.x);
     try testing.expectEqual(@as(i32, 0), xy.y);
+}
+
+test "writeColorEncoding emits all-default for sRGB" {
+    var writer = @import("../base/bit_writer.zig").BitWriter.init(testing.allocator);
+    defer writer.deinit();
+
+    const ce = ColorEncoding{};
+    try writeColorEncoding(&ce, &writer);
+    try writer.zeroPadToByte();
+
+    try testing.expectEqual(@as(usize, 8), writer.bitsWritten());
+    try testing.expectEqualSlices(u8, &[_]u8{0x01}, writer.bytes());
+}
+
+test "writeColorEncoding matches gray no-ICC fixture bits" {
+    const data = [_]u8{ 0x14, 0x37, 0, 0, 0, 0, 0, 0 };
+    var br = BitReader.init(&data);
+    const ce = try ColorEncoding.readFromBitStream(&br);
+
+    var writer = @import("../base/bit_writer.zig").BitWriter.init(testing.allocator);
+    defer writer.deinit();
+    try writeColorEncoding(&ce, &writer);
+    try writer.zeroPadToByte();
+
+    var want = BitReader.init(&data);
+    var got = BitReader.init(writer.bytes());
+    var remaining: usize = br.totalBitsConsumed();
+    while (remaining > 0) {
+        const chunk = @min(remaining, @import("../base/bit_writer.zig").BitWriter.kMaxBitsPerCall);
+        try testing.expectEqual(want.readBits(chunk), got.readBits(chunk));
+        remaining -= chunk;
+    }
 }
 
 test "enumFromU32" {
