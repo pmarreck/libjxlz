@@ -114,11 +114,11 @@
 - [x] Modular encoder slice: prove the widened fully local local-tree path is predictor-generic enough for a non-zero leaf by round-tripping a `3x3` `.gradient` tile through `encoding.modularDecode` without any injected state — 2026-03-08 ~12:30 AM EST
 - [ ] Modular encoder
 - [x] Encoder bit-writer foundation: add `src/lib/base/bit_writer.zig` with LSB-first write + byte-pad semantics and roundtrip it against the existing `BitReader`, so future ANS/modular writer work has a real writable primitive instead of the synthetic prepass scaffold alone — 2026-03-07 ~1:55 PM EST
-- [ ] Replace synthetic encoder-prepass scaffold with real modular encoder profiling once the first writable bitstream slice exists
+- [x] Replace synthetic encoder-prepass benchmarking as the repo’s primary encode signal with a real narrow lossless modular encode harness (`bench_modular_encode_codestream.zig`) built on the working `600x300` multi-group RGB codestream path, with checksum smoke coverage and source-controlled benchmark history — 2026-03-09 ~9:05 PM EST
 - [ ] Frame encoder
 - [x] Replace borrowed metadata bits with native Zig `ImageMetadata` / `CustomTransformData` writers for the simple modular grayscale/RGB codestream path, prove exact metadata-bit matches on the committed grayscale/RGB fixtures, and rerun both full codestream roundtrips through the native shell — 2026-03-09 ~8:05 PM EST
 - [x] Widen the native codestream writer from tiny single-group fixtures to a real multi-group RGB image by emitting repeated local modular group sections and proving full `FrameDecoder.decodeFrame` pixel equality on a `600x300` image — 2026-03-09 ~8:35 PM EST
-- [ ] Replace the synthetic encoder-prepass benchmark with a real narrow lossless modular encode benchmark built on the working multigroup RGB codestream path
+- [ ] Profile the real `bench_modular_encode_codestream` hotspot stack and target the first measured encode bottleneck instead of the old synthetic prepass
 - [ ] Fast lossless encoder
 - [ ] C FFI encode API
 - [ ] cjxlz CLI
