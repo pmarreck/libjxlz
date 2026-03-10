@@ -86,6 +86,8 @@ fn runRealEncodeBenchmark(allocator: std.mem.Allocator, cfg: WorkloadConfig) !Wo
 	const prepared = try prepareFixture();
 	var source = try buildSourceImage(allocator);
 	defer source.deinit();
+	var hist_cache = enc_encoding.FlatHistogramInfoCache.init(allocator);
+	defer hist_cache.deinit();
 
 	const num_sections = toc.numTocEntries(
 		prepared.frame_dim.num_groups,
@@ -115,11 +117,12 @@ fn runRealEncodeBenchmark(allocator: std.mem.Allocator, cfg: WorkloadConfig) !Wo
 
 		for (ac_global_index + 1..num_sections) |section_id| {
 			const group_id = (section_id - ac_global_index - 1) % prepared.frame_dim.num_groups;
-			_ = try enc_encoding.writeSingleNodeLocalTreeGroupImageRect(
+			_ = try enc_encoding.writeSingleNodeLocalTreeGroupImageRectWithCache(
 				allocator,
 				&source,
 				prepared.frame_dim.groupRect(group_id),
 				.gradient,
+				&hist_cache,
 				&section_writers[section_id],
 			);
 			try section_writers[section_id].zeroPadToByte();

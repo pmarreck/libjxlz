@@ -288,6 +288,8 @@ test "writeCodestream round-trips a multi-group RGB codestream through header pa
 
 	var source = try modular_image.Image.create(allocator, prepared.codec_meta.xsize(), prepared.codec_meta.ysize(), 8, 3);
 	defer source.deinit();
+	var hist_cache = enc_encoding.FlatHistogramInfoCache.init(allocator);
+	defer hist_cache.deinit();
 	for (0..source.h) |y| {
 		for (0..source.w) |x| {
 			const pixel = expectedRgbFixturePixel(x, y);
@@ -314,11 +316,12 @@ test "writeCodestream round-trips a multi-group RGB codestream through header pa
 	const ac_global_index = 1 + frame_dim.num_dc_groups;
 	for (ac_global_index + 1..num_sections) |section_id| {
 		const group_id = (section_id - ac_global_index - 1) % frame_dim.num_groups;
-		_ = try enc_encoding.writeSingleNodeLocalTreeGroupImageRect(
+		_ = try enc_encoding.writeSingleNodeLocalTreeGroupImageRectWithCache(
 			allocator,
 			&source,
 			frame_dim.groupRect(group_id),
 			.gradient,
+			&hist_cache,
 			&section_writers[section_id],
 		);
 		try section_writers[section_id].zeroPadToByte();

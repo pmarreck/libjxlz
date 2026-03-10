@@ -21,6 +21,67 @@ const Predictor = options.Predictor;
 const pixel_type_w = options.pixel_type_w;
 const Token = enc_ans.Token;
 
+const LocalHistogramConfig = struct {
+	uint_config: HybridUintConfig,
+	log_alpha_size: u5,
+	alphabet_size: u32,
+};
+
+const FlatHistogramInfoKey = struct {
+	alphabet_size: u32,
+	log_alpha_size: u5,
+	split_exponent: u32,
+	msb_in_token: u32,
+	lsb_in_token: u32,
+};
+
+/// Caches the flat ANS info tables used by the narrow modular encoder path.
+/// The key is the histogram shape plus HybridUintConfig, which is enough to reuse
+/// the reverse maps across repeated tiles with the same token alphabet.
+pub const FlatHistogramInfoCache = struct {
+	allocator: std.mem.Allocator,
+	entries: std.ArrayListUnmanaged(Entry) = .{},
+
+	const Entry = struct {
+		key: FlatHistogramInfoKey,
+		info: []enc_ans.ANSEncSymbolInfo,
+	};
+
+	pub fn init(allocator: std.mem.Allocator) FlatHistogramInfoCache {
+		return .{ .allocator = allocator };
+	}
+
+	pub fn deinit(self: *FlatHistogramInfoCache) void {
+		for (self.entries.items) |entry| {
+			enc_ans.freeANSEncSymbolInfoTable(self.allocator, entry.info);
+		}
+		self.entries.deinit(self.allocator);
+	}
+
+	fn getOrCreate(self: *FlatHistogramInfoCache, cfg: LocalHistogramConfig) ![]const enc_ans.ANSEncSymbolInfo {
+		const key = FlatHistogramInfoKey{
+			.alphabet_size = cfg.alphabet_size,
+			.log_alpha_size = cfg.log_alpha_size,
+			.split_exponent = cfg.uint_config.split_exponent,
+			.msb_in_token = cfg.uint_config.msb_in_token,
+			.lsb_in_token = cfg.uint_config.lsb_in_token,
+		};
+		for (self.entries.items) |entry| {
+			if (std.meta.eql(entry.key, key)) return entry.info;
+		}
+
+		const counts = try ans_common.createFlatHistogram(self.allocator, cfg.alphabet_size, ans_params.ans_tab_size);
+		defer self.allocator.free(counts);
+		const info = try enc_ans.buildANSEncSymbolInfoTable(self.allocator, counts, cfg.log_alpha_size);
+		errdefer enc_ans.freeANSEncSymbolInfoTable(self.allocator, info);
+		try self.entries.append(self.allocator, .{
+			.key = key,
+			.info = info,
+		});
+		return info;
+	}
+};
+
 /// Emits just the modular group header for a stream whose channels are all
 /// larger than `max_chan_size`, so decode returns after parsing the header.
 pub fn writeEmptyModularGroup(writer: *BitWriter) !void {
@@ -80,11 +141,7 @@ fn extractImageRect(
 	return tile;
 }
 
-fn selectLocalHistogramConfig(tokens: []const Token) !struct {
-	uint_config: HybridUintConfig,
-	log_alpha_size: u5,
-	alphabet_size: u32,
-} {
+fn selectLocalHistogramConfig(tokens: []const Token) !LocalHistogramConfig {
 	var max_value: u32 = 0;
 	for (tokens) |token| {
 		if (token.context != 0) return error.GenericError;
@@ -120,6 +177,35 @@ fn selectLocalHistogramConfig(tokens: []const Token) !struct {
 		.log_alpha_size = 8,
 		.alphabet_size = max_encoded_token + 1,
 	};
+}
+
+fn writeSingleNodeLocalTreeGroupTokens(
+	allocator: std.mem.Allocator,
+	tokens: []const Token,
+	predictor: Predictor,
+	cache: ?*FlatHistogramInfoCache,
+	writer: *BitWriter,
+) !usize {
+	if (tokens.len == 0) return error.GenericError;
+	const cfg = try selectLocalHistogramConfig(tokens);
+
+	try writer.write(1, 0); // use_global_tree = false
+	try writer.write(1, 1); // weighted header all-default
+	try writer.write(2, 0); // num_transforms = 0 via selector 0
+	try enc_ma.writeSingleLeafTree(allocator, predictor, writer);
+	try enc_ans.writeSingleContextFlatHistogram(@intCast(cfg.alphabet_size), cfg.uint_config, cfg.log_alpha_size, writer);
+
+	const info = if (cache) |hist_cache|
+		try hist_cache.getOrCreate(cfg)
+	else blk: {
+		const counts = try ans_common.createFlatHistogram(allocator, cfg.alphabet_size, ans_params.ans_tab_size);
+		defer allocator.free(counts);
+		const built = try enc_ans.buildANSEncSymbolInfoTable(allocator, counts, cfg.log_alpha_size);
+		break :blk built;
+	};
+	defer if (cache == null) enc_ans.freeANSEncSymbolInfoTable(allocator, @constCast(info));
+
+	return enc_ans.writeSingleHistogramTokens(tokens, info, cfg.uint_config, writer);
 }
 
 /// Tokenizes one channel against a single predictor leaf, producing the packed
@@ -209,64 +295,49 @@ pub fn writeSingleNodeGlobalTreeGroup(
 /// Emits the smallest local-tree modular group currently supported: one
 /// single-leaf tree plus a degenerate one-context channel histogram.
 pub fn writeSingleNodeLocalTreeGroup(
-    allocator: std.mem.Allocator,
-    channel: *const Channel,
-    predictor: Predictor,
-    writer: *BitWriter,
+	allocator: std.mem.Allocator,
+	channel: *const Channel,
+	predictor: Predictor,
+	writer: *BitWriter,
 ) !usize {
-    const tokens = try tokenizeSingleNodeChannel(allocator, channel, predictor, 0);
-    defer allocator.free(tokens);
-    if (tokens.len == 0) return error.GenericError;
-
-    const cfg = try selectLocalHistogramConfig(tokens);
-
-    try writer.write(1, 0); // use_global_tree = false
-    try writer.write(1, 1); // weighted header all-default
-    try writer.write(2, 0); // num_transforms = 0 via selector 0
-    try enc_ma.writeSingleLeafTree(allocator, predictor, writer);
-    try enc_ans.writeSingleContextFlatHistogram(@intCast(cfg.alphabet_size), cfg.uint_config, cfg.log_alpha_size, writer);
-
-    const counts = try ans_common.createFlatHistogram(allocator, cfg.alphabet_size, ans_params.ans_tab_size);
-    defer allocator.free(counts);
-    const info = try enc_ans.buildANSEncSymbolInfoTable(allocator, counts, cfg.log_alpha_size);
-    defer enc_ans.freeANSEncSymbolInfoTable(allocator, info);
-    return enc_ans.writeSingleHistogramTokens(tokens, info, cfg.uint_config, writer);
+	const tokens = try tokenizeSingleNodeChannel(allocator, channel, predictor, 0);
+	defer allocator.free(tokens);
+	return writeSingleNodeLocalTreeGroupTokens(allocator, tokens, predictor, null, writer);
 }
 
 /// Extends the local single-leaf modular writer across multiple image channels
 /// so the first RGB path can reuse the same tree and histogram while decoding
 /// channels in the standard modular channel order.
 pub fn writeSingleNodeLocalTreeGroupImage(
-    allocator: std.mem.Allocator,
-    image: *const modular_image.Image,
-    predictor: Predictor,
-    writer: *BitWriter,
+	allocator: std.mem.Allocator,
+	image: *const modular_image.Image,
+	predictor: Predictor,
+	writer: *BitWriter,
 ) !usize {
-    if (image.channels.items.len == 0) return error.GenericError;
+	return writeSingleNodeLocalTreeGroupImageWithCache(allocator, image, predictor, null, writer);
+}
 
-    var tokens: std.ArrayList(Token) = .{};
-    defer tokens.deinit(allocator);
+/// Reuses cached flat histogram info tables when repeated tiles share the same
+/// token alphabet, avoiding per-tile alias-table rebuilds in the narrow RGB path.
+pub fn writeSingleNodeLocalTreeGroupImageWithCache(
+	allocator: std.mem.Allocator,
+	image: *const modular_image.Image,
+	predictor: Predictor,
+	cache: ?*FlatHistogramInfoCache,
+	writer: *BitWriter,
+) !usize {
+	if (image.channels.items.len == 0) return error.GenericError;
+
+	var tokens: std.ArrayList(Token) = .{};
+	defer tokens.deinit(allocator);
 
     for (image.channels.items) |*channel| {
-        const channel_tokens = try tokenizeSingleNodeChannel(allocator, channel, predictor, 0);
-        defer allocator.free(channel_tokens);
-        try tokens.appendSlice(allocator, channel_tokens);
-    }
+		const channel_tokens = try tokenizeSingleNodeChannel(allocator, channel, predictor, 0);
+		defer allocator.free(channel_tokens);
+		try tokens.appendSlice(allocator, channel_tokens);
+	}
 
-    if (tokens.items.len == 0) return error.GenericError;
-    const cfg = try selectLocalHistogramConfig(tokens.items);
-
-    try writer.write(1, 0); // use_global_tree = false
-    try writer.write(1, 1); // weighted header all-default
-    try writer.write(2, 0); // num_transforms = 0 via selector 0
-    try enc_ma.writeSingleLeafTree(allocator, predictor, writer);
-    try enc_ans.writeSingleContextFlatHistogram(@intCast(cfg.alphabet_size), cfg.uint_config, cfg.log_alpha_size, writer);
-
-    const counts = try ans_common.createFlatHistogram(allocator, cfg.alphabet_size, ans_params.ans_tab_size);
-    defer allocator.free(counts);
-    const info = try enc_ans.buildANSEncSymbolInfoTable(allocator, counts, cfg.log_alpha_size);
-    defer enc_ans.freeANSEncSymbolInfoTable(allocator, info);
-    return enc_ans.writeSingleHistogramTokens(tokens.items, info, cfg.uint_config, writer);
+	return writeSingleNodeLocalTreeGroupTokens(allocator, tokens.items, predictor, cache, writer);
 }
 
 /// Reuses the existing local-tree image writer for one frame group by first
@@ -278,9 +349,20 @@ pub fn writeSingleNodeLocalTreeGroupImageRect(
 	predictor: Predictor,
 	writer: *BitWriter,
 ) !usize {
+	return writeSingleNodeLocalTreeGroupImageRectWithCache(allocator, image, rect, predictor, null, writer);
+}
+
+pub fn writeSingleNodeLocalTreeGroupImageRectWithCache(
+	allocator: std.mem.Allocator,
+	image: *const modular_image.Image,
+	rect: Rect,
+	predictor: Predictor,
+	cache: ?*FlatHistogramInfoCache,
+	writer: *BitWriter,
+) !usize {
 	var tile = try extractImageRect(allocator, image, rect);
 	defer tile.deinit();
-	return writeSingleNodeLocalTreeGroupImage(allocator, &tile, predictor, writer);
+	return writeSingleNodeLocalTreeGroupImageWithCache(allocator, &tile, predictor, cache, writer);
 }
 
 const testing = std.testing;
@@ -733,6 +815,72 @@ test "writeSingleNodeLocalTreeGroupImageRect round-trips a cropped RGB tile thro
 				want.rowConst(rect.y0() + y)[rect.x0() .. rect.x0() + rect.xsize()],
 				got.rowConst(y),
 			);
+		}
+	}
+}
+
+test "writeSingleNodeLocalTreeGroupImageRectWithCache round-trips cropped RGB tiles through modularDecode" {
+	const allocator = testing.allocator;
+	var source = try modular_image.Image.create(allocator, 6, 4, 8, 3);
+	defer source.deinit();
+
+	for (0..source.h) |y| {
+		for (0..source.w) |x| {
+			source.channels.items[0].row(y)[x] = @intCast(10 + x + y * 6);
+			source.channels.items[1].row(y)[x] = @intCast(20 + x * 3 + y);
+			source.channels.items[2].row(y)[x] = @intCast(30 + x + y * 4);
+		}
+	}
+
+	var cache = FlatHistogramInfoCache.init(allocator);
+	defer cache.deinit();
+
+	const rects = [_]Rect{
+		Rect.init(0, 0, 3, 2),
+		Rect.init(3, 0, 3, 2),
+		Rect.init(0, 2, 3, 2),
+	};
+
+	for (rects) |rect| {
+		var writer = BitWriter.init(allocator);
+		defer writer.deinit();
+		_ = try writeSingleNodeLocalTreeGroupImageRectWithCache(
+			allocator,
+			&source,
+			rect,
+			.gradient,
+			&cache,
+			&writer,
+		);
+		try writer.zeroPadToByte();
+
+		var image = try modular_image.Image.create(allocator, rect.xsize(), rect.ysize(), 8, 3);
+		defer image.deinit();
+		var header = @import("encoding.zig").GroupHeader{};
+		defer header.deinit();
+		var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+		try @import("encoding.zig").modularDecode(
+			&br,
+			&image,
+			&header,
+			0,
+			&options.ModularOptions{},
+			null,
+			null,
+			null,
+			allocator,
+		);
+		try br.jumpToByteBoundary();
+		try br.close();
+
+		for (source.channels.items, image.channels.items) |want, got| {
+			for (0..rect.ysize()) |y| {
+				try testing.expectEqualSlices(
+					i32,
+					want.rowConst(rect.y0() + y)[rect.x0() .. rect.x0() + rect.xsize()],
+					got.rowConst(y),
+				);
+			}
 		}
 	}
 }
