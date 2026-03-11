@@ -4,6 +4,10 @@
 const std = @import("std");
 const BitReader = @import("../base/bit_reader.zig").BitReader;
 const BitWriter = @import("../base/bit_writer.zig").BitWriter;
+const ans_common = @import("../entropy/ans_common.zig");
+const ans_params = @import("../entropy/ans_params.zig");
+const enc_ans = @import("../entropy/enc_ans.zig");
+const HybridUintConfig = @import("../entropy/hybrid_uint.zig").HybridUintConfig;
 const headers = @import("headers.zig");
 const image_metadata = @import("image_metadata.zig");
 const frame_header_mod = @import("frame_header.zig");
@@ -322,6 +326,115 @@ test "writeCodestream round-trips a multi-group RGB codestream through header pa
 			frame_dim.groupRect(group_id),
 			.gradient,
 			&hist_cache,
+			&section_writers[section_id],
+		);
+		try section_writers[section_id].zeroPadToByte();
+	}
+
+	const section_payloads = try allocator.alloc([]const u8, num_sections);
+	defer allocator.free(section_payloads);
+	for (section_writers, 0..) |*section_writer, i| {
+		section_payloads[i] = section_writer.bytes();
+	}
+
+	var frame_writer = BitWriter.init(allocator);
+	defer frame_writer.deinit();
+	try enc_frame.writeFrame(&frame_header, &prepared.codec_meta, section_payloads, &frame_writer);
+	try frame_writer.zeroPadToByte();
+
+	var codestream = BitWriter.init(allocator);
+	defer codestream.deinit();
+	try writeCodestream(&prepared.codec_meta, frame_writer.bytes(), &codestream);
+	try codestream.zeroPadToByte();
+
+	var br = BitReader.init(codestream.bytes()[2..]);
+	const size = headers.SizeHeader.readFromBitStream(&br);
+	const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+	const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+	try br.jumpToByteBoundary();
+
+	var parsed_meta = image_metadata.CodecMetadata{};
+	parsed_meta.m = metadata;
+	parsed_meta.size = size;
+	parsed_meta.transform_data = transform_data;
+
+	const frame_offset = br.totalBitsConsumed() / 8;
+	var frame_dec = dec_frame.FrameDecoder.init(allocator, &parsed_meta);
+	defer frame_dec.deinit();
+	try frame_dec.decodeFrame(codestream.bytes()[2 + frame_offset ..]);
+
+	const image = frame_dec.getDecodedImage();
+	try testing.expectEqual(@as(usize, 3), image.channels.items.len);
+	try testing.expectEqual(@as(usize, source.w), image.w);
+	try testing.expectEqual(@as(usize, source.h), image.h);
+	for (source.channels.items, image.channels.items) |want, got| {
+		try testing.expectEqualSlices(i32, want.data, got.data);
+	}
+}
+
+test "writeCodestream round-trips a multi-group RGB codestream with an encoded global tree" {
+	const allocator = testing.allocator;
+	const source_data = @embedFile("../testdata/lossless_600x300_multigroup_rgb.jxl");
+	const prepared = try prepareFrame(source_data);
+
+	const frame_header = blk: {
+		var br = BitReader.init(prepared.frame_data);
+		break :blk try frame_header_mod.FrameHeader.readFromBitStream(&br, &prepared.codec_meta, false);
+	};
+	const frame_dim = frame_header.toFrameDimensions(&prepared.codec_meta, false);
+	const num_sections = toc.numTocEntries(frame_dim.num_groups, frame_dim.num_dc_groups, frame_header.passes.num_passes);
+
+	var source = try modular_image.Image.create(allocator, prepared.codec_meta.xsize(), prepared.codec_meta.ysize(), 8, 3);
+	defer source.deinit();
+	for (0..source.h) |y| {
+		for (0..source.w) |x| {
+			const pixel = expectedRgbFixturePixel(x, y);
+			source.channels.items[0].row(y)[x] = pixel[0];
+			source.channels.items[1].row(y)[x] = pixel[1];
+			source.channels.items[2].row(y)[x] = pixel[2];
+		}
+	}
+
+	var global_tree = try enc_encoding.predefinedTree(allocator, .gradient_fixed_dc, source.w * source.h, 8, 0);
+	defer global_tree.deinit(allocator);
+	const uint_config = HybridUintConfig.initDefault();
+	const log_alpha_size: u5 = 8;
+	const counts = try ans_common.createFlatHistogram(allocator, 256, ans_params.ans_tab_size);
+	defer allocator.free(counts);
+	const info = try enc_ans.buildANSEncSymbolInfoTable(allocator, counts, log_alpha_size);
+	defer enc_ans.freeANSEncSymbolInfoTable(allocator, info);
+
+	const section_writers = try allocator.alloc(BitWriter, num_sections);
+	defer allocator.free(section_writers);
+	for (section_writers) |*section_writer| {
+		section_writer.* = BitWriter.init(allocator);
+	}
+	defer for (section_writers) |*section_writer| {
+		section_writer.deinit();
+	};
+
+	try section_writers[0].write(1, 1); // DequantMatrices all_default
+	try enc_encoding.writeGlobalTreeDcSection(
+		allocator,
+		global_tree.items,
+		256,
+		uint_config,
+		log_alpha_size,
+		&section_writers[0],
+	);
+	try section_writers[0].zeroPadToByte();
+
+	const ac_global_index = 1 + frame_dim.num_dc_groups;
+	for (ac_global_index + 1..num_sections) |section_id| {
+		const group_id = (section_id - ac_global_index - 1) % frame_dim.num_groups;
+		_ = try enc_encoding.writeSingleNodeGlobalTreeGroupImageRect(
+			allocator,
+			&source,
+			frame_dim.groupRect(group_id),
+			.gradient,
+			0,
+			info,
+			uint_config,
 			&section_writers[section_id],
 		);
 		try section_writers[section_id].zeroPadToByte();

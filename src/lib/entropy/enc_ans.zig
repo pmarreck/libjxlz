@@ -5,6 +5,7 @@ const std = @import("std");
 const params = @import("ans_params.zig");
 const ans_common = @import("ans_common.zig");
 const AliasTable = ans_common.AliasTable;
+const enc_context_map = @import("enc_context_map.zig");
 const bits_mod = @import("../base/bits.zig");
 const BitWriter = @import("../base/bit_writer.zig").BitWriter;
 const HybridUintConfig = @import("hybrid_uint.zig").HybridUintConfig;
@@ -292,7 +293,7 @@ pub fn writeSingleContextTwoSymbolHistogram(
 /// Emits a one-context ANS histogram bundle using the decoder's flat-histogram
 /// branch, which spreads counts across a contiguous alphabet deterministically.
 pub fn writeSingleContextFlatHistogram(
-	alphabet_size: u8,
+	alphabet_size: u16,
 	uint_config: HybridUintConfig,
 	log_alpha_size: u5,
 	writer: *BitWriter,
@@ -307,7 +308,28 @@ pub fn writeSingleContextFlatHistogram(
 
 	try writer.write(1, 0); // histogram simple_code = false
 	try writer.write(1, 1); // is_flat = true
-	try storeVarLenUint8(alphabet_size - 1, writer);
+	try storeVarLenUint8(@intCast(alphabet_size - 1), writer);
+}
+
+/// Emits a multi-context histogram bundle where every context maps to
+/// histogram 0, matching the narrow global-tree shape the encoder uses today.
+pub fn writeAllZeroContextMapFlatHistogram(
+	num_contexts: usize,
+	alphabet_size: u16,
+	uint_config: HybridUintConfig,
+	log_alpha_size: u5,
+	writer: *BitWriter,
+) !void {
+	std.debug.assert(num_contexts > 0);
+	try writer.write(1, 0); // LZ77 disabled
+	try enc_context_map.writeSimpleAllZeroContextMap(num_contexts, writer);
+	try writer.write(1, 0); // use_prefix_code = false (ANS mode)
+	try writer.write(2, log_alpha_size - 5);
+	try encodeUintConfig(uint_config, writer, log_alpha_size);
+
+	try writer.write(1, 0); // histogram simple_code = false
+	try writer.write(1, 1); // is_flat = true
+	try storeVarLenUint8(@intCast(alphabet_size - 1), writer);
 }
 
 const testing = std.testing;
@@ -519,6 +541,43 @@ test "writeSingleContextFlatHistogram round-trips recovered flat counts through 
 
 	try testing.expectEqual(@as(usize, 1), context_map.len);
 	try testing.expectEqual(@as(u8, 0), context_map[0]);
+	try testing.expectEqual(@as(i32, -1), code.degenerate_symbols[0]);
+
+	const table = code.alias_tables[0 .. (@as(usize, 1) << code.log_alpha_size)];
+	const log_entry_size = params.ans_log_tab_size - code.log_alpha_size;
+	const entry_size_minus_1 = (@as(usize, 1) << log_entry_size) - 1;
+	var recovered = [_]usize{0} ** 5;
+	for (0..params.ans_tab_size) |i| {
+		const sym = AliasTable.lookup(table.ptr, i, log_entry_size, entry_size_minus_1);
+		recovered[sym.value] += 1;
+	}
+
+	for (want_counts, 0..) |want, i| {
+		try testing.expectEqual(@as(usize, @intCast(want)), recovered[i]);
+	}
+	try br.jumpToByteBoundary();
+	try br.close();
+}
+
+test "writeAllZeroContextMapFlatHistogram round-trips through decodeHistograms" {
+	const allocator = testing.allocator;
+	const want_cfg = HybridUintConfig.init(5, 0, 0);
+	const want_counts = try ans_common.createFlatHistogram(allocator, 5, params.ans_tab_size);
+	defer allocator.free(want_counts);
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writeAllZeroContextMapFlatHistogram(6, 5, want_cfg, 5, &writer);
+	try writer.zeroPadToByte();
+
+	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+	var code = dec_ans.ANSCode.init(allocator);
+	defer code.deinit();
+	const context_map = try dec_ans.decodeHistograms(allocator, &br, 6, &code);
+	defer allocator.free(context_map);
+
+	try testing.expectEqual(@as(usize, 6), context_map.len);
+	for (context_map) |ctx| try testing.expectEqual(@as(u8, 0), ctx);
 	try testing.expectEqual(@as(i32, -1), code.degenerate_symbols[0]);
 
 	const table = code.alias_tables[0 .. (@as(usize, 1) << code.log_alpha_size)];
