@@ -2,6 +2,7 @@
 // Starts with the smallest grayscale slice: single-node predictor tokenization.
 
 const std = @import("std");
+const bits = @import("../base/bits.zig");
 const common = @import("../base/common.zig");
 const pack_signed = @import("../base/pack_signed.zig");
 const BitWriter = @import("../base/bit_writer.zig").BitWriter;
@@ -11,6 +12,7 @@ const dec_ans = @import("../entropy/dec_ans.zig");
 const enc_ans = @import("../entropy/enc_ans.zig");
 const HybridUintConfig = @import("../entropy/hybrid_uint.zig").HybridUintConfig;
 const context_predict = @import("context_predict.zig");
+const dec_ma = @import("dec_ma.zig");
 const enc_ma = @import("enc_ma.zig");
 const modular_image = @import("modular_image.zig");
 const options = @import("options.zig");
@@ -18,6 +20,7 @@ const Rect = @import("../base/rect.zig").Rect;
 
 const Channel = modular_image.Channel;
 const Predictor = options.Predictor;
+const TreeKind = options.TreeKind;
 const pixel_type_w = options.pixel_type_w;
 const Token = enc_ans.Token;
 
@@ -26,6 +29,208 @@ const LocalHistogramConfig = struct {
 	log_alpha_size: u5,
 	alphabet_size: u32,
 };
+
+const FixedTreeNodeInfo = struct {
+	begin: usize,
+	end: usize,
+	pos: usize,
+};
+
+/// Builds the fixed split tree upstream uses for DC contexts by breadth-first
+/// partitioning sorted cutoffs, while shortening the tree for tiny images.
+fn makeFixedTree(
+	allocator: std.mem.Allocator,
+	property: i16,
+	cutoffs: []const i32,
+	pred: Predictor,
+	num_pixels: usize,
+	bitdepth: i32,
+) !dec_ma.Tree {
+	if (num_pixels == 0) return error.GenericError;
+
+	var tree: dec_ma.Tree = .{};
+	errdefer tree.deinit(allocator);
+	try tree.append(allocator, dec_ma.PropertyDecisionNode.leaf(pred, 0, 1));
+
+	const log_px = bits.ceilLog2Nonzero(num_pixels);
+	var min_gap: usize = 0;
+	if (log_px < 14) min_gap = 8 * (14 - log_px);
+	const shift: i32 = if (bitdepth > 11) @min(@as(i32, 4), bitdepth - 11) else 0;
+	const mul: i32 = @as(i32, 1) << @intCast(shift);
+
+	var queue: std.ArrayList(FixedTreeNodeInfo) = .{};
+	defer queue.deinit(allocator);
+	try queue.append(allocator, .{ .begin = 0, .end = cutoffs.len, .pos = 0 });
+	var queue_head: usize = 0;
+
+	while (queue_head < queue.items.len) {
+		const info = queue.items[queue_head];
+		queue_head += 1;
+		if (info.begin + min_gap >= info.end) continue;
+
+		const split = (info.begin + info.end) / 2;
+		const cutoff = cutoffs[split] * mul;
+		tree.items[info.pos] = dec_ma.PropertyDecisionNode.split(property, cutoff, @intCast(tree.items.len), 0);
+
+		try queue.append(allocator, .{ .begin = split + 1, .end = info.end, .pos = tree.items.len });
+		try tree.append(allocator, dec_ma.PropertyDecisionNode.leaf(pred, 0, 1));
+		try queue.append(allocator, .{ .begin = info.begin, .end = split, .pos = tree.items.len });
+		try tree.append(allocator, dec_ma.PropertyDecisionNode.leaf(pred, 0, 1));
+	}
+
+	return tree;
+}
+
+/// Mirrors upstream `PredefinedTree` so the encoder can select the same
+/// hard-coded tree families before we port learned-tree construction.
+fn predefinedTree(
+	allocator: std.mem.Allocator,
+	tree_kind: TreeKind,
+	total_pixels: usize,
+	bitdepth: i32,
+	prevprop: i32,
+) !dec_ma.Tree {
+	switch (tree_kind) {
+		.jpeg_transcode_ac_meta, .trivial_tree_no_predictor => {
+			var tree: dec_ma.Tree = .{};
+			errdefer tree.deinit(allocator);
+			try tree.append(allocator, dec_ma.PropertyDecisionNode.leaf(.zero, 0, 1));
+			return tree;
+		},
+		.falcon_ac_meta => {
+			var tree: dec_ma.Tree = .{};
+			errdefer tree.deinit(allocator);
+			try tree.append(allocator, dec_ma.PropertyDecisionNode.leaf(.left, 0, 1));
+			return tree;
+		},
+		.ac_meta => {
+			if (total_pixels < 1024) {
+				var tree: dec_ma.Tree = .{};
+				errdefer tree.deinit(allocator);
+				try tree.append(allocator, dec_ma.PropertyDecisionNode.leaf(.left, 0, 1));
+				return tree;
+			}
+
+			var tree: dec_ma.Tree = .{};
+			errdefer tree.deinit(allocator);
+			try tree.appendSlice(allocator, &.{
+				dec_ma.PropertyDecisionNode.split(0, 1, 1, 0),
+				dec_ma.PropertyDecisionNode.split(0, 2, 3, 0),
+				dec_ma.PropertyDecisionNode.split(0, 0, 5, 0),
+				dec_ma.PropertyDecisionNode.split(6, 3, 21, 0),
+				dec_ma.PropertyDecisionNode.split(2, 0, 7, 0),
+				dec_ma.PropertyDecisionNode.leaf(.gradient, 0, 1),
+				dec_ma.PropertyDecisionNode.leaf(.gradient, 0, 1),
+				dec_ma.PropertyDecisionNode.split(7, 5, 9, 0),
+				dec_ma.PropertyDecisionNode.split(7, 5, 15, 0),
+				dec_ma.PropertyDecisionNode.split(7, 11, 11, 0),
+				dec_ma.PropertyDecisionNode.split(7, 3, 13, 0),
+				dec_ma.PropertyDecisionNode.leaf(.left, 0, 1),
+				dec_ma.PropertyDecisionNode.leaf(.left, 0, 1),
+				dec_ma.PropertyDecisionNode.leaf(.left, 0, 1),
+				dec_ma.PropertyDecisionNode.leaf(.left, 0, 1),
+				dec_ma.PropertyDecisionNode.split(7, 11, 17, 0),
+				dec_ma.PropertyDecisionNode.split(7, 3, 19, 0),
+				dec_ma.PropertyDecisionNode.leaf(.zero, 0, 1),
+				dec_ma.PropertyDecisionNode.leaf(.zero, 0, 1),
+				dec_ma.PropertyDecisionNode.leaf(.zero, 0, 1),
+				dec_ma.PropertyDecisionNode.leaf(.zero, 0, 1),
+				dec_ma.PropertyDecisionNode.split(7, 3, 23, 0),
+				dec_ma.PropertyDecisionNode.split(7, 3, 25, 0),
+				dec_ma.PropertyDecisionNode.leaf(.zero, 0, 1),
+				dec_ma.PropertyDecisionNode.leaf(.zero, 0, 1),
+				dec_ma.PropertyDecisionNode.leaf(.zero, 0, 1),
+				dec_ma.PropertyDecisionNode.leaf(.zero, 0, 1),
+			});
+			return tree;
+		},
+		.wp_fixed_dc => {
+			const cutoffs = [_]i32{
+				-500, -392, -255, -191, -127, -95, -63, -47, -31, -23, -15,
+				-11, -7, -4, -3, -1, 0, 1, 3, 5, 7, 11,
+				15, 23, 31, 47, 63, 95, 127, 191, 255, 392, 500,
+			};
+			return makeFixedTree(allocator, @intCast(context_predict.kWPProp), &cutoffs, .weighted, total_pixels, bitdepth);
+		},
+		.gradient_fixed_dc => {
+			const cutoffs = [_]i32{
+				-500, -392, -255, -191, -127, -95, -63, -47, -31, -23, -15,
+				-11, -7, -4, -3, -1, 0, 1, 3, 5, 7, 11,
+				15, 23, 31, 47, 63, 95, 127, 191, 255, 392, 500,
+			};
+			const property: i16 = @intCast(if (prevprop > 0) context_predict.kNumNonrefProperties + 2 else context_predict.kGradientProp);
+			return makeFixedTree(allocator, property, &cutoffs, .gradient, total_pixels, bitdepth);
+		},
+		.learn => return error.Unsupported,
+	}
+}
+
+test "makeFixedTree collapses tiny images to a single predictor leaf" {
+	const allocator = testing.allocator;
+	const cutoffs = [_]i32{ -1, 0, 1 };
+	var tree = try makeFixedTree(allocator, 7, &cutoffs, .weighted, 1, 8);
+	defer tree.deinit(allocator);
+
+	try testing.expectEqual(@as(usize, 1), tree.items.len);
+	try testing.expectEqual(@as(i16, -1), tree.items[0].property);
+	try testing.expectEqual(Predictor.weighted, tree.items[0].predictor);
+}
+
+test "makeFixedTree scales split cutoffs for high bitdepth" {
+	const allocator = testing.allocator;
+	const cutoffs = [_]i32{1};
+	var tree = try makeFixedTree(allocator, 11, &cutoffs, .gradient, 1 << 20, 13);
+	defer tree.deinit(allocator);
+
+	try testing.expectEqual(@as(usize, 3), tree.items.len);
+	try testing.expectEqual(@as(i16, 11), tree.items[0].property);
+	try testing.expectEqual(@as(i32, 4), tree.items[0].splitval);
+	try testing.expectEqual(@as(u32, 1), tree.items[0].lchild);
+	try testing.expectEqual(@as(u32, 2), tree.items[0].rchild);
+	try testing.expectEqual(Predictor.gradient, tree.items[1].predictor);
+	try testing.expectEqual(Predictor.gradient, tree.items[2].predictor);
+}
+
+test "predefinedTree uses trivial zero leaf for the trivial tree kind" {
+	const allocator = testing.allocator;
+	var tree = try predefinedTree(allocator, .trivial_tree_no_predictor, 4096, 8, 0);
+	defer tree.deinit(allocator);
+
+	try testing.expectEqual(@as(usize, 1), tree.items.len);
+	try testing.expectEqual(@as(i16, -1), tree.items[0].property);
+	try testing.expectEqual(Predictor.zero, tree.items[0].predictor);
+}
+
+test "predefinedTree gradient fixed dc switches property when previous channels exist" {
+	const allocator = testing.allocator;
+
+	var no_prev = try predefinedTree(allocator, .gradient_fixed_dc, 1 << 20, 8, 0);
+	defer no_prev.deinit(allocator);
+	try testing.expect(no_prev.items.len > 1);
+	try testing.expectEqual(@as(i16, @intCast(context_predict.kGradientProp)), no_prev.items[0].property);
+	try testing.expectEqual(@as(i32, 0), no_prev.items[0].splitval);
+
+	var with_prev = try predefinedTree(allocator, .gradient_fixed_dc, 1 << 20, 8, 1);
+	defer with_prev.deinit(allocator);
+	try testing.expect(with_prev.items.len > 1);
+	try testing.expectEqual(@as(i16, @intCast(context_predict.kNumNonrefProperties + 2)), with_prev.items[0].property);
+	try testing.expectEqual(@as(i32, 0), with_prev.items[0].splitval);
+}
+
+test "predefinedTree keeps the large AC metadata layout" {
+	const allocator = testing.allocator;
+	var tree = try predefinedTree(allocator, .ac_meta, 4096, 8, 0);
+	defer tree.deinit(allocator);
+
+	try testing.expectEqual(@as(usize, 27), tree.items.len);
+	try testing.expectEqual(@as(i16, 0), tree.items[0].property);
+	try testing.expectEqual(@as(i32, 1), tree.items[0].splitval);
+	try testing.expectEqual(@as(i16, 6), tree.items[3].property);
+	try testing.expectEqual(@as(i32, 3), tree.items[3].splitval);
+	try testing.expectEqual(Predictor.gradient, tree.items[5].predictor);
+	try testing.expectEqual(Predictor.left, tree.items[11].predictor);
+	try testing.expectEqual(Predictor.zero, tree.items[23].predictor);
+}
 
 const FlatHistogramInfoKey = struct {
 	alphabet_size: u32,
@@ -647,7 +852,91 @@ test "writeSingleNodeGlobalTreeGroup round-trips through modularDecode with inje
     try br.jumpToByteBoundary();
     try br.close();
 
-    try testing.expectEqualSlices(i32, channel.data, image.channels.items[0].data);
+	try testing.expectEqualSlices(i32, channel.data, image.channels.items[0].data);
+}
+
+test "writeSingleNodeGlobalTreeGroup round-trips through modularDecode with a generated fixed tree" {
+	const allocator = testing.allocator;
+	var channel = try Channel.create(allocator, 3, 3, 0, 0);
+	defer channel.deinit();
+
+	channel.row(0)[0] = 10;
+	channel.row(0)[1] = 12;
+	channel.row(0)[2] = 14;
+	channel.row(1)[0] = 11;
+	channel.row(1)[1] = 13;
+	channel.row(1)[2] = 15;
+	channel.row(2)[0] = 13;
+	channel.row(2)[1] = 14;
+	channel.row(2)[2] = 18;
+
+	const tokens = try tokenizeSingleNodeChannel(allocator, &channel, .gradient, 0);
+	defer allocator.free(tokens);
+
+	var max_token: u32 = 0;
+	for (tokens) |token| max_token = @max(max_token, token.value);
+	const alphabet_size = max_token + 1;
+	const counts = try ans_common.createFlatHistogram(allocator, alphabet_size, ans_params.ans_tab_size);
+	defer allocator.free(counts);
+
+	const info = try enc_ans.buildANSEncSymbolInfoTable(allocator, counts, 5);
+	defer enc_ans.freeANSEncSymbolInfoTable(allocator, info);
+	var code = blk: {
+		var built = dec_ans.ANSCode.init(allocator);
+		errdefer built.deinit();
+		built.use_prefix_code = false;
+		built.log_alpha_size = 5;
+		built.alias_tables = try allocator.alloc(ans_common.AliasTable.Entry, 1 << 5);
+		try ans_common.initAliasTable(counts, ans_params.ans_log_tab_size, 5, built.alias_tables.ptr);
+		built.uint_config = try allocator.alloc(HybridUintConfig, 1);
+		built.uint_config[0] = HybridUintConfig.init(5, 0, 0);
+		break :blk built;
+	};
+	defer code.deinit();
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try testing.expectEqual(@as(usize, 0), try writeSingleNodeGlobalTreeGroup(
+		allocator,
+		&channel,
+		.gradient,
+		0,
+		info,
+		HybridUintConfig.init(5, 0, 0),
+		&writer,
+	));
+	try writer.zeroPadToByte();
+
+	var global_tree = try predefinedTree(allocator, .gradient_fixed_dc, channel.w * channel.h, 8, 0);
+	defer global_tree.deinit(allocator);
+	var num_leaves: usize = 0;
+	for (global_tree.items) |node| {
+		if (node.property == -1) num_leaves += 1;
+	}
+	const context_map = try allocator.alloc(u8, num_leaves);
+	defer allocator.free(context_map);
+	@memset(context_map, 0);
+
+	var image = try modular_image.Image.create(allocator, 3, 3, 8, 1);
+	defer image.deinit();
+	var header = @import("encoding.zig").GroupHeader{};
+	defer header.deinit();
+	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+	try @import("encoding.zig").modularDecode(
+		&br,
+		&image,
+		&header,
+		0,
+		&options.ModularOptions{},
+		global_tree.items,
+		&code,
+		context_map,
+		allocator,
+	);
+	try br.jumpToByteBoundary();
+	try br.close();
+
+	try testing.expectEqualSlices(i32, channel.data, image.channels.items[0].data);
 }
 
 test "writeSingleNodeLocalTreeGroup round-trips a minimal zero pixel through modularDecode" {
