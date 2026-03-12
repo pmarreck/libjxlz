@@ -492,6 +492,23 @@ fn appendImageRectTokens(
 	}
 }
 
+fn appendImageRectTokensWithChannelContexts(
+	allocator: std.mem.Allocator,
+	image: *const modular_image.Image,
+	rect: Rect,
+	predictor: Predictor,
+	channel_contexts: []const u32,
+	tokens: *std.ArrayList(Token),
+) !void {
+	if (image.channels.items.len == 0 or image.channels.items.len != channel_contexts.len) return error.GenericError;
+
+	for (image.channels.items, 0..) |*channel, channel_index| {
+		const channel_tokens = try tokenizeSingleNodeChannelRect(allocator, channel, rect, predictor, channel_contexts[channel_index]);
+		defer allocator.free(channel_tokens);
+		try tokens.appendSlice(allocator, channel_tokens);
+	}
+}
+
 fn leafCount(tree: []const dec_ma.PropertyDecisionNode) usize {
 	var count: usize = 0;
 	for (tree) |node| {
@@ -515,6 +532,26 @@ pub fn writeGlobalTreeDcSection(
 	try writer.write(1, 1); // has_tree = true
 	try enc_ma.writeTree(allocator, tree, writer);
 	try enc_ans.writeAllZeroContextMapFlatHistogram(leafCount(tree), alphabet_size, uint_config, log_alpha_size, writer);
+	try writeEmptyModularGroup(writer);
+}
+
+/// Emits the narrow DC-global shape for an encoded global tree plus a simple
+/// direct-entry context map and one flat histogram per histogram ID.
+pub fn writeGlobalTreeDcSectionWithFlatHistograms(
+	allocator: std.mem.Allocator,
+	tree: []const dec_ma.PropertyDecisionNode,
+	context_map: []const u8,
+	num_histograms: usize,
+	alphabet_sizes: []const u16,
+	uint_configs: []const HybridUintConfig,
+	log_alpha_size: u5,
+	writer: *BitWriter,
+) !void {
+	if (tree.len == 0 or leafCount(tree) != context_map.len) return error.GenericError;
+
+	try writer.write(1, 1); // has_tree = true
+	try enc_ma.writeTree(allocator, tree, writer);
+	try enc_ans.writeSimpleContextMapFlatHistograms(context_map, num_histograms, alphabet_sizes, uint_configs, log_alpha_size, writer);
 	try writeEmptyModularGroup(writer);
 }
 
@@ -614,14 +651,46 @@ pub fn writeSingleNodeGlobalTreeGroupImageRect(
 	uint_config: HybridUintConfig,
 	writer: *BitWriter,
 ) !usize {
+	const infos = [_][]const enc_ans.ANSEncSymbolInfo{info};
+	const context_map = [_]u8{0};
+	const uint_configs = [_]HybridUintConfig{uint_config};
+	const channel_contexts = try allocator.alloc(u32, image.channels.items.len);
+	defer allocator.free(channel_contexts);
+	@memset(channel_contexts, ctx_id);
+	return writeSingleNodeGlobalTreeGroupImageRectContexts(
+		allocator,
+		image,
+		rect,
+		predictor,
+		channel_contexts,
+		&infos,
+		&context_map,
+		&uint_configs,
+		writer,
+	);
+}
+
+/// Emits a multichannel/group-rect payload whose token contexts can vary by
+/// channel, while reusing a previously-encoded global tree/context-map bundle.
+pub fn writeSingleNodeGlobalTreeGroupImageRectContexts(
+	allocator: std.mem.Allocator,
+	image: *const modular_image.Image,
+	rect: Rect,
+	predictor: Predictor,
+	channel_contexts: []const u32,
+	infos: []const []const enc_ans.ANSEncSymbolInfo,
+	context_map: []const u8,
+	uint_configs: []const HybridUintConfig,
+	writer: *BitWriter,
+) !usize {
 	var tokens: std.ArrayList(Token) = .{};
 	defer tokens.deinit(allocator);
-	try appendImageRectTokens(allocator, image, rect, predictor, ctx_id, &tokens);
+	try appendImageRectTokensWithChannelContexts(allocator, image, rect, predictor, channel_contexts, &tokens);
 
 	try writer.write(1, 1); // use_global_tree = true
 	try writer.write(1, 1); // weighted header all-default
 	try writer.write(2, 0); // num_transforms = 0 via selector 0
-	return enc_ans.writeSingleHistogramTokens(tokens.items, info, uint_config, writer);
+	return enc_ans.writeContextualHistogramTokens(tokens.items, infos, context_map, uint_configs, writer);
 }
 
 /// Emits the smallest local-tree modular group currently supported: one

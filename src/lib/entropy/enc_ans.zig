@@ -198,6 +198,61 @@ pub fn writeSingleHistogramTokens(
 	return num_extra_bits;
 }
 
+/// Writes a token stream whose symbols can draw from different histogram
+/// tables, with the histogram chosen by `context_map[token.context]`.
+pub fn writeContextualHistogramTokens(
+	tokens: []const Token,
+	infos: []const []const ANSEncSymbolInfo,
+	context_map: []const u8,
+	uint_configs: []const HybridUintConfig,
+	writer: *BitWriter,
+) !usize {
+	if (infos.len == 0 or infos.len != uint_configs.len) return error.GenericError;
+
+	const out = try writer.allocator.alloc(ReversedChunk, tokens.len * 2);
+	defer writer.allocator.free(out);
+	var out_len: usize = 0;
+
+	var allbits: u64 = 0;
+	var numallbits: usize = 0;
+	var num_extra_bits: usize = 0;
+	var ans = ANSCoder{};
+
+	var i = tokens.len;
+	while (i > 0) {
+		i -= 1;
+		const token = tokens[i];
+		if (token.is_lz77_length or token.context >= context_map.len) return error.GenericError;
+
+		const hist_idx = context_map[token.context];
+		if (hist_idx >= infos.len) return error.GenericError;
+
+		const cfg = uint_configs[hist_idx];
+		const info = infos[hist_idx];
+		const encoded = cfg.encode(token.value);
+		if (encoded.token >= info.len) return error.GenericError;
+		try addReversedBits(out, &out_len, &allbits, &numallbits, encoded.bits, encoded.nbits);
+		num_extra_bits += encoded.nbits;
+
+		const ans_bits = ans.putSymbol(&info[encoded.token]);
+		try addReversedBits(out, &out_len, &allbits, &numallbits, ans_bits.bits, ans_bits.nbits);
+	}
+
+	var pending_bits: usize = 32 + numallbits;
+	for (out[0..out_len]) |chunk| {
+		pending_bits += chunk.nbits;
+	}
+	try writer.ensureUnusedCapacityBits(pending_bits);
+	try writer.write(32, ans.getState());
+	try writer.write(numallbits, allbits);
+	var chunk_index = out_len;
+	while (chunk_index > 0) {
+		chunk_index -= 1;
+		try writer.write(out[chunk_index].nbits, out[chunk_index].bits);
+	}
+	return num_extra_bits;
+}
+
 pub fn encodeUintConfig(cfg: HybridUintConfig, writer: anytype, log_alpha_size: u5) !void {
 	try writer.write(bits_mod.ceilLog2Nonzero(@as(u32, log_alpha_size) + 1), cfg.split_exponent);
 	if (cfg.split_exponent == log_alpha_size) return;
@@ -330,6 +385,34 @@ pub fn writeAllZeroContextMapFlatHistogram(
 	try writer.write(1, 0); // histogram simple_code = false
 	try writer.write(1, 1); // is_flat = true
 	try storeVarLenUint8(@intCast(alphabet_size - 1), writer);
+}
+
+/// Emits a simple direct-entry context map followed by one flat histogram per
+/// referenced histogram ID, which is the next step beyond the all-zero shortcut.
+pub fn writeSimpleContextMapFlatHistograms(
+	context_map: []const u8,
+	num_histograms: usize,
+	alphabet_sizes: []const u16,
+	uint_configs: []const HybridUintConfig,
+	log_alpha_size: u5,
+	writer: *BitWriter,
+) !void {
+	std.debug.assert(context_map.len > 0);
+	std.debug.assert(num_histograms > 0);
+	std.debug.assert(alphabet_sizes.len == num_histograms);
+	std.debug.assert(uint_configs.len == num_histograms);
+
+	try writer.write(1, 0); // LZ77 disabled
+	try enc_context_map.writeSimpleContextMap(context_map, num_histograms, writer);
+	try writer.write(1, 0); // use_prefix_code = false (ANS mode)
+	try writer.write(2, log_alpha_size - 5);
+	try encodeUintConfigs(uint_configs, writer, log_alpha_size);
+
+	for (alphabet_sizes) |alphabet_size| {
+		try writer.write(1, 0); // histogram simple_code = false
+		try writer.write(1, 1); // is_flat = true
+		try storeVarLenUint8(@intCast(alphabet_size - 1), writer);
+	}
 }
 
 const testing = std.testing;
@@ -592,6 +675,104 @@ test "writeAllZeroContextMapFlatHistogram round-trips through decodeHistograms" 
 	for (want_counts, 0..) |want, i| {
 		try testing.expectEqual(@as(usize, @intCast(want)), recovered[i]);
 	}
+	try br.jumpToByteBoundary();
+	try br.close();
+}
+
+test "writeSimpleContextMapFlatHistograms round-trips exact context map and counts" {
+	const allocator = testing.allocator;
+	const want_cfgs = [_]HybridUintConfig{
+		HybridUintConfig.init(5, 0, 0),
+		HybridUintConfig.init(5, 0, 0),
+	};
+	const want_counts0 = try ans_common.createFlatHistogram(allocator, 5, params.ans_tab_size);
+	defer allocator.free(want_counts0);
+	const want_counts1 = try ans_common.createFlatHistogram(allocator, 3, params.ans_tab_size);
+	defer allocator.free(want_counts1);
+	const want_ctx_map = [_]u8{ 0, 1, 0, 1, 1, 0 };
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writeSimpleContextMapFlatHistograms(&want_ctx_map, 2, &[_]u16{ 5, 3 }, &want_cfgs, 5, &writer);
+	try writer.zeroPadToByte();
+
+	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+	var code = dec_ans.ANSCode.init(allocator);
+	defer code.deinit();
+	const context_map = try dec_ans.decodeHistograms(allocator, &br, want_ctx_map.len, &code);
+	defer allocator.free(context_map);
+
+	try testing.expectEqualSlices(u8, &want_ctx_map, context_map);
+	try testing.expectEqual(@as(usize, 2), code.uint_config.len);
+
+	inline for (0..2) |hist_idx| {
+		const want_counts = if (hist_idx == 0) want_counts0 else want_counts1;
+		const alphabet_size = want_counts.len;
+		const table_begin = hist_idx * (@as(usize, 1) << code.log_alpha_size);
+		const table = code.alias_tables[table_begin .. table_begin + (@as(usize, 1) << code.log_alpha_size)];
+		const log_entry_size = params.ans_log_tab_size - code.log_alpha_size;
+		const entry_size_minus_1 = (@as(usize, 1) << log_entry_size) - 1;
+		const recovered = try allocator.alloc(usize, alphabet_size);
+		defer allocator.free(recovered);
+		@memset(recovered, 0);
+		for (0..params.ans_tab_size) |i| {
+			const sym = AliasTable.lookup(table.ptr, i, log_entry_size, entry_size_minus_1);
+			recovered[sym.value] += 1;
+		}
+		for (want_counts, 0..) |want, i| {
+			try testing.expectEqual(@as(usize, @intCast(want)), recovered[i]);
+		}
+	}
+	try br.jumpToByteBoundary();
+	try br.close();
+}
+
+test "writeContextualHistogramTokens round-trips a two-histogram stream through ANSSymbolReader" {
+	const allocator = testing.allocator;
+	const ctx_map = [_]u8{ 0, 1 };
+	const uint_configs = [_]HybridUintConfig{
+		HybridUintConfig.init(5, 0, 0),
+		HybridUintConfig.init(5, 0, 0),
+	};
+	const alphabet_sizes = [_]u16{ 16, 16 };
+
+	const counts0 = try ans_common.createFlatHistogram(allocator, alphabet_sizes[0], params.ans_tab_size);
+	defer allocator.free(counts0);
+	const counts1 = try ans_common.createFlatHistogram(allocator, alphabet_sizes[1], params.ans_tab_size);
+	defer allocator.free(counts1);
+	const info0 = try buildANSEncSymbolInfoTable(allocator, counts0, 5);
+	defer freeANSEncSymbolInfoTable(allocator, info0);
+	const info1 = try buildANSEncSymbolInfoTable(allocator, counts1, 5);
+	defer freeANSEncSymbolInfoTable(allocator, info1);
+	const infos = [_][]const ANSEncSymbolInfo{ info0, info1 };
+	const tokens = [_]Token{
+		Token.init(0, 3),
+		Token.init(1, 5),
+		Token.init(0, 7),
+		Token.init(1, 2),
+		Token.init(1, 15),
+		Token.init(0, 1),
+	};
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writeSimpleContextMapFlatHistograms(&ctx_map, 2, &alphabet_sizes, &uint_configs, 5, &writer);
+	try testing.expectEqual(@as(usize, 0), try writeContextualHistogramTokens(&tokens, &infos, &ctx_map, &uint_configs, &writer));
+	try writer.zeroPadToByte();
+
+	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+	var code = dec_ans.ANSCode.init(allocator);
+	defer code.deinit();
+	const decoded_ctx_map = try dec_ans.decodeHistograms(allocator, &br, ctx_map.len, &code);
+	defer allocator.free(decoded_ctx_map);
+	try testing.expectEqualSlices(u8, &ctx_map, decoded_ctx_map);
+
+	var reader = try dec_ans.ANSSymbolReader.create(&code, &br, 0, allocator);
+	defer reader.deinit();
+	for (tokens) |token| {
+		try testing.expectEqual(@as(usize, token.value), reader.readHybridUint(token.context, &br, decoded_ctx_map));
+	}
+	try testing.expect(reader.checkANSFinalState());
 	try br.jumpToByteBoundary();
 	try br.close();
 }
