@@ -126,7 +126,9 @@
 - [x] Continue the upstream modular encoder transliteration by porting `MakeFixedTree` / `PredefinedTree` from `enc_encoding.cc`, extending `options.zig` with encoder-side `TreeKind`/`TreeMode`, and proving the generated fixed-tree path both structurally and through the existing injected-global-tree roundtrip (`gradient_fixed_dc`) — 2026-03-11 ~6:35 PM EDT
 - [x] Replace global-tree injection on the narrow multigroup RGB path by adding a real multi-context all-zero histogram bundle writer, a DC-global writer for encoded MA trees + shared histograms + empty global modular images, and a global-tree group writer for multichannel rect payloads; prove it with a full `600x300` codestream roundtrip that carries an encoded `gradient_fixed_dc` tree through `FrameDecoder` — 2026-03-11 ~7:05 PM EDT
 - [x] Move beyond the all-contexts-map-to-histogram-0 shortcut by adding direct simple context-map writing, multi-flat-histogram bundle writing, contextual ANS token writing, and a full `600x300` codestream roundtrip with a channel-split global MA tree that uses two different histogram contexts during decode — 2026-03-12 ~12:05 AM EDT
+- [x] Port the first real per-pixel MA-tree encoder loop subset by adding a no-WP/no-reference global-tree tokenizer for group rects, then prove it with exact token-context assertions plus both `modularDecode` and full `600x300` codestream/frame roundtrips through tree-driven global histogram contexts — 2026-03-13 ~12:10 AM EDT
 - [ ] Re-profile the real encode harness after the token-packing win and choose the next hotspot from measured data rather than the old synthetic prepass
+- [ ] Extend the upstream-shaped per-pixel MA-tree encoder path beyond the no-WP/no-reference subset so weighted/reference-property trees can drive real tokenization instead of falling back to the older fixed-predictor scaffolding
 - [ ] Fast lossless encoder
 - [ ] C FFI encode API
 - [ ] cjxlz CLI
