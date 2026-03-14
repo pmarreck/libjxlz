@@ -415,6 +415,356 @@ pub fn writeSimpleContextMapFlatHistograms(
 	}
 }
 
+const kMaxNumSymbolsForSmallCode = 2;
+const kBitWidthLengths = [_]u8{
+	5, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 6, 7, 7,
+};
+const kBitWidthSymbols = [_]u8{
+	17, 11, 15, 3, 9, 7, 4, 2, 5, 6, 0, 33, 1, 65,
+};
+const kMinReps: u8 = 5;
+const kRepCode: usize = params.ans_log_tab_size + 1;
+const kExactHistogramShift: u32 = params.ans_log_tab_size - 1;
+const kExactHistogramMethod: u32 = kExactHistogramShift + 1;
+
+fn trimmedAlphabetSizeForCounts(comptime T: type, counts: []const T) usize {
+	var alphabet_size = counts.len;
+	while (alphabet_size > 0 and counts[alphabet_size - 1] == 0) {
+		alphabet_size -= 1;
+	}
+	return alphabet_size;
+}
+
+fn isFlatHistogram(counts: []const i32) bool {
+	const alphabet_size = trimmedAlphabetSizeForCounts(i32, counts);
+	if (alphabet_size == 0) return false;
+	const base: i32 = @intCast(params.ans_tab_size / alphabet_size);
+	const rem = params.ans_tab_size % alphabet_size;
+	for (counts[0..alphabet_size], 0..) |count, i| {
+		const want = base + @as(i32, @intCast(@intFromBool(i < rem)));
+		if (count != want) return false;
+	}
+	return true;
+}
+
+fn chooseOmitPosition(counts: []const i32) usize {
+	var omit_pos: usize = 0;
+	var max_count: i32 = 0;
+	for (counts, 0..) |count, i| {
+		if (count > max_count) {
+			max_count = count;
+			omit_pos = i;
+		}
+	}
+	return omit_pos;
+}
+
+/// Normalizes raw token frequencies into an ANS table population of 4096 while
+/// preserving symbol support and leaving the largest bin to absorb rounding error.
+pub fn normalizeHistogramCounts(
+	allocator: std.mem.Allocator,
+	raw_counts: []const u32,
+) ![]i32 {
+	const alphabet_size = trimmedAlphabetSizeForCounts(u32, raw_counts);
+	if (alphabet_size == 0 or alphabet_size > params.ans_max_alphabet_size) return error.GenericError;
+
+	var total: u64 = 0;
+	var remainder_pos: usize = 0;
+	var max_freq: u32 = 0;
+	var num_symbols: usize = 0;
+	for (raw_counts[0..alphabet_size], 0..) |count, i| {
+		total += count;
+		if (count > 0) {
+			num_symbols += 1;
+			if (count > max_freq) {
+				max_freq = count;
+				remainder_pos = i;
+			}
+		}
+	}
+	if (total == 0) return error.GenericError;
+
+	const normalized = try allocator.alloc(i32, alphabet_size);
+	@memset(normalized, 0);
+	if (num_symbols == 1) {
+		normalized[remainder_pos] = @intCast(params.ans_tab_size);
+		return normalized;
+	}
+
+	var sum_others: usize = 0;
+	for (raw_counts[0..alphabet_size], 0..) |count, i| {
+		if (count == 0 or i == remainder_pos) continue;
+		var normalized_count: usize = @intCast((@as(u64, count) * params.ans_tab_size + total / 2) / total);
+		if (normalized_count == 0) normalized_count = 1;
+		if (normalized_count >= params.ans_tab_size) normalized_count = params.ans_tab_size - 1;
+		normalized[i] = @intCast(normalized_count);
+		sum_others += normalized_count;
+	}
+
+	while (sum_others >= params.ans_tab_size) {
+		var best_index: ?usize = null;
+		var best_count: i32 = 0;
+		for (normalized, 0..) |count, i| {
+			if (i == remainder_pos or count <= 1) continue;
+			if (count > best_count) {
+				best_count = count;
+				best_index = i;
+			}
+		}
+		if (best_index == null) return error.GenericError;
+		normalized[best_index.?] -= 1;
+		sum_others -= 1;
+	}
+
+	normalized[remainder_pos] = @intCast(params.ans_tab_size - sum_others);
+	if (normalized[remainder_pos] <= 0) return error.GenericError;
+	return normalized;
+}
+
+fn writeHistogramMethod(method: u32, writer: anytype) !void {
+	const upper_bound_log = bits_mod.floorLog2Nonzero(@as(u32, params.ans_log_tab_size) + 1);
+	const log = bits_mod.floorLog2Nonzero(@as(u32, method));
+	try writer.write(log, (@as(u32, 1) << @intCast(log)) - 1);
+	if (log != upper_bound_log) try writer.write(1, 0);
+	try writer.write(log, ((@as(u32, 1) << @intCast(log)) - 1) & method);
+}
+
+fn writeNormalizedHistogramBody(normalized_counts: []const i32, writer: anytype) !void {
+	const alphabet_size = trimmedAlphabetSizeForCounts(i32, normalized_counts);
+	if (alphabet_size == 0 or alphabet_size > params.ans_max_alphabet_size) return error.GenericError;
+
+	var num_symbols: usize = 0;
+	var symbols: [kMaxNumSymbolsForSmallCode]u8 = undefined;
+	for (normalized_counts[0..alphabet_size], 0..) |count, i| {
+		if (count > 0) {
+			if (num_symbols < kMaxNumSymbolsForSmallCode) symbols[num_symbols] = @intCast(i);
+			num_symbols += 1;
+		}
+	}
+	if (num_symbols == 0) return error.GenericError;
+
+	if (num_symbols <= kMaxNumSymbolsForSmallCode) {
+		try writer.write(1, 1); // small tree
+		if (num_symbols == 1) {
+			try writer.write(1, 0);
+			try storeVarLenUint8(symbols[0], writer);
+			return;
+		}
+
+		try writer.write(1, 1);
+		try storeVarLenUint8(symbols[0], writer);
+		try storeVarLenUint8(symbols[1], writer);
+		try writer.write(params.ans_log_tab_size, @as(u32, @intCast(normalized_counts[symbols[0]])));
+		return;
+	}
+
+	if (isFlatHistogram(normalized_counts[0..alphabet_size])) {
+		try writer.write(1, 0); // non-small tree
+		try writer.write(1, 1); // flat histogram
+		try storeVarLenUint8(@intCast(alphabet_size - 1), writer);
+		return;
+	}
+
+	try writer.write(1, 0); // non-small tree
+	try writer.write(1, 0); // non-flat histogram
+	try writeHistogramMethod(kExactHistogramMethod, writer);
+	try storeVarLenUint8(@intCast(alphabet_size - 3), writer);
+
+	const omit_pos = chooseOmitPosition(normalized_counts[0..alphabet_size]);
+	var same = [_]u8{0} ** params.ans_max_alphabet_size;
+	var last: usize = 0;
+	var i: usize = 1;
+	while (i <= alphabet_size) : (i += 1) {
+		if (i == alphabet_size or i == omit_pos or i == omit_pos + 1 or normalized_counts[i] != normalized_counts[last]) {
+			same[last] = @intCast(i - last);
+			last = i;
+		}
+	}
+
+	var bit_width = [_]u8{0} ** params.ans_max_alphabet_size;
+	var omit_width: u8 = 10;
+	for (normalized_counts[0..alphabet_size], 0..) |count, idx| {
+		if (idx == omit_pos or count == 0) continue;
+		bit_width[idx] = @intCast(bits_mod.floorLog2Nonzero(@as(u32, @intCast(count))) + 1);
+		const candidate = bit_width[idx] + @as(u8, @intCast(@intFromBool(idx < omit_pos)));
+		if (candidate > omit_width) omit_width = candidate;
+	}
+	bit_width[omit_pos] = omit_width;
+
+	i = 0;
+	while (i < alphabet_size) : (i += 1) {
+		try writer.write(kBitWidthLengths[bit_width[i]], kBitWidthSymbols[bit_width[i]]);
+		if (same[i] >= kMinReps) {
+			try writer.write(kBitWidthLengths[kRepCode], kBitWidthSymbols[kRepCode]);
+			try storeVarLenUint8(same[i] - kMinReps, writer);
+			i += same[i] - 1;
+		}
+	}
+
+	i = 0;
+	while (i < alphabet_size) : (i += 1) {
+		if (bit_width[i] > 1 and i != omit_pos) {
+			const bitcount = ans_common.getPopulationCountPrecision(bit_width[i] - 1, kExactHistogramShift);
+			const drop_bits = (bit_width[i] - 1) - bitcount;
+			const count: u32 = @intCast(normalized_counts[i]);
+			try writer.write(bitcount, (count >> @intCast(drop_bits)) - (@as(u32, 1) << @intCast(bitcount)));
+		}
+		if (same[i] >= kMinReps) {
+			i += same[i] - 1;
+		}
+	}
+}
+
+/// Emits a one-context histogram bundle from already-normalized ANS counts,
+/// selecting the compact flat/small/general representation that the decoder reads.
+pub fn writeSingleContextNormalizedHistogram(
+	normalized_counts: []const i32,
+	uint_config: HybridUintConfig,
+	log_alpha_size: u5,
+	writer: *BitWriter,
+) !void {
+	const alphabet_size = trimmedAlphabetSizeForCounts(i32, normalized_counts);
+	if (alphabet_size == 0 or alphabet_size > (@as(usize, 1) << @intCast(log_alpha_size))) return error.GenericError;
+
+	try writer.write(1, 0); // LZ77 disabled
+	try writer.write(1, 0); // use_prefix_code = false (ANS mode)
+	try writer.write(2, log_alpha_size - 5);
+	try encodeUintConfig(uint_config, writer, log_alpha_size);
+	try writeNormalizedHistogramBody(normalized_counts, writer);
+}
+
+/// Emits a simple direct-entry context map followed by one exact histogram per
+/// histogram ID, using pre-normalized counts instead of placeholder flats.
+pub fn writeSimpleContextMapNormalizedHistograms(
+	context_map: []const u8,
+	num_histograms: usize,
+	normalized_counts: []const []const i32,
+	uint_configs: []const HybridUintConfig,
+	log_alpha_size: u5,
+	writer: *BitWriter,
+) !void {
+	std.debug.assert(context_map.len > 0);
+	std.debug.assert(num_histograms > 0);
+	std.debug.assert(normalized_counts.len == num_histograms);
+	std.debug.assert(uint_configs.len == num_histograms);
+
+	try writer.write(1, 0); // LZ77 disabled
+	try enc_context_map.writeSimpleContextMap(context_map, num_histograms, writer);
+	try writer.write(1, 0); // use_prefix_code = false (ANS mode)
+	try writer.write(2, log_alpha_size - 5);
+	try encodeUintConfigs(uint_configs, writer, log_alpha_size);
+
+	for (normalized_counts) |counts| {
+		try writeNormalizedHistogramBody(counts, writer);
+	}
+}
+
+pub const ContextualHistogramBundle = struct {
+	normalized_counts: [][]i32,
+	infos: [][]ANSEncSymbolInfo,
+	uint_configs: []HybridUintConfig,
+
+	pub fn deinit(self: *ContextualHistogramBundle, allocator: std.mem.Allocator) void {
+		for (self.normalized_counts) |counts| {
+			allocator.free(counts);
+		}
+		allocator.free(self.normalized_counts);
+		for (self.infos) |info| {
+			freeANSEncSymbolInfoTable(allocator, info);
+		}
+		allocator.free(self.infos);
+		allocator.free(self.uint_configs);
+	}
+};
+
+/// Builds one exact histogram per histogram id for an already-chosen simple
+/// context map, so callers can replace flat placeholder tables with real token frequencies.
+pub fn buildContextualHistogramBundle(
+	allocator: std.mem.Allocator,
+	tokens: []const Token,
+	context_map: []const u8,
+	uint_configs: []const HybridUintConfig,
+	log_alpha_size: u5,
+) !ContextualHistogramBundle {
+	if (context_map.len == 0 or uint_configs.len == 0) return error.GenericError;
+
+	const num_histograms = uint_configs.len;
+	const max_tokens = try allocator.alloc(u32, num_histograms);
+	defer allocator.free(max_tokens);
+	@memset(max_tokens, 0);
+
+	const used_hist = try allocator.alloc(bool, num_histograms);
+	defer allocator.free(used_hist);
+	@memset(used_hist, false);
+
+	for (tokens) |token| {
+		if (token.is_lz77_length or token.context >= context_map.len) return error.GenericError;
+		const hist_idx = context_map[token.context];
+		if (hist_idx >= num_histograms) return error.GenericError;
+		const encoded = uint_configs[hist_idx].encode(token.value);
+		max_tokens[hist_idx] = @max(max_tokens[hist_idx], encoded.token);
+		used_hist[hist_idx] = true;
+	}
+
+	const raw_counts = try allocator.alloc([]u32, num_histograms);
+	for (0..num_histograms) |hist_idx| {
+		raw_counts[hist_idx] = &.{};
+	}
+	defer {
+		for (raw_counts) |counts| allocator.free(counts);
+		allocator.free(raw_counts);
+	}
+	for (0..num_histograms) |hist_idx| {
+		const len: usize = if (used_hist[hist_idx]) @as(usize, max_tokens[hist_idx]) + 1 else 1;
+		raw_counts[hist_idx] = try allocator.alloc(u32, len);
+		@memset(raw_counts[hist_idx], 0);
+	}
+
+	for (tokens) |token| {
+		const hist_idx = context_map[token.context];
+		const encoded = uint_configs[hist_idx].encode(token.value);
+		raw_counts[hist_idx][encoded.token] += 1;
+	}
+
+	var bundle = ContextualHistogramBundle{
+		.normalized_counts = try allocator.alloc([]i32, num_histograms),
+		.infos = try allocator.alloc([]ANSEncSymbolInfo, num_histograms),
+		.uint_configs = try allocator.dupe(HybridUintConfig, uint_configs),
+	};
+	errdefer {
+		for (bundle.normalized_counts[0..num_histograms]) |counts| {
+			if (counts.len != 0) allocator.free(counts);
+		}
+		allocator.free(bundle.normalized_counts);
+		for (bundle.infos[0..num_histograms]) |info| {
+			if (info.len != 0) freeANSEncSymbolInfoTable(allocator, info);
+		}
+		allocator.free(bundle.infos);
+		allocator.free(bundle.uint_configs);
+	}
+	for (0..num_histograms) |hist_idx| {
+		bundle.normalized_counts[hist_idx] = &.{};
+		bundle.infos[hist_idx] = &.{};
+	}
+
+	for (0..num_histograms) |hist_idx| {
+		if (!used_hist[hist_idx]) {
+			const degenerate = try allocator.alloc(i32, 1);
+			degenerate[0] = @intCast(params.ans_tab_size);
+			bundle.normalized_counts[hist_idx] = degenerate;
+		} else {
+			bundle.normalized_counts[hist_idx] = try normalizeHistogramCounts(allocator, raw_counts[hist_idx]);
+		}
+		bundle.infos[hist_idx] = try buildANSEncSymbolInfoTable(
+			allocator,
+			bundle.normalized_counts[hist_idx],
+			log_alpha_size,
+		);
+	}
+
+	return bundle;
+}
+
 const testing = std.testing;
 
 test "encodeUintConfigs round-trips a mixed config set" {
@@ -642,6 +992,45 @@ test "writeSingleContextFlatHistogram round-trips recovered flat counts through 
 	try br.close();
 }
 
+test "writeSingleContextNormalizedHistogram round-trips recovered non-flat counts through decodeHistograms" {
+	const allocator = testing.allocator;
+	const want_cfg = HybridUintConfig.init(5, 0, 0);
+	const raw_counts = [_]u32{ 100, 30, 7, 3, 1, 0 };
+	const want_counts = try normalizeHistogramCounts(allocator, &raw_counts);
+	defer allocator.free(want_counts);
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writeSingleContextNormalizedHistogram(want_counts, want_cfg, 5, &writer);
+	try writer.zeroPadToByte();
+
+	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+	var code = dec_ans.ANSCode.init(allocator);
+	defer code.deinit();
+	const context_map = try dec_ans.decodeHistograms(allocator, &br, 1, &code);
+	defer allocator.free(context_map);
+
+	try testing.expectEqual(@as(usize, 1), context_map.len);
+	try testing.expectEqual(@as(u8, 0), context_map[0]);
+	try testing.expectEqual(@as(i32, -1), code.degenerate_symbols[0]);
+
+	const table = code.alias_tables[0 .. (@as(usize, 1) << code.log_alpha_size)];
+	const log_entry_size = params.ans_log_tab_size - code.log_alpha_size;
+	const entry_size_minus_1 = (@as(usize, 1) << log_entry_size) - 1;
+	const recovered = try allocator.alloc(usize, want_counts.len);
+	defer allocator.free(recovered);
+	@memset(recovered, 0);
+	for (0..params.ans_tab_size) |i| {
+		const sym = AliasTable.lookup(table.ptr, i, log_entry_size, entry_size_minus_1);
+		recovered[sym.value] += 1;
+	}
+	for (want_counts, 0..) |want, i| {
+		try testing.expectEqual(@as(usize, @intCast(want)), recovered[i]);
+	}
+	try br.jumpToByteBoundary();
+	try br.close();
+}
+
 test "writeAllZeroContextMapFlatHistogram round-trips through decodeHistograms" {
 	const allocator = testing.allocator;
 	const want_cfg = HybridUintConfig.init(5, 0, 0);
@@ -727,6 +1116,62 @@ test "writeSimpleContextMapFlatHistograms round-trips exact context map and coun
 	try br.close();
 }
 
+test "writeSimpleContextMapNormalizedHistograms round-trips exact non-flat context map and counts" {
+	const allocator = testing.allocator;
+	const want_cfgs = [_]HybridUintConfig{
+		HybridUintConfig.init(5, 0, 0),
+		HybridUintConfig.init(5, 0, 0),
+	};
+	const raw_counts0 = [_]u32{ 100, 30, 7, 3, 1, 0 };
+	const raw_counts1 = [_]u32{ 0, 5, 1, 40, 2, 1 };
+	const want_counts0 = try normalizeHistogramCounts(allocator, &raw_counts0);
+	defer allocator.free(want_counts0);
+	const want_counts1 = try normalizeHistogramCounts(allocator, &raw_counts1);
+	defer allocator.free(want_counts1);
+	const want_ctx_map = [_]u8{ 0, 1, 0, 1, 1, 0 };
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writeSimpleContextMapNormalizedHistograms(
+		&want_ctx_map,
+		2,
+		&[_][]const i32{ want_counts0, want_counts1 },
+		&want_cfgs,
+		5,
+		&writer,
+	);
+	try writer.zeroPadToByte();
+
+	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+	var code = dec_ans.ANSCode.init(allocator);
+	defer code.deinit();
+	const context_map = try dec_ans.decodeHistograms(allocator, &br, want_ctx_map.len, &code);
+	defer allocator.free(context_map);
+
+	try testing.expectEqualSlices(u8, &want_ctx_map, context_map);
+	try testing.expectEqual(@as(usize, 2), code.uint_config.len);
+
+	inline for (0..2) |hist_idx| {
+		const want_counts = if (hist_idx == 0) want_counts0 else want_counts1;
+		const table_begin = hist_idx * (@as(usize, 1) << code.log_alpha_size);
+		const table = code.alias_tables[table_begin .. table_begin + (@as(usize, 1) << code.log_alpha_size)];
+		const log_entry_size = params.ans_log_tab_size - code.log_alpha_size;
+		const entry_size_minus_1 = (@as(usize, 1) << log_entry_size) - 1;
+		const recovered = try allocator.alloc(usize, want_counts.len);
+		defer allocator.free(recovered);
+		@memset(recovered, 0);
+		for (0..params.ans_tab_size) |i| {
+			const sym = AliasTable.lookup(table.ptr, i, log_entry_size, entry_size_minus_1);
+			recovered[sym.value] += 1;
+		}
+		for (want_counts, 0..) |want, i| {
+			try testing.expectEqual(@as(usize, @intCast(want)), recovered[i]);
+		}
+	}
+	try br.jumpToByteBoundary();
+	try br.close();
+}
+
 test "writeContextualHistogramTokens round-trips a two-histogram stream through ANSSymbolReader" {
 	const allocator = testing.allocator;
 	const ctx_map = [_]u8{ 0, 1 };
@@ -758,6 +1203,69 @@ test "writeContextualHistogramTokens round-trips a two-histogram stream through 
 	defer writer.deinit();
 	try writeSimpleContextMapFlatHistograms(&ctx_map, 2, &alphabet_sizes, &uint_configs, 5, &writer);
 	try testing.expectEqual(@as(usize, 0), try writeContextualHistogramTokens(&tokens, &infos, &ctx_map, &uint_configs, &writer));
+	try writer.zeroPadToByte();
+
+	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+	var code = dec_ans.ANSCode.init(allocator);
+	defer code.deinit();
+	const decoded_ctx_map = try dec_ans.decodeHistograms(allocator, &br, ctx_map.len, &code);
+	defer allocator.free(decoded_ctx_map);
+	try testing.expectEqualSlices(u8, &ctx_map, decoded_ctx_map);
+
+	var reader = try dec_ans.ANSSymbolReader.create(&code, &br, 0, allocator);
+	defer reader.deinit();
+	for (tokens) |token| {
+		try testing.expectEqual(@as(usize, token.value), reader.readHybridUint(token.context, &br, decoded_ctx_map));
+	}
+	try testing.expect(reader.checkANSFinalState());
+	try br.jumpToByteBoundary();
+	try br.close();
+}
+
+test "buildContextualHistogramBundle writes exact non-flat histograms for a token stream" {
+	const allocator = testing.allocator;
+	const ctx_map = [_]u8{ 0, 1 };
+	const uint_configs = [_]HybridUintConfig{
+		HybridUintConfig.init(5, 0, 0),
+		HybridUintConfig.init(5, 0, 0),
+	};
+	const tokens = [_]Token{
+		Token.init(0, 3),
+		Token.init(0, 3),
+		Token.init(0, 3),
+		Token.init(0, 7),
+		Token.init(0, 7),
+		Token.init(0, 1),
+		Token.init(0, 1),
+		Token.init(1, 2),
+		Token.init(1, 2),
+		Token.init(1, 2),
+		Token.init(1, 2),
+		Token.init(1, 15),
+		Token.init(1, 15),
+		Token.init(1, 5),
+	};
+
+	var bundle = try buildContextualHistogramBundle(allocator, &tokens, &ctx_map, &uint_configs, 5);
+	defer bundle.deinit(allocator);
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writeSimpleContextMapNormalizedHistograms(
+		&ctx_map,
+		bundle.normalized_counts.len,
+		bundle.normalized_counts,
+		bundle.uint_configs,
+		5,
+		&writer,
+	);
+	try testing.expectEqual(@as(usize, 0), try writeContextualHistogramTokens(
+		&tokens,
+		bundle.infos,
+		&ctx_map,
+		bundle.uint_configs,
+		&writer,
+	));
 	try writer.zeroPadToByte();
 
 	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());

@@ -131,6 +131,7 @@
 - [x] Extend the per-pixel MA-tree encoder subset to rect-local reference properties (still no weighted state), with exact context assertions for a previous-channel value split, a direct `modularDecode` roundtrip on a 2-channel image, and a full `600x300` RGB codestream/frame roundtrip whose group payloads branch on previous-channel values — 2026-03-13 ~1:05 AM EDT
 - [ ] Re-profile the real encode harness after the token-packing win and choose the next hotspot from measured data rather than the old synthetic prepass
 - [x] Combine the now-separate weighted and reference-property MA-tree encoder slices so trees that need both WP state and previous-channel properties drive one shared per-pixel tokenization path, with exact token checks on a 2-channel weighted/reference split tree plus both direct `modularDecode` and full `600x300` RGB codestream/frame roundtrips — 2026-03-14 ~10:45 AM EDT
+- [x] Replace flat-only ANS histogram placeholders with an exact non-flat histogram foundation: normalize raw token frequencies onto the 4096-entry ANS table, serialize one- and multi-context normalized histograms through `decodeHistograms`, and add a contextual histogram-bundle builder that turns a token stream + simple context map into reusable normalized counts plus ANS info tables — 2026-03-14 ~12:20 PM EDT
 - [ ] Fast lossless encoder
 - [ ] C FFI encode API
 - [ ] cjxlz CLI
