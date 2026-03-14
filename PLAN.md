@@ -130,7 +130,7 @@
 - [x] Extend that per-pixel MA-tree encoder subset to default-weighted no-reference trees, with a manual weighted-state tokenization check plus a direct `modularDecode` roundtrip for a weighted-leaf global tree — 2026-03-13 ~12:30 AM EDT
 - [x] Extend the per-pixel MA-tree encoder subset to rect-local reference properties (still no weighted state), with exact context assertions for a previous-channel value split, a direct `modularDecode` roundtrip on a 2-channel image, and a full `600x300` RGB codestream/frame roundtrip whose group payloads branch on previous-channel values — 2026-03-13 ~1:05 AM EDT
 - [ ] Re-profile the real encode harness after the token-packing win and choose the next hotspot from measured data rather than the old synthetic prepass
-- [ ] Combine the now-separate weighted and reference-property MA-tree encoder slices so trees that need both WP state and previous-channel properties can drive one shared per-pixel tokenization path
+- [x] Combine the now-separate weighted and reference-property MA-tree encoder slices so trees that need both WP state and previous-channel properties drive one shared per-pixel tokenization path, with exact token checks on a 2-channel weighted/reference split tree plus both direct `modularDecode` and full `600x300` RGB codestream/frame roundtrips — 2026-03-14 ~10:45 AM EDT
 - [ ] Fast lossless encoder
 - [ ] C FFI encode API
 - [ ] cjxlz CLI
