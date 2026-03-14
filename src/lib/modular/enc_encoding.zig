@@ -414,10 +414,84 @@ inline fn absPixel(v: pixel_type_w) pixel_type {
 	return @intCast(if (v >= 0) v else -v);
 }
 
-/// Shared no-reference MA-tree tokenizer for one channel rect. It mirrors the
-/// upstream per-pixel encoder loop and can either forbid or allow weighted
-/// predictor state, which keeps the no-WP and default-WP slices aligned.
-fn tokenizeGlobalTreeChannelRectNoRefsImpl(
+/// Computes rect-local previous-channel properties for MA-tree lookup, matching
+/// decoder semantics by ignoring pixels above or left of the current group tile.
+fn precomputeReferencesRect(
+	channel: *const Channel,
+	rect: Rect,
+	y: usize,
+	image: *const modular_image.Image,
+	chan: usize,
+	property_use: *const context_predict.PropertyUsePlan,
+	references: *Channel,
+) void {
+	const reference_props = property_use.referenceProps();
+	if (reference_props.len == 0) return;
+
+	for (0..references.h) |x| {
+		const rp = references.row(x);
+		for (reference_props) |property_index_u8| {
+			rp[@as(usize, property_index_u8) - context_predict.kNumNonrefProperties] = 0;
+		}
+	}
+
+	const shift_x: u6 = @intCast(channel.hshift);
+	const shift_y: u6 = @intCast(channel.vshift);
+	const rx0 = rect.x0() >> shift_x;
+	const ry0 = rect.y0() >> shift_y;
+	const rw = subsampledSize(rect.xsize(), channel.hshift);
+
+	var offset: usize = 0;
+	const num_extra_props = references.w;
+	var j: isize = @intCast(chan);
+	while (j > 0 and offset < num_extra_props) {
+		j -= 1;
+		const ref_chan = &image.channels.items[@intCast(j)];
+		if (ref_chan.w != channel.w or ref_chan.h != channel.h) continue;
+		if (ref_chan.hshift != channel.hshift or ref_chan.vshift != channel.vshift) continue;
+
+		const base_property = context_predict.kNumNonrefProperties + offset;
+		const use_abs_value = property_use.uses(base_property);
+		const use_value = property_use.uses(base_property + 1);
+		const use_abs_diff = property_use.uses(base_property + 2);
+		const use_diff = property_use.uses(base_property + 3);
+		if (!use_abs_value and !use_value and !use_abs_diff and !use_diff) {
+			offset += context_predict.kExtraPropsPerChannel;
+			continue;
+		}
+
+		const row = ref_chan.rowConst(ry0 + y);
+		const prev_row = ref_chan.rowConst(if (y > 0) ry0 + y - 1 else ry0 + y);
+		for (0..rw) |x| {
+			const global_x = rx0 + x;
+			const rp = references.row(x);
+			const value: pixel_type_w = row[global_x];
+			if (use_abs_value) rp[offset + 0] = absPixel(value);
+			if (use_value) rp[offset + 1] = @intCast(value);
+
+			if (use_abs_diff or use_diff) {
+				const left: pixel_type_w = if (x > 0) row[global_x - 1] else 0;
+				const top: pixel_type_w = if (y > 0) prev_row[global_x] else left;
+				const topleft: pixel_type_w = if (x > 0 and y > 0) prev_row[global_x - 1] else left;
+				const predicted = context_predict.clampedGradient(
+					@as(pixel_type, @intCast(left)),
+					@as(pixel_type, @intCast(top)),
+					@as(pixel_type, @intCast(topleft)),
+				);
+				const diff: pixel_type_w = value - predicted;
+				if (use_abs_diff) rp[offset + 2] = absPixel(diff);
+				if (use_diff) rp[offset + 3] = @intCast(diff);
+			}
+		}
+
+		offset += context_predict.kExtraPropsPerChannel;
+	}
+}
+
+/// Shared MA-tree tokenizer for one channel rect. It mirrors the upstream
+/// per-pixel encoder loop and can opt into weighted state and/or previous-
+/// channel properties as each compatibility slice is implemented.
+fn tokenizeGlobalTreeChannelRectImpl(
 	allocator: std.mem.Allocator,
 	image: *const modular_image.Image,
 	chan: usize,
@@ -425,6 +499,7 @@ fn tokenizeGlobalTreeChannelRectNoRefsImpl(
 	global_tree: []const dec_ma.PropertyDecisionNode,
 	rect: Rect,
 	comptime allow_wp: bool,
+	comptime allow_refs: bool,
 ) ![]Token {
 	const channel = &image.channels.items[chan];
 	if (channel.hshift < 0 or channel.vshift < 0) return error.Unsupported;
@@ -450,7 +525,7 @@ fn tokenizeGlobalTreeChannelRectNoRefsImpl(
 	);
 	defer flat_tree.deinit(allocator);
 
-	if ((!allow_wp and use_wp) or property_use.usesReferenceProps()) return error.Unsupported;
+	if ((!allow_wp and use_wp) or (!allow_refs and property_use.usesReferenceProps())) return error.Unsupported;
 
 	const shift_x: u6 = @intCast(channel.hshift);
 	const shift_y: u6 = @intCast(channel.vshift);
@@ -466,7 +541,16 @@ fn tokenizeGlobalTreeChannelRectNoRefsImpl(
 	var token_index: usize = 0;
 
 	const tree_lookup = context_predict.MATreeLookup.init(flat_tree.items);
-	var properties = [_]pixel_type{0} ** context_predict.kNumNonrefProperties;
+	var stack_properties = [_]pixel_type{0} ** context_predict.kNumNonrefProperties;
+	var heap_properties: ?[]pixel_type = null;
+	const properties = if (num_props <= stack_properties.len)
+		stack_properties[0..num_props]
+	else blk: {
+		heap_properties = try allocator.alloc(pixel_type, num_props);
+		break :blk heap_properties.?;
+	};
+	defer if (heap_properties) |allocated| allocator.free(allocated);
+	@memset(properties, 0);
 	properties[0] = static_props[0];
 	properties[1] = static_props[1];
 
@@ -485,6 +569,14 @@ fn tokenizeGlobalTreeChannelRectNoRefsImpl(
 	const use_prop_left_minus_leftleft = property_use.uses(14);
 	const use_prop_wp = property_use.uses(context_predict.kWPProp);
 	const use_local_gradient_history = property_use.needsLocalGradientHistory();
+	const reference_props = property_use.referenceProps();
+	var references: ?Channel = null;
+	if (allow_refs and reference_props.len > 0 and num_props > context_predict.kNumNonrefProperties) {
+		references = try Channel.create(allocator, num_props - context_predict.kNumNonrefProperties, rw, 0, 0);
+	}
+	defer {
+		if (references) |*channel_refs| channel_refs.deinit();
+	}
 	var wp_state: ?weighted.State = null;
 	if (use_wp) {
 		wp_state = try weighted.State.init(allocator, .{}, rw, rh);
@@ -501,6 +593,9 @@ fn tokenizeGlobalTreeChannelRectNoRefsImpl(
 		const top_row = if (has_top) channel.rowConst(global_y - 1) else &[_]i32{};
 		const top2_row = if (has_toptop) channel.rowConst(global_y - 2) else &[_]i32{};
 		var prev_gradient: pixel_type_w = 0;
+		if (references) |*channel_refs| {
+			precomputeReferencesRect(channel, rect, y, image, chan, &property_use, channel_refs);
+		}
 
 		if (use_prop_y) properties[2] = @intCast(y);
 
@@ -540,8 +635,15 @@ fn tokenizeGlobalTreeChannelRectNoRefsImpl(
 					wp_pred = state.predictNoWPProp(x, y, rw, top, left, topright, topleft, toptop);
 				}
 			}
+			if (references) |*channel_refs| {
+				const ref_props = channel_refs.rowConst(x);
+				for (reference_props) |property_index_u8| {
+					const property_index: usize = property_index_u8;
+					properties[property_index] = ref_props[property_index - context_predict.kNumNonrefProperties];
+				}
+			}
 
-			const lr = tree_lookup.lookup(&properties);
+			const lr = tree_lookup.lookup(properties);
 			const pred = context_predict.predictOne(
 				lr.predictor,
 				left,
@@ -581,13 +683,14 @@ fn tokenizeGlobalTreeChannelRectNoWP(
 	global_tree: []const dec_ma.PropertyDecisionNode,
 	rect: Rect,
 ) ![]Token {
-	return tokenizeGlobalTreeChannelRectNoRefsImpl(
+	return tokenizeGlobalTreeChannelRectImpl(
 		allocator,
 		image,
 		chan,
 		group_id,
 		global_tree,
 		rect,
+		false,
 		false,
 	);
 }
@@ -602,13 +705,36 @@ fn tokenizeGlobalTreeChannelRectWPNoRefs(
 	global_tree: []const dec_ma.PropertyDecisionNode,
 	rect: Rect,
 ) ![]Token {
-	return tokenizeGlobalTreeChannelRectNoRefsImpl(
+	return tokenizeGlobalTreeChannelRectImpl(
 		allocator,
 		image,
 		chan,
 		group_id,
 		global_tree,
 		rect,
+		true,
+		false,
+	);
+}
+
+/// Tokenizes one channel rect using filtered MA-tree lookup plus rect-local
+/// previous-channel properties, while still forbidding weighted state.
+fn tokenizeGlobalTreeChannelRectRefsNoWP(
+	allocator: std.mem.Allocator,
+	image: *const modular_image.Image,
+	chan: usize,
+	group_id: usize,
+	global_tree: []const dec_ma.PropertyDecisionNode,
+	rect: Rect,
+) ![]Token {
+	return tokenizeGlobalTreeChannelRectImpl(
+		allocator,
+		image,
+		chan,
+		group_id,
+		global_tree,
+		rect,
+		false,
 		true,
 	);
 }
@@ -776,6 +902,32 @@ fn appendGlobalTreeImageRectTokensWPNoRefs(
 		tokens,
 		true,
 	);
+}
+
+/// Tokenizes every channel in a group rect through the rect-local
+/// previous-channel-property path while keeping weighted state disabled.
+fn appendGlobalTreeImageRectTokensRefsNoWP(
+	allocator: std.mem.Allocator,
+	image: *const modular_image.Image,
+	rect: Rect,
+	group_id: usize,
+	global_tree: []const dec_ma.PropertyDecisionNode,
+	tokens: *std.ArrayList(Token),
+) !void {
+	if (image.channels.items.len == 0) return error.GenericError;
+
+	for (image.channels.items, 0..) |_, chan| {
+		const channel_tokens = try tokenizeGlobalTreeChannelRectRefsNoWP(
+			allocator,
+			image,
+			chan,
+			group_id,
+			global_tree,
+			rect,
+		);
+		defer allocator.free(channel_tokens);
+		try tokens.appendSlice(allocator, channel_tokens);
+	}
 }
 
 fn leafCount(tree: []const dec_ma.PropertyDecisionNode) usize {
@@ -1009,6 +1161,29 @@ pub fn writeGlobalTreeGroupImageRectWPNoRefs(
 	return enc_ans.writeContextualHistogramTokens(tokens.items, infos, context_map, uint_configs, writer);
 }
 
+/// Writes one global-tree group section for trees that need rect-local
+/// previous-channel properties while keeping weighted predictor state disabled.
+pub fn writeGlobalTreeGroupImageRectRefsNoWP(
+	allocator: std.mem.Allocator,
+	image: *const modular_image.Image,
+	rect: Rect,
+	group_id: usize,
+	global_tree: []const dec_ma.PropertyDecisionNode,
+	infos: []const []const enc_ans.ANSEncSymbolInfo,
+	context_map: []const u8,
+	uint_configs: []const HybridUintConfig,
+	writer: *BitWriter,
+) !usize {
+	var tokens: std.ArrayList(Token) = .{};
+	defer tokens.deinit(allocator);
+	try appendGlobalTreeImageRectTokensRefsNoWP(allocator, image, rect, group_id, global_tree, &tokens);
+
+	try writer.write(1, 1); // use_global_tree = true
+	try writer.write(1, 1); // weighted header all-default
+	try writer.write(2, 0); // num_transforms = 0 via selector 0
+	return enc_ans.writeContextualHistogramTokens(tokens.items, infos, context_map, uint_configs, writer);
+}
+
 /// Emits the smallest local-tree modular group currently supported: one
 /// single-leaf tree plus a degenerate one-context channel histogram.
 pub fn writeSingleNodeLocalTreeGroup(
@@ -1232,6 +1407,52 @@ test "tokenizeGlobalTreeChannelRectWPNoRefs matches manual weighted predictor to
 	for (tokens, expected) |got, want| {
 		try testing.expectEqual(want.context, got.context);
 		try testing.expectEqual(want.value, got.value);
+	}
+}
+
+test "tokenizeGlobalTreeChannelRectRefsNoWP uses previous-channel properties for contexts" {
+	const allocator = testing.allocator;
+	var source = try modular_image.Image.create(allocator, 3, 2, 8, 2);
+	defer source.deinit();
+
+	source.channels.items[0].row(0)[0] = 0;
+	source.channels.items[0].row(0)[1] = 20;
+	source.channels.items[0].row(0)[2] = 0;
+	source.channels.items[0].row(1)[0] = 0;
+	source.channels.items[0].row(1)[1] = 20;
+	source.channels.items[0].row(1)[2] = 0;
+
+	source.channels.items[1].row(0)[0] = 5;
+	source.channels.items[1].row(0)[1] = 6;
+	source.channels.items[1].row(0)[2] = 7;
+	source.channels.items[1].row(1)[0] = 8;
+	source.channels.items[1].row(1)[1] = 9;
+	source.channels.items[1].row(1)[2] = 10;
+
+	const ref_value_prop: i16 = @intCast(context_predict.kNumNonrefProperties + 1);
+	const global_tree = [_]dec_ma.PropertyDecisionNode{
+		dec_ma.PropertyDecisionNode.split(ref_value_prop, 10, 1, 2),
+		.{ .property = -1, .lchild = 1, .predictor = .zero, .multiplier = 1 },
+		.{ .property = -1, .lchild = 0, .predictor = .zero, .multiplier = 1 },
+	};
+
+	const tokens = try tokenizeGlobalTreeChannelRectRefsNoWP(
+		allocator,
+		&source,
+		1,
+		0,
+		&global_tree,
+		Rect.init(0, 0, 3, 2),
+	);
+	defer allocator.free(tokens);
+
+	const expected_contexts = [_]u32{ 0, 1, 0, 0, 1, 0 };
+	const expected_residuals = [_]i32{ 5, 6, 7, 8, 9, 10 };
+
+	try testing.expectEqual(expected_contexts.len, tokens.len);
+	for (tokens, 0..) |token, i| {
+		try testing.expectEqual(expected_contexts[i], token.context);
+		try testing.expectEqual(pack_signed.packSigned(expected_residuals[i]), token.value);
 	}
 }
 
@@ -1646,6 +1867,95 @@ test "writeGlobalTreeGroupImageRectWPNoRefs round-trips weighted grayscale token
 	try br.close();
 
 	try testing.expectEqualSlices(i32, source.channels.items[0].data, image.channels.items[0].data);
+}
+
+test "writeGlobalTreeGroupImageRectRefsNoWP round-trips reference-property tokens through modularDecode" {
+	const allocator = testing.allocator;
+	var source = try modular_image.Image.create(allocator, 3, 2, 8, 2);
+	defer source.deinit();
+
+	source.channels.items[0].row(0)[0] = 0;
+	source.channels.items[0].row(0)[1] = 20;
+	source.channels.items[0].row(0)[2] = 0;
+	source.channels.items[0].row(1)[0] = 0;
+	source.channels.items[0].row(1)[1] = 20;
+	source.channels.items[0].row(1)[2] = 0;
+
+	source.channels.items[1].row(0)[0] = 5;
+	source.channels.items[1].row(0)[1] = 6;
+	source.channels.items[1].row(0)[2] = 7;
+	source.channels.items[1].row(1)[0] = 8;
+	source.channels.items[1].row(1)[1] = 9;
+	source.channels.items[1].row(1)[2] = 10;
+
+	const ref_value_prop: i16 = @intCast(context_predict.kNumNonrefProperties + 1);
+	const global_tree = [_]dec_ma.PropertyDecisionNode{
+		dec_ma.PropertyDecisionNode.split(ref_value_prop, 10, 1, 2),
+		.{ .property = -1, .lchild = 1, .predictor = .zero, .multiplier = 1 },
+		.{ .property = -1, .lchild = 0, .predictor = .zero, .multiplier = 1 },
+	};
+	const context_map = [_]u8{ 0, 1 };
+	const uint_config = HybridUintConfig.init(8, 0, 0);
+
+	const counts = try ans_common.createFlatHistogram(allocator, 256, ans_params.ans_tab_size);
+	defer allocator.free(counts);
+	const info = try enc_ans.buildANSEncSymbolInfoTable(allocator, counts, 8);
+	defer enc_ans.freeANSEncSymbolInfoTable(allocator, info);
+	const infos = [_][]const enc_ans.ANSEncSymbolInfo{ info, info };
+	const uint_configs = [_]HybridUintConfig{ uint_config, uint_config };
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try testing.expectEqual(@as(usize, 0), try writeGlobalTreeGroupImageRectRefsNoWP(
+		allocator,
+		&source,
+		Rect.init(0, 0, 3, 2),
+		0,
+		&global_tree,
+		&infos,
+		&context_map,
+		&uint_configs,
+		&writer,
+	));
+	try writer.zeroPadToByte();
+
+	var code = blk: {
+		var built = dec_ans.ANSCode.init(allocator);
+		errdefer built.deinit();
+		built.use_prefix_code = false;
+		built.log_alpha_size = 8;
+		built.alias_tables = try allocator.alloc(ans_common.AliasTable.Entry, 2 * (1 << 8));
+		try ans_common.initAliasTable(counts, ans_params.ans_log_tab_size, 8, built.alias_tables[0 .. (1 << 8)].ptr);
+		try ans_common.initAliasTable(counts, ans_params.ans_log_tab_size, 8, built.alias_tables[(1 << 8) ..][0 .. (1 << 8)].ptr);
+		built.uint_config = try allocator.alloc(HybridUintConfig, 2);
+		built.uint_config[0] = uint_config;
+		built.uint_config[1] = uint_config;
+		break :blk built;
+	};
+	defer code.deinit();
+
+	var image = try modular_image.Image.create(allocator, 3, 2, 8, 2);
+	defer image.deinit();
+	var header = @import("encoding.zig").GroupHeader{};
+	defer header.deinit();
+	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+	try @import("encoding.zig").modularDecode(
+		&br,
+		&image,
+		&header,
+		0,
+		&options.ModularOptions{},
+		global_tree[0..],
+		&code,
+		context_map[0..],
+		allocator,
+	);
+	try br.jumpToByteBoundary();
+	try br.close();
+
+	for (source.channels.items, image.channels.items) |want, got| {
+		try testing.expectEqualSlices(i32, want.data, got.data);
+	}
 }
 
 test "writeSingleNodeLocalTreeGroup round-trips a minimal zero pixel through modularDecode" {

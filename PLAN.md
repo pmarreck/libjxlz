@@ -128,8 +128,9 @@
 - [x] Move beyond the all-contexts-map-to-histogram-0 shortcut by adding direct simple context-map writing, multi-flat-histogram bundle writing, contextual ANS token writing, and a full `600x300` codestream roundtrip with a channel-split global MA tree that uses two different histogram contexts during decode — 2026-03-12 ~12:05 AM EDT
 - [x] Port the first real per-pixel MA-tree encoder loop subset by adding a no-WP/no-reference global-tree tokenizer for group rects, then prove it with exact token-context assertions plus both `modularDecode` and full `600x300` codestream/frame roundtrips through tree-driven global histogram contexts — 2026-03-13 ~12:10 AM EDT
 - [x] Extend that per-pixel MA-tree encoder subset to default-weighted no-reference trees, with a manual weighted-state tokenization check plus a direct `modularDecode` roundtrip for a weighted-leaf global tree — 2026-03-13 ~12:30 AM EDT
+- [x] Extend the per-pixel MA-tree encoder subset to rect-local reference properties (still no weighted state), with exact context assertions for a previous-channel value split, a direct `modularDecode` roundtrip on a 2-channel image, and a full `600x300` RGB codestream/frame roundtrip whose group payloads branch on previous-channel values — 2026-03-13 ~1:05 AM EDT
 - [ ] Re-profile the real encode harness after the token-packing win and choose the next hotspot from measured data rather than the old synthetic prepass
-- [ ] Extend the upstream-shaped per-pixel MA-tree encoder path beyond the no-WP/no-reference subset so weighted/reference-property trees can drive real tokenization instead of falling back to the older fixed-predictor scaffolding
+- [ ] Combine the now-separate weighted and reference-property MA-tree encoder slices so trees that need both WP state and previous-channel properties can drive one shared per-pixel tokenization path
 - [ ] Fast lossless encoder
 - [ ] C FFI encode API
 - [ ] cjxlz CLI
