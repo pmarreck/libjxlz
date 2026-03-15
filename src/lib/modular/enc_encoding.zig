@@ -986,6 +986,11 @@ fn leafCount(tree: []const dec_ma.PropertyDecisionNode) usize {
 	return count;
 }
 
+pub const GroupRect = struct {
+	group_id: usize,
+	rect: Rect,
+};
+
 /// Emits the narrow global-tree DC-global payload: a serialized MA tree, a
 /// single shared flat histogram for all leaf contexts, then an empty modular image.
 pub fn writeGlobalTreeDcSection(
@@ -1021,6 +1026,27 @@ pub fn writeGlobalTreeDcSectionWithFlatHistograms(
 	try writer.write(1, 1); // has_tree = true
 	try enc_ma.writeTree(allocator, tree, writer);
 	try enc_ans.writeSimpleContextMapFlatHistograms(context_map, num_histograms, alphabet_sizes, uint_configs, log_alpha_size, writer);
+	try writeEmptyModularGroup(writer);
+}
+
+/// Emits the same narrow DC-global shape as the flat helper, but preserves the
+/// real normalized counts gathered from already-tokenized MA-tree streams.
+pub fn writeGlobalTreeDcSectionWithNormalizedHistograms(
+	allocator: std.mem.Allocator,
+	tree: []const dec_ma.PropertyDecisionNode,
+	context_map: []const u8,
+	num_histograms: usize,
+	normalized_counts: []const []const i32,
+	uint_configs: []const HybridUintConfig,
+	log_alpha_size: u5,
+	writer: *BitWriter,
+) !void {
+	if (tree.len == 0 or leafCount(tree) != context_map.len) return error.GenericError;
+	if (normalized_counts.len != num_histograms or uint_configs.len != num_histograms) return error.GenericError;
+
+	try writer.write(1, 1); // has_tree = true
+	try enc_ma.writeTree(allocator, tree, writer);
+	try enc_ans.writeSimpleContextMapNormalizedHistograms(context_map, num_histograms, normalized_counts, uint_configs, log_alpha_size, writer);
 	try writeEmptyModularGroup(writer);
 }
 
@@ -1253,6 +1279,182 @@ pub fn writeGlobalTreeGroupImageRectWPRefs(
 	try writer.write(1, 1); // weighted header all-default
 	try writer.write(2, 0); // num_transforms = 0 via selector 0
 	return enc_ans.writeContextualHistogramTokens(tokens.items, infos, context_map, uint_configs, writer);
+}
+
+fn appendGlobalTreeTokensForGroupRects(
+	allocator: std.mem.Allocator,
+	image: *const modular_image.Image,
+	group_rects: []const GroupRect,
+	global_tree: []const dec_ma.PropertyDecisionNode,
+	tokens: *std.ArrayList(Token),
+	comptime allow_wp: bool,
+	comptime allow_refs: bool,
+) !void {
+	for (group_rects) |group_rect| {
+		if (comptime allow_wp and allow_refs) {
+			try appendGlobalTreeImageRectTokensWPRefs(
+				allocator,
+				image,
+				group_rect.rect,
+				group_rect.group_id,
+				global_tree,
+				tokens,
+			);
+		} else if (comptime allow_wp) {
+			try appendGlobalTreeImageRectTokensWPNoRefs(
+				allocator,
+				image,
+				group_rect.rect,
+				group_rect.group_id,
+				global_tree,
+				tokens,
+			);
+		} else if (comptime allow_refs) {
+			try appendGlobalTreeImageRectTokensRefsNoWP(
+				allocator,
+				image,
+				group_rect.rect,
+				group_rect.group_id,
+				global_tree,
+				tokens,
+			);
+		} else {
+			try appendGlobalTreeImageRectTokensNoWP(
+				allocator,
+				image,
+				group_rect.rect,
+				group_rect.group_id,
+				global_tree,
+				tokens,
+			);
+		}
+	}
+}
+
+/// Builds exact ANS histograms for every group section that will share one
+/// encoded MA tree. This mirrors upstream's two-pass shape: tokenize first,
+/// then normalize/write histogram metadata once for all groups.
+fn buildGlobalTreeHistogramBundleImpl(
+	allocator: std.mem.Allocator,
+	image: *const modular_image.Image,
+	group_rects: []const GroupRect,
+	global_tree: []const dec_ma.PropertyDecisionNode,
+	context_map: []const u8,
+	uint_configs: []const HybridUintConfig,
+	log_alpha_size: u5,
+	comptime allow_wp: bool,
+	comptime allow_refs: bool,
+) !enc_ans.ContextualHistogramBundle {
+	var tokens: std.ArrayList(Token) = .{};
+	defer tokens.deinit(allocator);
+	try appendGlobalTreeTokensForGroupRects(
+		allocator,
+		image,
+		group_rects,
+		global_tree,
+		&tokens,
+		allow_wp,
+		allow_refs,
+	);
+	return enc_ans.buildContextualHistogramBundle(
+		allocator,
+		tokens.items,
+		context_map,
+		uint_configs,
+		log_alpha_size,
+	);
+}
+
+/// Builds exact histograms for no-WP/no-reference MA-tree group streams.
+pub fn buildGlobalTreeHistogramBundleNoWP(
+	allocator: std.mem.Allocator,
+	image: *const modular_image.Image,
+	group_rects: []const GroupRect,
+	global_tree: []const dec_ma.PropertyDecisionNode,
+	context_map: []const u8,
+	uint_configs: []const HybridUintConfig,
+	log_alpha_size: u5,
+) !enc_ans.ContextualHistogramBundle {
+	return buildGlobalTreeHistogramBundleImpl(
+		allocator,
+		image,
+		group_rects,
+		global_tree,
+		context_map,
+		uint_configs,
+		log_alpha_size,
+		false,
+		false,
+	);
+}
+
+/// Builds exact histograms for weighted/no-reference MA-tree group streams.
+pub fn buildGlobalTreeHistogramBundleWPNoRefs(
+	allocator: std.mem.Allocator,
+	image: *const modular_image.Image,
+	group_rects: []const GroupRect,
+	global_tree: []const dec_ma.PropertyDecisionNode,
+	context_map: []const u8,
+	uint_configs: []const HybridUintConfig,
+	log_alpha_size: u5,
+) !enc_ans.ContextualHistogramBundle {
+	return buildGlobalTreeHistogramBundleImpl(
+		allocator,
+		image,
+		group_rects,
+		global_tree,
+		context_map,
+		uint_configs,
+		log_alpha_size,
+		true,
+		false,
+	);
+}
+
+/// Builds exact histograms for reference-property/no-WP MA-tree group streams.
+pub fn buildGlobalTreeHistogramBundleRefsNoWP(
+	allocator: std.mem.Allocator,
+	image: *const modular_image.Image,
+	group_rects: []const GroupRect,
+	global_tree: []const dec_ma.PropertyDecisionNode,
+	context_map: []const u8,
+	uint_configs: []const HybridUintConfig,
+	log_alpha_size: u5,
+) !enc_ans.ContextualHistogramBundle {
+	return buildGlobalTreeHistogramBundleImpl(
+		allocator,
+		image,
+		group_rects,
+		global_tree,
+		context_map,
+		uint_configs,
+		log_alpha_size,
+		false,
+		true,
+	);
+}
+
+/// Builds exact histograms for weighted/reference-property MA-tree group streams.
+pub fn buildGlobalTreeHistogramBundleWPRefs(
+	allocator: std.mem.Allocator,
+	image: *const modular_image.Image,
+	group_rects: []const GroupRect,
+	global_tree: []const dec_ma.PropertyDecisionNode,
+	context_map: []const u8,
+	uint_configs: []const HybridUintConfig,
+	log_alpha_size: u5,
+) !enc_ans.ContextualHistogramBundle {
+	return buildGlobalTreeHistogramBundleImpl(
+		allocator,
+		image,
+		group_rects,
+		global_tree,
+		context_map,
+		uint_configs,
+		log_alpha_size,
+		true,
+		true,
+	);
 }
 
 /// Emits the smallest local-tree modular group currently supported: one
@@ -1940,6 +2142,70 @@ test "writeGlobalTreeGroupImageRectNoWP round-trips tree-driven grayscale tokens
 	try testing.expectEqualSlices(i32, source.channels.items[0].data, image.channels.items[0].data);
 }
 
+test "buildGlobalTreeHistogramBundleNoWP matches direct tree-driven token histograms" {
+	const allocator = testing.allocator;
+	var source = try modular_image.Image.create(allocator, 3, 2, 8, 1);
+	defer source.deinit();
+
+	source.channels.items[0].row(0)[0] = 0;
+	source.channels.items[0].row(0)[1] = 1;
+	source.channels.items[0].row(0)[2] = 5;
+	source.channels.items[0].row(1)[0] = 0;
+	source.channels.items[0].row(1)[1] = 1;
+	source.channels.items[0].row(1)[2] = 10;
+
+	const global_tree = [_]dec_ma.PropertyDecisionNode{
+		dec_ma.PropertyDecisionNode.split(@intCast(context_predict.kGradientProp), 0, 1, 2),
+		.{ .property = -1, .lchild = 1, .predictor = .gradient, .multiplier = 1 },
+		.{ .property = -1, .lchild = 0, .predictor = .zero, .multiplier = 1 },
+	};
+	const context_map = [_]u8{ 0, 1 };
+	const uint_configs = [_]HybridUintConfig{
+		HybridUintConfig.initDefault(),
+		HybridUintConfig.initDefault(),
+	};
+	const group_rects = [_]GroupRect{
+		.{ .group_id = 0, .rect = Rect.init(0, 0, 3, 2) },
+	};
+
+	var tokens: std.ArrayList(Token) = .{};
+	defer tokens.deinit(allocator);
+	try appendGlobalTreeImageRectTokensNoWP(
+		allocator,
+		&source,
+		group_rects[0].rect,
+		group_rects[0].group_id,
+		&global_tree,
+		&tokens,
+	);
+
+	var want_bundle = try enc_ans.buildContextualHistogramBundle(
+		allocator,
+		tokens.items,
+		&context_map,
+		&uint_configs,
+		8,
+	);
+	defer want_bundle.deinit(allocator);
+
+	var got_bundle = try buildGlobalTreeHistogramBundleNoWP(
+		allocator,
+		&source,
+		&group_rects,
+		&global_tree,
+		&context_map,
+		&uint_configs,
+		8,
+	);
+	defer got_bundle.deinit(allocator);
+
+	try testing.expect(want_bundle.normalized_counts[0].len > 1);
+	try testing.expect(want_bundle.normalized_counts[0][0] != want_bundle.normalized_counts[0][1]);
+	try testing.expectEqualSlices(i32, want_bundle.normalized_counts[0], got_bundle.normalized_counts[0]);
+	try testing.expectEqualSlices(i32, want_bundle.normalized_counts[1], got_bundle.normalized_counts[1]);
+	try testing.expectEqualSlices(HybridUintConfig, want_bundle.uint_configs, got_bundle.uint_configs);
+}
+
 test "writeGlobalTreeGroupImageRectWPNoRefs round-trips weighted grayscale tokens through modularDecode" {
 	const allocator = testing.allocator;
 	var source = try modular_image.Image.create(allocator, 3, 3, 8, 1);
@@ -2107,6 +2373,218 @@ test "writeGlobalTreeGroupImageRectRefsNoWP round-trips reference-property token
 	}
 }
 
+test "writeGlobalTreeGroupImageRectRefsNoWP round-trips with exact histogram metadata" {
+	const allocator = testing.allocator;
+	var source = try modular_image.Image.create(allocator, 3, 2, 8, 2);
+	defer source.deinit();
+
+	source.channels.items[0].row(0)[0] = 0;
+	source.channels.items[0].row(0)[1] = 20;
+	source.channels.items[0].row(0)[2] = 0;
+	source.channels.items[0].row(1)[0] = 0;
+	source.channels.items[0].row(1)[1] = 20;
+	source.channels.items[0].row(1)[2] = 0;
+
+	source.channels.items[1].row(0)[0] = 5;
+	source.channels.items[1].row(0)[1] = 6;
+	source.channels.items[1].row(0)[2] = 7;
+	source.channels.items[1].row(1)[0] = 8;
+	source.channels.items[1].row(1)[1] = 9;
+	source.channels.items[1].row(1)[2] = 10;
+
+	const ref_value_prop: i16 = @intCast(context_predict.kNumNonrefProperties + 1);
+	const global_tree = [_]dec_ma.PropertyDecisionNode{
+		dec_ma.PropertyDecisionNode.split(ref_value_prop, 10, 1, 2),
+		.{ .property = -1, .lchild = 1, .predictor = .zero, .multiplier = 1 },
+		.{ .property = -1, .lchild = 0, .predictor = .zero, .multiplier = 1 },
+	};
+	const context_map = [_]u8{ 0, 1 };
+	const uint_configs = [_]HybridUintConfig{
+		HybridUintConfig.initDefault(),
+		HybridUintConfig.initDefault(),
+	};
+	const group_rects = [_]GroupRect{
+		.{ .group_id = 0, .rect = Rect.init(0, 0, 3, 2) },
+	};
+
+	var bundle = try buildGlobalTreeHistogramBundleRefsNoWP(
+		allocator,
+		&source,
+		&group_rects,
+		&global_tree,
+		&context_map,
+		&uint_configs,
+		8,
+	);
+	defer bundle.deinit(allocator);
+
+	var hist_writer = BitWriter.init(allocator);
+	defer hist_writer.deinit();
+	try enc_ans.writeSimpleContextMapNormalizedHistograms(
+		&context_map,
+		bundle.normalized_counts.len,
+		bundle.normalized_counts,
+		bundle.uint_configs,
+		8,
+		&hist_writer,
+	);
+	try hist_writer.zeroPadToByte();
+
+	var code = dec_ans.ANSCode.init(allocator);
+	defer code.deinit();
+	var hist_br = @import("../base/bit_reader.zig").BitReader.init(hist_writer.bytes());
+	const decoded_context_map = try dec_ans.decodeHistograms(allocator, &hist_br, context_map.len, &code);
+	defer allocator.free(decoded_context_map);
+	try testing.expectEqualSlices(u8, &context_map, decoded_context_map);
+	try hist_br.close();
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	const extra_bits = try writeGlobalTreeGroupImageRectRefsNoWP(
+		allocator,
+		&source,
+		Rect.init(0, 0, 3, 2),
+		0,
+		&global_tree,
+		bundle.infos,
+		&context_map,
+		bundle.uint_configs,
+		&writer,
+	);
+	try testing.expect(extra_bits > 0);
+	try writer.zeroPadToByte();
+
+	var image = try modular_image.Image.create(allocator, 3, 2, 8, 2);
+	defer image.deinit();
+	var header = @import("encoding.zig").GroupHeader{};
+	defer header.deinit();
+	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+	try @import("encoding.zig").modularDecode(
+		&br,
+		&image,
+		&header,
+		0,
+		&options.ModularOptions{},
+		global_tree[0..],
+		&code,
+		decoded_context_map,
+		allocator,
+	);
+	try br.jumpToByteBoundary();
+	try br.close();
+
+	for (source.channels.items, image.channels.items) |want, got| {
+		try testing.expectEqualSlices(i32, want.data, got.data);
+	}
+}
+
+test "buildGlobalTreeHistogramBundleRefsNoWP reuses one exact bundle across multiple group ids" {
+	const allocator = testing.allocator;
+	var source = try modular_image.Image.create(allocator, 6, 4, 8, 2);
+	defer source.deinit();
+
+	for (0..source.h) |y| {
+		for (0..source.w) |x| {
+			source.channels.items[0].row(y)[x] = if ((x + y) % 2 == 0) 0 else 20;
+			source.channels.items[1].row(y)[x] = @intCast(5 + x * 2 + y * 3);
+		}
+	}
+
+	const ref_value_prop: i16 = @intCast(context_predict.kNumNonrefProperties + 1);
+	const global_tree = [_]dec_ma.PropertyDecisionNode{
+		dec_ma.PropertyDecisionNode.split(ref_value_prop, 10, 1, 2),
+		.{ .property = -1, .lchild = 1, .predictor = .zero, .multiplier = 1 },
+		.{ .property = -1, .lchild = 0, .predictor = .zero, .multiplier = 1 },
+	};
+	const context_map = [_]u8{ 0, 1 };
+	const uint_configs = [_]HybridUintConfig{
+		HybridUintConfig.initDefault(),
+		HybridUintConfig.initDefault(),
+	};
+	const group_rects = [_]GroupRect{
+		.{ .group_id = 0, .rect = Rect.init(0, 0, 3, 2) },
+		.{ .group_id = 1, .rect = Rect.init(3, 0, 3, 2) },
+		.{ .group_id = 2, .rect = Rect.init(0, 2, 3, 2) },
+	};
+
+	var bundle = try buildGlobalTreeHistogramBundleRefsNoWP(
+		allocator,
+		&source,
+		&group_rects,
+		&global_tree,
+		&context_map,
+		&uint_configs,
+		8,
+	);
+	defer bundle.deinit(allocator);
+
+	var hist_writer = BitWriter.init(allocator);
+	defer hist_writer.deinit();
+	try enc_ans.writeSimpleContextMapNormalizedHistograms(
+		&context_map,
+		bundle.normalized_counts.len,
+		bundle.normalized_counts,
+		bundle.uint_configs,
+		8,
+		&hist_writer,
+	);
+	try hist_writer.zeroPadToByte();
+
+	var code = dec_ans.ANSCode.init(allocator);
+	defer code.deinit();
+	var hist_br = @import("../base/bit_reader.zig").BitReader.init(hist_writer.bytes());
+	const decoded_context_map = try dec_ans.decodeHistograms(allocator, &hist_br, context_map.len, &code);
+	defer allocator.free(decoded_context_map);
+	try testing.expectEqualSlices(u8, &context_map, decoded_context_map);
+	try hist_br.close();
+
+	for (group_rects) |group_rect| {
+		var writer = BitWriter.init(allocator);
+		defer writer.deinit();
+		_ = try writeGlobalTreeGroupImageRectRefsNoWP(
+			allocator,
+			&source,
+			group_rect.rect,
+			group_rect.group_id,
+			&global_tree,
+			bundle.infos,
+			&context_map,
+			bundle.uint_configs,
+			&writer,
+		);
+		try writer.zeroPadToByte();
+
+		var image = try modular_image.Image.create(allocator, group_rect.rect.xsize(), group_rect.rect.ysize(), 8, 2);
+		defer image.deinit();
+		var header = @import("encoding.zig").GroupHeader{};
+		defer header.deinit();
+		var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+		try @import("encoding.zig").modularDecode(
+			&br,
+			&image,
+			&header,
+			group_rect.group_id,
+			&options.ModularOptions{},
+			global_tree[0..],
+			&code,
+			decoded_context_map,
+			allocator,
+		);
+		try br.jumpToByteBoundary();
+		try br.close();
+
+		for (source.channels.items, image.channels.items) |want, got| {
+			for (0..group_rect.rect.ysize()) |y| {
+				try testing.expectEqualSlices(
+					i32,
+					want.rowConst(group_rect.rect.y0() + y)[group_rect.rect.x0() .. group_rect.rect.x0() + group_rect.rect.xsize()],
+					got.rowConst(y),
+				);
+			}
+		}
+	}
+}
+
 test "writeGlobalTreeGroupImageRectWPRefs round-trips weighted reference-property tokens through modularDecode" {
 	const allocator = testing.allocator;
 	var source = try modular_image.Image.create(allocator, 3, 3, 8, 2);
@@ -2192,6 +2670,117 @@ test "writeGlobalTreeGroupImageRectWPRefs round-trips weighted reference-propert
 		global_tree[0..],
 		&code,
 		context_map[0..],
+		allocator,
+	);
+	try br.jumpToByteBoundary();
+	try br.close();
+
+	for (source.channels.items, image.channels.items) |want, got| {
+		try testing.expectEqualSlices(i32, want.data, got.data);
+	}
+}
+
+test "writeGlobalTreeGroupImageRectWPRefs round-trips with exact histogram metadata" {
+	const allocator = testing.allocator;
+	var source = try modular_image.Image.create(allocator, 3, 3, 8, 2);
+	defer source.deinit();
+
+	source.channels.items[0].row(0)[0] = 0;
+	source.channels.items[0].row(0)[1] = 20;
+	source.channels.items[0].row(0)[2] = 0;
+	source.channels.items[0].row(1)[0] = 20;
+	source.channels.items[0].row(1)[1] = 0;
+	source.channels.items[0].row(1)[2] = 20;
+	source.channels.items[0].row(2)[0] = 0;
+	source.channels.items[0].row(2)[1] = 20;
+	source.channels.items[0].row(2)[2] = 0;
+
+	source.channels.items[1].row(0)[0] = 10;
+	source.channels.items[1].row(0)[1] = 12;
+	source.channels.items[1].row(0)[2] = 14;
+	source.channels.items[1].row(1)[0] = 11;
+	source.channels.items[1].row(1)[1] = 13;
+	source.channels.items[1].row(1)[2] = 15;
+	source.channels.items[1].row(2)[0] = 13;
+	source.channels.items[1].row(2)[1] = 14;
+	source.channels.items[1].row(2)[2] = 18;
+
+	const ref_value_prop: i16 = @intCast(context_predict.kNumNonrefProperties + 1);
+	const global_tree = [_]dec_ma.PropertyDecisionNode{
+		dec_ma.PropertyDecisionNode.split(ref_value_prop, 10, 1, 2),
+		.{ .property = -1, .lchild = 1, .predictor = .weighted, .multiplier = 1 },
+		.{ .property = -1, .lchild = 0, .predictor = .weighted, .multiplier = 1 },
+	};
+	const context_map = [_]u8{ 0, 1 };
+	const uint_configs = [_]HybridUintConfig{
+		HybridUintConfig.initDefault(),
+		HybridUintConfig.initDefault(),
+	};
+	const group_rects = [_]GroupRect{
+		.{ .group_id = 0, .rect = Rect.init(0, 0, 3, 3) },
+	};
+
+	var bundle = try buildGlobalTreeHistogramBundleWPRefs(
+		allocator,
+		&source,
+		&group_rects,
+		&global_tree,
+		&context_map,
+		&uint_configs,
+		8,
+	);
+	defer bundle.deinit(allocator);
+
+	var hist_writer = BitWriter.init(allocator);
+	defer hist_writer.deinit();
+	try enc_ans.writeSimpleContextMapNormalizedHistograms(
+		&context_map,
+		bundle.normalized_counts.len,
+		bundle.normalized_counts,
+		bundle.uint_configs,
+		8,
+		&hist_writer,
+	);
+	try hist_writer.zeroPadToByte();
+
+	var code = dec_ans.ANSCode.init(allocator);
+	defer code.deinit();
+	var hist_br = @import("../base/bit_reader.zig").BitReader.init(hist_writer.bytes());
+	const decoded_context_map = try dec_ans.decodeHistograms(allocator, &hist_br, context_map.len, &code);
+	defer allocator.free(decoded_context_map);
+	try testing.expectEqualSlices(u8, &context_map, decoded_context_map);
+	try hist_br.close();
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	const extra_bits = try writeGlobalTreeGroupImageRectWPRefs(
+		allocator,
+		&source,
+		Rect.init(0, 0, 3, 3),
+		0,
+		&global_tree,
+		bundle.infos,
+		&context_map,
+		bundle.uint_configs,
+		&writer,
+	);
+	try testing.expect(extra_bits > 0);
+	try writer.zeroPadToByte();
+
+	var image = try modular_image.Image.create(allocator, 3, 3, 8, 2);
+	defer image.deinit();
+	var header = @import("encoding.zig").GroupHeader{};
+	defer header.deinit();
+	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+	try @import("encoding.zig").modularDecode(
+		&br,
+		&image,
+		&header,
+		0,
+		&options.ModularOptions{},
+		global_tree[0..],
+		&code,
+		decoded_context_map,
 		allocator,
 	);
 	try br.jumpToByteBoundary();

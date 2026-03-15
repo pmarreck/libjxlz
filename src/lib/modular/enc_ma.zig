@@ -92,6 +92,21 @@ pub fn tokenizeTree(
 	}
 }
 
+/// Rebuilds a tree into the decoder-visible layout where leaf context IDs are
+/// implicit breadth-first leaf numbers. Encoder callers use this canonical form
+/// whenever later tokenization must agree with the tree bytes emitted by writeTree.
+pub fn canonicalizeTree(
+	allocator: std.mem.Allocator,
+	tree: []const dec_ma.PropertyDecisionNode,
+) !dec_ma.Tree {
+	var tokens: std.ArrayList(Token) = .{};
+	defer tokens.deinit(allocator);
+	var decoder_tree: dec_ma.Tree = .{};
+	errdefer decoder_tree.deinit(allocator);
+	try tokenizeTree(allocator, tree, &tokens, &decoder_tree);
+	return decoder_tree;
+}
+
 fn selectTreeHistogramConfig(tokens: []const Token) !TreeHistogramConfig {
 	var max_value: u32 = 0;
 	for (tokens) |token| {
@@ -234,4 +249,22 @@ test "writeTree round-trips a split tree through dec_ma.decodeTree" {
 	try testing.expectEqual(@as(u32, 1), tree.items[2].lchild);
 	try br.jumpToByteBoundary();
 	try br.close();
+}
+
+test "canonicalizeTree renumbers leaf contexts to decoder breadth-first order" {
+	const allocator = testing.allocator;
+	const source = [_]dec_ma.PropertyDecisionNode{
+		dec_ma.PropertyDecisionNode.split(3, 42, 1, 2),
+		.{ .property = -1, .lchild = 7, .predictor = .left, .multiplier = 1 },
+		.{ .property = -1, .lchild = 3, .predictor = .gradient, .predictor_offset = 5, .multiplier = 2 },
+	};
+
+	var tree = try canonicalizeTree(allocator, &source);
+	defer tree.deinit(allocator);
+
+	try testing.expectEqual(@as(usize, 3), tree.items.len);
+	try testing.expectEqual(@as(u32, 1), tree.items[0].lchild);
+	try testing.expectEqual(@as(u32, 2), tree.items[0].rchild);
+	try testing.expectEqual(@as(u32, 0), tree.items[1].lchild);
+	try testing.expectEqual(@as(u32, 1), tree.items[2].lchild);
 }

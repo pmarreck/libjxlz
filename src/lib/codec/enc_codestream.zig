@@ -5,6 +5,7 @@ const std = @import("std");
 const BitReader = @import("../base/bit_reader.zig").BitReader;
 const BitWriter = @import("../base/bit_writer.zig").BitWriter;
 const ans_common = @import("../entropy/ans_common.zig");
+const dec_ans = @import("../entropy/dec_ans.zig");
 const ans_params = @import("../entropy/ans_params.zig");
 const enc_ans = @import("../entropy/enc_ans.zig");
 const HybridUintConfig = @import("../entropy/hybrid_uint.zig").HybridUintConfig;
@@ -15,11 +16,13 @@ const toc = @import("toc.zig");
 const dec_frame = @import("dec_frame.zig");
 const enc_frame = @import("enc_frame.zig");
 const enc_encoding = @import("../modular/enc_encoding.zig");
+const enc_ma = @import("../modular/enc_ma.zig");
 const context_predict = @import("../modular/context_predict.zig");
 const modular_image = @import("../modular/modular_image.zig");
 const Rect = @import("../base/rect.zig").Rect;
 
 const Channel = modular_image.Channel;
+const GroupRect = enc_encoding.GroupRect;
 
 fn expectedRgbFixturePixel(x: usize, y: usize) [3]i32 {
 	return .{
@@ -27,6 +30,17 @@ fn expectedRgbFixturePixel(x: usize, y: usize) [3]i32 {
 		@intCast(y * 255 / 299),
 		@intCast((x + y) * 255 / 898),
 	};
+}
+
+fn buildGroupRects(allocator: std.mem.Allocator, frame_dim: anytype) ![]GroupRect {
+	const group_rects = try allocator.alloc(GroupRect, frame_dim.num_groups);
+	for (group_rects, 0..) |*group_rect, group_id| {
+		group_rect.* = .{
+			.group_id = group_id,
+			.rect = frame_dim.groupRect(group_id),
+		};
+	}
+	return group_rects;
 }
 
 fn prepareFrame(data: []const u8) !struct {
@@ -309,15 +323,23 @@ test "writeCodestream round-trips a multi-group RGB codestream with reference-pr
 		.{ .property = -1, .lchild = 1, .predictor = .zero, .multiplier = 1 },
 		.{ .property = -1, .lchild = 0, .predictor = .zero, .multiplier = 1 },
 	};
+	var emitted_tree = try enc_ma.canonicalizeTree(allocator, &global_tree);
+	defer emitted_tree.deinit(allocator);
 	const context_map = [_]u8{ 0, 1 };
 	const uint_config = HybridUintConfig.initDefault();
 	const uint_configs = [_]HybridUintConfig{ uint_config, uint_config };
-	const alphabet_sizes = [_]u16{ 256, 256 };
-	const counts = try ans_common.createFlatHistogram(allocator, 256, ans_params.ans_tab_size);
-	defer allocator.free(counts);
-	const info = try enc_ans.buildANSEncSymbolInfoTable(allocator, counts, 8);
-	defer enc_ans.freeANSEncSymbolInfoTable(allocator, info);
-	const infos = [_][]const enc_ans.ANSEncSymbolInfo{ info, info };
+	const group_rects = try buildGroupRects(allocator, frame_dim);
+	defer allocator.free(group_rects);
+	var bundle = try enc_encoding.buildGlobalTreeHistogramBundleRefsNoWP(
+		allocator,
+		&source,
+		group_rects,
+		emitted_tree.items,
+		&context_map,
+		&uint_configs,
+		8,
+	);
+	defer bundle.deinit(allocator);
 
 	const section_writers = try allocator.alloc(BitWriter, num_sections);
 	defer allocator.free(section_writers);
@@ -329,13 +351,13 @@ test "writeCodestream round-trips a multi-group RGB codestream with reference-pr
 	};
 
 	try section_writers[0].write(1, 1); // DequantMatrices all_default
-	try enc_encoding.writeGlobalTreeDcSectionWithFlatHistograms(
+	try enc_encoding.writeGlobalTreeDcSectionWithNormalizedHistograms(
 		allocator,
-		&global_tree,
+		emitted_tree.items,
 		&context_map,
-		2,
-		&alphabet_sizes,
-		&uint_configs,
+		bundle.normalized_counts.len,
+		bundle.normalized_counts,
+		bundle.uint_configs,
 		8,
 		&section_writers[0],
 	);
@@ -349,10 +371,10 @@ test "writeCodestream round-trips a multi-group RGB codestream with reference-pr
 			&source,
 			frame_dim.groupRect(group_id),
 			group_id,
-			&global_tree,
-			&infos,
+			emitted_tree.items,
+			bundle.infos,
 			&context_map,
-			&uint_configs,
+			bundle.uint_configs,
 			&section_writers[section_id],
 		);
 		try section_writers[section_id].zeroPadToByte();
@@ -393,6 +415,358 @@ test "writeCodestream round-trips a multi-group RGB codestream with reference-pr
 	const image = frame_dec.getDecodedImage();
 	for (source.channels.items, image.channels.items) |want, got| {
 		try testing.expectEqualSlices(i32, want.data, got.data);
+	}
+}
+
+test "exact reference-property global sections decode directly through FrameDecoder pieces" {
+	const allocator = testing.allocator;
+	const source_data = @embedFile("../testdata/lossless_600x300_multigroup_rgb.jxl");
+	const prepared = try prepareFrame(source_data);
+
+	const frame_header = blk: {
+		var br = BitReader.init(prepared.frame_data);
+		break :blk try frame_header_mod.FrameHeader.readFromBitStream(&br, &prepared.codec_meta, false);
+	};
+	const frame_dim = frame_header.toFrameDimensions(&prepared.codec_meta, false);
+
+	var source = try modular_image.Image.create(allocator, prepared.codec_meta.xsize(), prepared.codec_meta.ysize(), 8, 3);
+	defer source.deinit();
+	for (0..source.h) |y| {
+		for (0..source.w) |x| {
+			const pixel = expectedRgbFixturePixel(x, y);
+			source.channels.items[0].row(y)[x] = pixel[0];
+			source.channels.items[1].row(y)[x] = pixel[1];
+			source.channels.items[2].row(y)[x] = pixel[2];
+		}
+	}
+
+	const ref_value_prop: i16 = @intCast(context_predict.kNumNonrefProperties + 1);
+	const global_tree = [_]@import("../modular/dec_ma.zig").PropertyDecisionNode{
+		@import("../modular/dec_ma.zig").PropertyDecisionNode.split(ref_value_prop, 127, 1, 2),
+		.{ .property = -1, .lchild = 1, .predictor = .zero, .multiplier = 1 },
+		.{ .property = -1, .lchild = 0, .predictor = .zero, .multiplier = 1 },
+	};
+	var emitted_tree = try enc_ma.canonicalizeTree(allocator, &global_tree);
+	defer emitted_tree.deinit(allocator);
+	const context_map = [_]u8{ 0, 1 };
+	const uint_configs = [_]HybridUintConfig{
+		HybridUintConfig.initDefault(),
+		HybridUintConfig.initDefault(),
+	};
+	const group_rects = try buildGroupRects(allocator, frame_dim);
+	defer allocator.free(group_rects);
+	var bundle = try enc_encoding.buildGlobalTreeHistogramBundleRefsNoWP(
+		allocator,
+		&source,
+		group_rects,
+		emitted_tree.items,
+		&context_map,
+		&uint_configs,
+		8,
+	);
+	defer bundle.deinit(allocator);
+
+	var dc_global = BitWriter.init(allocator);
+	defer dc_global.deinit();
+	try dc_global.write(1, 1); // DequantMatrices all_default
+	try enc_encoding.writeGlobalTreeDcSectionWithNormalizedHistograms(
+		allocator,
+		emitted_tree.items,
+		&context_map,
+		bundle.normalized_counts.len,
+		bundle.normalized_counts,
+		bundle.uint_configs,
+		8,
+		&dc_global,
+	);
+	try dc_global.zeroPadToByte();
+
+	var group_writer = BitWriter.init(allocator);
+	defer group_writer.deinit();
+	_ = try enc_encoding.writeGlobalTreeGroupImageRectRefsNoWP(
+		allocator,
+		&source,
+		frame_dim.groupRect(0),
+		0,
+		emitted_tree.items,
+		bundle.infos,
+		&context_map,
+		bundle.uint_configs,
+		&group_writer,
+	);
+	try group_writer.zeroPadToByte();
+
+	var frame_dec = dec_frame.FrameDecoder.init(allocator, &prepared.codec_meta);
+	defer frame_dec.deinit();
+	frame_dec.frame_header = frame_header;
+	frame_dec.frame_dim = frame_dim;
+	frame_dec.modular_decoder.initFrame(frame_dim);
+
+	var dc_br = BitReader.init(dc_global.bytes());
+	try frame_dec.processDCGlobal(&dc_br);
+	try dc_br.close();
+	try testing.expect(frame_dec.modular_decoder.has_tree);
+	try testing.expectEqualSlices(@TypeOf(global_tree[0]), emitted_tree.items, frame_dec.modular_decoder.tree.items);
+	try testing.expectEqualSlices(u8, &context_map, frame_dec.modular_decoder.context_map);
+	try testing.expectEqual(@as(u32, 8), frame_dec.modular_decoder.code.log_alpha_size);
+	try testing.expectEqualSlices(HybridUintConfig, bundle.uint_configs, frame_dec.modular_decoder.code.uint_config);
+	try testing.expectEqual(false, frame_dec.modular_decoder.global_header.use_global_tree);
+	try testing.expectEqual(@as(usize, 0), frame_dec.modular_decoder.global_header.transforms.len);
+
+	for (bundle.normalized_counts, 0..) |want_counts, hist_idx| {
+		const table_begin = hist_idx * (@as(usize, 1) << frame_dec.modular_decoder.code.log_alpha_size);
+		const table = frame_dec.modular_decoder.code.alias_tables[table_begin .. table_begin + (@as(usize, 1) << frame_dec.modular_decoder.code.log_alpha_size)];
+		const log_entry_size = ans_params.ans_log_tab_size - frame_dec.modular_decoder.code.log_alpha_size;
+		const entry_size_minus_1 = (@as(usize, 1) << log_entry_size) - 1;
+		const recovered = try allocator.alloc(usize, want_counts.len);
+		defer allocator.free(recovered);
+		@memset(recovered, 0);
+		for (0..ans_params.ans_tab_size) |i| {
+			const sym = ans_common.AliasTable.lookup(table.ptr, i, log_entry_size, entry_size_minus_1);
+			recovered[sym.value] += 1;
+		}
+		for (want_counts, 0..) |want, i| {
+			try testing.expectEqual(@as(usize, @intCast(want)), recovered[i]);
+		}
+	}
+
+	var group_br = BitReader.init(group_writer.bytes());
+	try frame_dec.modular_decoder.decodeGroup(&group_br, 0, 0, false);
+	try group_br.close();
+
+	const decoded = frame_dec.modular_decoder.full_image;
+	for (source.channels.items, decoded.channels.items) |want, got| {
+		for (0..frame_dim.groupRect(0).ysize()) |y| {
+			try testing.expectEqualSlices(
+				i32,
+				want.rowConst(y)[0..frame_dim.groupRect(0).xsize()],
+				got.rowConst(y)[0..frame_dim.groupRect(0).xsize()],
+			);
+		}
+	}
+}
+
+test "large exact reference-property bundle round-trips a direct group tile" {
+	const allocator = testing.allocator;
+	const source_data = @embedFile("../testdata/lossless_600x300_multigroup_rgb.jxl");
+	const prepared = try prepareFrame(source_data);
+
+	const frame_header = blk: {
+		var br = BitReader.init(prepared.frame_data);
+		break :blk try frame_header_mod.FrameHeader.readFromBitStream(&br, &prepared.codec_meta, false);
+	};
+	const frame_dim = frame_header.toFrameDimensions(&prepared.codec_meta, false);
+
+	var source = try modular_image.Image.create(allocator, prepared.codec_meta.xsize(), prepared.codec_meta.ysize(), 8, 3);
+	defer source.deinit();
+	for (0..source.h) |y| {
+		for (0..source.w) |x| {
+			const pixel = expectedRgbFixturePixel(x, y);
+			source.channels.items[0].row(y)[x] = pixel[0];
+			source.channels.items[1].row(y)[x] = pixel[1];
+			source.channels.items[2].row(y)[x] = pixel[2];
+		}
+	}
+
+	const ref_value_prop: i16 = @intCast(context_predict.kNumNonrefProperties + 1);
+	const global_tree = [_]@import("../modular/dec_ma.zig").PropertyDecisionNode{
+		@import("../modular/dec_ma.zig").PropertyDecisionNode.split(ref_value_prop, 127, 1, 2),
+		.{ .property = -1, .lchild = 1, .predictor = .zero, .multiplier = 1 },
+		.{ .property = -1, .lchild = 0, .predictor = .zero, .multiplier = 1 },
+	};
+	const context_map = [_]u8{ 0, 1 };
+	const uint_configs = [_]HybridUintConfig{
+		HybridUintConfig.initDefault(),
+		HybridUintConfig.initDefault(),
+	};
+	const group_rects = try buildGroupRects(allocator, frame_dim);
+	defer allocator.free(group_rects);
+	var bundle = try enc_encoding.buildGlobalTreeHistogramBundleRefsNoWP(
+		allocator,
+		&source,
+		group_rects,
+		&global_tree,
+		&context_map,
+		&uint_configs,
+		8,
+	);
+	defer bundle.deinit(allocator);
+
+	var hist_writer = BitWriter.init(allocator);
+	defer hist_writer.deinit();
+	try enc_ans.writeSimpleContextMapNormalizedHistograms(
+		&context_map,
+		bundle.normalized_counts.len,
+		bundle.normalized_counts,
+		bundle.uint_configs,
+		8,
+		&hist_writer,
+	);
+	try hist_writer.zeroPadToByte();
+
+	var code = dec_ans.ANSCode.init(allocator);
+	defer code.deinit();
+	var hist_br = BitReader.init(hist_writer.bytes());
+	const decoded_context_map = try dec_ans.decodeHistograms(allocator, &hist_br, context_map.len, &code);
+	defer allocator.free(decoded_context_map);
+	try hist_br.close();
+
+	const rect = frame_dim.groupRect(0);
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	_ = try enc_encoding.writeGlobalTreeGroupImageRectRefsNoWP(
+		allocator,
+		&source,
+		rect,
+		0,
+		&global_tree,
+		bundle.infos,
+		&context_map,
+		bundle.uint_configs,
+		&writer,
+	);
+	try writer.zeroPadToByte();
+
+	var image = try modular_image.Image.create(allocator, rect.xsize(), rect.ysize(), 8, 3);
+	defer image.deinit();
+	var header = @import("../modular/encoding.zig").GroupHeader{};
+	defer header.deinit();
+	var br = BitReader.init(writer.bytes());
+	try @import("../modular/encoding.zig").modularDecode(
+		&br,
+		&image,
+		&header,
+		0,
+		&@import("../modular/options.zig").ModularOptions{},
+		global_tree[0..],
+		&code,
+		decoded_context_map,
+		allocator,
+	);
+	try br.jumpToByteBoundary();
+	try br.close();
+
+	for (source.channels.items, image.channels.items) |want, got| {
+		for (0..rect.ysize()) |y| {
+			try testing.expectEqualSlices(
+				i32,
+				want.rowConst(rect.y0() + y)[rect.x0() .. rect.x0() + rect.xsize()],
+				got.rowConst(y),
+			);
+		}
+	}
+}
+
+test "large exact reference-property bundle round-trips through modularGenericDecompress" {
+	const allocator = testing.allocator;
+	const source_data = @embedFile("../testdata/lossless_600x300_multigroup_rgb.jxl");
+	const prepared = try prepareFrame(source_data);
+
+	const frame_header = blk: {
+		var br = BitReader.init(prepared.frame_data);
+		break :blk try frame_header_mod.FrameHeader.readFromBitStream(&br, &prepared.codec_meta, false);
+	};
+	const frame_dim = frame_header.toFrameDimensions(&prepared.codec_meta, false);
+
+	var source = try modular_image.Image.create(allocator, prepared.codec_meta.xsize(), prepared.codec_meta.ysize(), 8, 3);
+	defer source.deinit();
+	for (0..source.h) |y| {
+		for (0..source.w) |x| {
+			const pixel = expectedRgbFixturePixel(x, y);
+			source.channels.items[0].row(y)[x] = pixel[0];
+			source.channels.items[1].row(y)[x] = pixel[1];
+			source.channels.items[2].row(y)[x] = pixel[2];
+		}
+	}
+
+	const ref_value_prop: i16 = @intCast(context_predict.kNumNonrefProperties + 1);
+	const global_tree = [_]@import("../modular/dec_ma.zig").PropertyDecisionNode{
+		@import("../modular/dec_ma.zig").PropertyDecisionNode.split(ref_value_prop, 127, 1, 2),
+		.{ .property = -1, .lchild = 1, .predictor = .zero, .multiplier = 1 },
+		.{ .property = -1, .lchild = 0, .predictor = .zero, .multiplier = 1 },
+	};
+	const context_map = [_]u8{ 0, 1 };
+	const uint_configs = [_]HybridUintConfig{
+		HybridUintConfig.initDefault(),
+		HybridUintConfig.initDefault(),
+	};
+	const group_rects = try buildGroupRects(allocator, frame_dim);
+	defer allocator.free(group_rects);
+	var bundle = try enc_encoding.buildGlobalTreeHistogramBundleRefsNoWP(
+		allocator,
+		&source,
+		group_rects,
+		&global_tree,
+		&context_map,
+		&uint_configs,
+		8,
+	);
+	defer bundle.deinit(allocator);
+
+	var hist_writer = BitWriter.init(allocator);
+	defer hist_writer.deinit();
+	try enc_ans.writeSimpleContextMapNormalizedHistograms(
+		&context_map,
+		bundle.normalized_counts.len,
+		bundle.normalized_counts,
+		bundle.uint_configs,
+		8,
+		&hist_writer,
+	);
+	try hist_writer.zeroPadToByte();
+
+	var code = dec_ans.ANSCode.init(allocator);
+	defer code.deinit();
+	var hist_br = BitReader.init(hist_writer.bytes());
+	const decoded_context_map = try dec_ans.decodeHistograms(allocator, &hist_br, context_map.len, &code);
+	defer allocator.free(decoded_context_map);
+	try hist_br.close();
+
+	const rect = frame_dim.groupRect(0);
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	_ = try enc_encoding.writeGlobalTreeGroupImageRectRefsNoWP(
+		allocator,
+		&source,
+		rect,
+		0,
+		&global_tree,
+		bundle.infos,
+		&context_map,
+		bundle.uint_configs,
+		&writer,
+	);
+	try writer.zeroPadToByte();
+
+	var image = try modular_image.Image.create(allocator, rect.xsize(), rect.ysize(), 8, 3);
+	defer image.deinit();
+	var opts = @import("../modular/options.zig").ModularOptions{
+		.max_chan_size = frame_dim.grp_dim,
+		.group_dim = frame_dim.grp_dim,
+	};
+	const stream_id = dec_frame.ModularStreamId.modularAC(0, 0).id(frame_dim);
+	var br = BitReader.init(writer.bytes());
+	try @import("../modular/encoding.zig").modularGenericDecompress(
+		&br,
+		&image,
+		stream_id,
+		&opts,
+		true,
+		global_tree[0..],
+		&code,
+		decoded_context_map,
+		allocator,
+	);
+	try br.close();
+
+	for (source.channels.items, image.channels.items) |want, got| {
+		for (0..rect.ysize()) |y| {
+			try testing.expectEqualSlices(
+				i32,
+				want.rowConst(rect.y0() + y)[rect.x0() .. rect.x0() + rect.xsize()],
+				got.rowConst(y),
+			);
+		}
 	}
 }
 
@@ -753,15 +1127,23 @@ test "writeCodestream round-trips a multi-group RGB codestream with weighted ref
 		.{ .property = -1, .lchild = 1, .predictor = .weighted, .multiplier = 1 },
 		.{ .property = -1, .lchild = 0, .predictor = .weighted, .multiplier = 1 },
 	};
+	var emitted_tree = try enc_ma.canonicalizeTree(allocator, &global_tree);
+	defer emitted_tree.deinit(allocator);
 	const context_map = [_]u8{ 0, 1 };
 	const uint_config = HybridUintConfig.initDefault();
 	const uint_configs = [_]HybridUintConfig{ uint_config, uint_config };
-	const alphabet_sizes = [_]u16{ 256, 256 };
-	const counts = try ans_common.createFlatHistogram(allocator, 256, ans_params.ans_tab_size);
-	defer allocator.free(counts);
-	const info = try enc_ans.buildANSEncSymbolInfoTable(allocator, counts, 8);
-	defer enc_ans.freeANSEncSymbolInfoTable(allocator, info);
-	const infos = [_][]const enc_ans.ANSEncSymbolInfo{ info, info };
+	const group_rects = try buildGroupRects(allocator, frame_dim);
+	defer allocator.free(group_rects);
+	var bundle = try enc_encoding.buildGlobalTreeHistogramBundleWPRefs(
+		allocator,
+		&source,
+		group_rects,
+		emitted_tree.items,
+		&context_map,
+		&uint_configs,
+		8,
+	);
+	defer bundle.deinit(allocator);
 
 	const section_writers = try allocator.alloc(BitWriter, num_sections);
 	defer allocator.free(section_writers);
@@ -773,13 +1155,13 @@ test "writeCodestream round-trips a multi-group RGB codestream with weighted ref
 	};
 
 	try section_writers[0].write(1, 1); // DequantMatrices all_default
-	try enc_encoding.writeGlobalTreeDcSectionWithFlatHistograms(
+	try enc_encoding.writeGlobalTreeDcSectionWithNormalizedHistograms(
 		allocator,
-		&global_tree,
+		emitted_tree.items,
 		&context_map,
-		2,
-		&alphabet_sizes,
-		&uint_configs,
+		bundle.normalized_counts.len,
+		bundle.normalized_counts,
+		bundle.uint_configs,
 		8,
 		&section_writers[0],
 	);
@@ -793,10 +1175,10 @@ test "writeCodestream round-trips a multi-group RGB codestream with weighted ref
 			&source,
 			frame_dim.groupRect(group_id),
 			group_id,
-			&global_tree,
-			&infos,
+			emitted_tree.items,
+			bundle.infos,
 			&context_map,
-			&uint_configs,
+			bundle.uint_configs,
 			&section_writers[section_id],
 		);
 		try section_writers[section_id].zeroPadToByte();
@@ -868,17 +1250,25 @@ test "writeCodestream round-trips a multi-group RGB codestream with tree-driven 
 		.{ .property = -1, .lchild = 1, .predictor = .gradient, .multiplier = 1 },
 		.{ .property = -1, .lchild = 0, .predictor = .zero, .multiplier = 1 },
 	};
+	var emitted_tree = try enc_ma.canonicalizeTree(allocator, &global_tree);
+	defer emitted_tree.deinit(allocator);
 	const context_map = [_]u8{ 0, 1 };
 	const uint_configs = [_]HybridUintConfig{
 		HybridUintConfig.initDefault(),
 		HybridUintConfig.initDefault(),
 	};
-	const alphabet_sizes = [_]u16{ 256, 256 };
-	const counts = try ans_common.createFlatHistogram(allocator, 256, ans_params.ans_tab_size);
-	defer allocator.free(counts);
-	const info = try enc_ans.buildANSEncSymbolInfoTable(allocator, counts, 8);
-	defer enc_ans.freeANSEncSymbolInfoTable(allocator, info);
-	const infos = [_][]const enc_ans.ANSEncSymbolInfo{ info, info };
+	const group_rects = try buildGroupRects(allocator, frame_dim);
+	defer allocator.free(group_rects);
+	var bundle = try enc_encoding.buildGlobalTreeHistogramBundleNoWP(
+		allocator,
+		&source,
+		group_rects,
+		emitted_tree.items,
+		&context_map,
+		&uint_configs,
+		8,
+	);
+	defer bundle.deinit(allocator);
 
 	const section_writers = try allocator.alloc(BitWriter, num_sections);
 	defer allocator.free(section_writers);
@@ -890,13 +1280,13 @@ test "writeCodestream round-trips a multi-group RGB codestream with tree-driven 
 	};
 
 	try section_writers[0].write(1, 1); // DequantMatrices all_default
-	try enc_encoding.writeGlobalTreeDcSectionWithFlatHistograms(
+	try enc_encoding.writeGlobalTreeDcSectionWithNormalizedHistograms(
 		allocator,
-		&global_tree,
+		emitted_tree.items,
 		&context_map,
-		2,
-		&alphabet_sizes,
-		&uint_configs,
+		bundle.normalized_counts.len,
+		bundle.normalized_counts,
+		bundle.uint_configs,
 		8,
 		&section_writers[0],
 	);
@@ -910,10 +1300,10 @@ test "writeCodestream round-trips a multi-group RGB codestream with tree-driven 
 			&source,
 			frame_dim.groupRect(group_id),
 			group_id,
-			&global_tree,
-			&infos,
+			emitted_tree.items,
+			bundle.infos,
 			&context_map,
-			&uint_configs,
+			bundle.uint_configs,
 			&section_writers[section_id],
 		);
 		try section_writers[section_id].zeroPadToByte();

@@ -542,14 +542,14 @@ pub const FrameDecoder = struct {
             if (entry.id <= ac_global_index) continue;
             if (entry.size == 0) continue;
 
-            const ac_idx = entry.id - ac_global_index - 1;
-            const group_id = ac_idx % self.frame_dim.num_groups;
-            const pass_id = ac_idx / self.frame_dim.num_groups;
-            const data_slice = try sectionData(data, header_byte_offset, layout.offsets[i], entry.size);
-            var section_br = BitReader.init(data_slice);
-            try self.modular_decoder.decodeGroup(&section_br, group_id, pass_id, false);
-            try section_br.close();
-        }
+			const ac_idx = entry.id - ac_global_index - 1;
+			const group_id = ac_idx % self.frame_dim.num_groups;
+			const pass_id = ac_idx / self.frame_dim.num_groups;
+			const data_slice = try sectionData(data, header_byte_offset, layout.offsets[i], entry.size);
+			var section_br = BitReader.init(data_slice);
+			try self.modular_decoder.decodeGroup(&section_br, group_id, pass_id, false);
+			try section_br.close();
+		}
 
         // Finalize: undo transforms on full image
         try self.modular_decoder.finalizeDecoding();
