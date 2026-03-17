@@ -2421,7 +2421,7 @@ test "writeGlobalTreeGroupImageRectRefsNoWP round-trips with exact histogram met
 	var hist_writer = BitWriter.init(allocator);
 	defer hist_writer.deinit();
 	try enc_ans.writeSimpleContextMapNormalizedHistograms(
-		&context_map,
+		bundle.context_map,
 		bundle.normalized_counts.len,
 		bundle.normalized_counts,
 		bundle.uint_configs,
@@ -2435,7 +2435,7 @@ test "writeGlobalTreeGroupImageRectRefsNoWP round-trips with exact histogram met
 	var hist_br = @import("../base/bit_reader.zig").BitReader.init(hist_writer.bytes());
 	const decoded_context_map = try dec_ans.decodeHistograms(allocator, &hist_br, context_map.len, &code);
 	defer allocator.free(decoded_context_map);
-	try testing.expectEqualSlices(u8, &context_map, decoded_context_map);
+	try testing.expectEqualSlices(u8, bundle.context_map, decoded_context_map);
 	try hist_br.close();
 
 	var writer = BitWriter.init(allocator);
@@ -2447,7 +2447,7 @@ test "writeGlobalTreeGroupImageRectRefsNoWP round-trips with exact histogram met
 		0,
 		&global_tree,
 		bundle.infos,
-		&context_map,
+		bundle.context_map,
 		bundle.uint_configs,
 		&writer,
 	);
@@ -2521,7 +2521,7 @@ test "buildGlobalTreeHistogramBundleRefsNoWP reuses one exact bundle across mult
 	var hist_writer = BitWriter.init(allocator);
 	defer hist_writer.deinit();
 	try enc_ans.writeSimpleContextMapNormalizedHistograms(
-		&context_map,
+		bundle.context_map,
 		bundle.normalized_counts.len,
 		bundle.normalized_counts,
 		bundle.uint_configs,
@@ -2535,7 +2535,7 @@ test "buildGlobalTreeHistogramBundleRefsNoWP reuses one exact bundle across mult
 	var hist_br = @import("../base/bit_reader.zig").BitReader.init(hist_writer.bytes());
 	const decoded_context_map = try dec_ans.decodeHistograms(allocator, &hist_br, context_map.len, &code);
 	defer allocator.free(decoded_context_map);
-	try testing.expectEqualSlices(u8, &context_map, decoded_context_map);
+	try testing.expectEqualSlices(u8, bundle.context_map, decoded_context_map);
 	try hist_br.close();
 
 	for (group_rects) |group_rect| {
@@ -2548,7 +2548,7 @@ test "buildGlobalTreeHistogramBundleRefsNoWP reuses one exact bundle across mult
 			group_rect.group_id,
 			&global_tree,
 			bundle.infos,
-			&context_map,
+			bundle.context_map,
 			bundle.uint_configs,
 			&writer,
 		);
@@ -2734,7 +2734,7 @@ test "writeGlobalTreeGroupImageRectWPRefs round-trips with exact histogram metad
 	var hist_writer = BitWriter.init(allocator);
 	defer hist_writer.deinit();
 	try enc_ans.writeSimpleContextMapNormalizedHistograms(
-		&context_map,
+		bundle.context_map,
 		bundle.normalized_counts.len,
 		bundle.normalized_counts,
 		bundle.uint_configs,
@@ -2748,7 +2748,7 @@ test "writeGlobalTreeGroupImageRectWPRefs round-trips with exact histogram metad
 	var hist_br = @import("../base/bit_reader.zig").BitReader.init(hist_writer.bytes());
 	const decoded_context_map = try dec_ans.decodeHistograms(allocator, &hist_br, context_map.len, &code);
 	defer allocator.free(decoded_context_map);
-	try testing.expectEqualSlices(u8, &context_map, decoded_context_map);
+	try testing.expectEqualSlices(u8, bundle.context_map, decoded_context_map);
 	try hist_br.close();
 
 	var writer = BitWriter.init(allocator);
@@ -2760,7 +2760,7 @@ test "writeGlobalTreeGroupImageRectWPRefs round-trips with exact histogram metad
 		0,
 		&global_tree,
 		bundle.infos,
-		&context_map,
+		bundle.context_map,
 		bundle.uint_configs,
 		&writer,
 	);

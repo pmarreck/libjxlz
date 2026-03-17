@@ -354,7 +354,7 @@ test "writeCodestream round-trips a multi-group RGB codestream with reference-pr
 	try enc_encoding.writeGlobalTreeDcSectionWithNormalizedHistograms(
 		allocator,
 		emitted_tree.items,
-		&context_map,
+		bundle.context_map,
 		bundle.normalized_counts.len,
 		bundle.normalized_counts,
 		bundle.uint_configs,
@@ -373,7 +373,7 @@ test "writeCodestream round-trips a multi-group RGB codestream with reference-pr
 			group_id,
 			emitted_tree.items,
 			bundle.infos,
-			&context_map,
+			bundle.context_map,
 			bundle.uint_configs,
 			&section_writers[section_id],
 		);
@@ -472,7 +472,7 @@ test "exact reference-property global sections decode directly through FrameDeco
 	try enc_encoding.writeGlobalTreeDcSectionWithNormalizedHistograms(
 		allocator,
 		emitted_tree.items,
-		&context_map,
+		bundle.context_map,
 		bundle.normalized_counts.len,
 		bundle.normalized_counts,
 		bundle.uint_configs,
@@ -490,7 +490,7 @@ test "exact reference-property global sections decode directly through FrameDeco
 		0,
 		emitted_tree.items,
 		bundle.infos,
-		&context_map,
+		bundle.context_map,
 		bundle.uint_configs,
 		&group_writer,
 	);
@@ -507,7 +507,7 @@ test "exact reference-property global sections decode directly through FrameDeco
 	try dc_br.close();
 	try testing.expect(frame_dec.modular_decoder.has_tree);
 	try testing.expectEqualSlices(@TypeOf(global_tree[0]), emitted_tree.items, frame_dec.modular_decoder.tree.items);
-	try testing.expectEqualSlices(u8, &context_map, frame_dec.modular_decoder.context_map);
+	try testing.expectEqualSlices(u8, bundle.context_map, frame_dec.modular_decoder.context_map);
 	try testing.expectEqual(@as(u32, 8), frame_dec.modular_decoder.code.log_alpha_size);
 	try testing.expectEqualSlices(HybridUintConfig, bundle.uint_configs, frame_dec.modular_decoder.code.uint_config);
 	try testing.expectEqual(false, frame_dec.modular_decoder.global_header.use_global_tree);
@@ -595,7 +595,7 @@ test "large exact reference-property bundle round-trips a direct group tile" {
 	var hist_writer = BitWriter.init(allocator);
 	defer hist_writer.deinit();
 	try enc_ans.writeSimpleContextMapNormalizedHistograms(
-		&context_map,
+		bundle.context_map,
 		bundle.normalized_counts.len,
 		bundle.normalized_counts,
 		bundle.uint_configs,
@@ -621,7 +621,7 @@ test "large exact reference-property bundle round-trips a direct group tile" {
 		0,
 		&global_tree,
 		bundle.infos,
-		&context_map,
+		bundle.context_map,
 		bundle.uint_configs,
 		&writer,
 	);
@@ -706,7 +706,7 @@ test "large exact reference-property bundle round-trips through modularGenericDe
 	var hist_writer = BitWriter.init(allocator);
 	defer hist_writer.deinit();
 	try enc_ans.writeSimpleContextMapNormalizedHistograms(
-		&context_map,
+		bundle.context_map,
 		bundle.normalized_counts.len,
 		bundle.normalized_counts,
 		bundle.uint_configs,
@@ -732,7 +732,7 @@ test "large exact reference-property bundle round-trips through modularGenericDe
 		0,
 		&global_tree,
 		bundle.infos,
-		&context_map,
+		bundle.context_map,
 		bundle.uint_configs,
 		&writer,
 	);
@@ -1158,7 +1158,7 @@ test "writeCodestream round-trips a multi-group RGB codestream with weighted ref
 	try enc_encoding.writeGlobalTreeDcSectionWithNormalizedHistograms(
 		allocator,
 		emitted_tree.items,
-		&context_map,
+		bundle.context_map,
 		bundle.normalized_counts.len,
 		bundle.normalized_counts,
 		bundle.uint_configs,
@@ -1177,7 +1177,7 @@ test "writeCodestream round-trips a multi-group RGB codestream with weighted ref
 			group_id,
 			emitted_tree.items,
 			bundle.infos,
-			&context_map,
+			bundle.context_map,
 			bundle.uint_configs,
 			&section_writers[section_id],
 		);
@@ -1283,7 +1283,7 @@ test "writeCodestream round-trips a multi-group RGB codestream with tree-driven 
 	try enc_encoding.writeGlobalTreeDcSectionWithNormalizedHistograms(
 		allocator,
 		emitted_tree.items,
-		&context_map,
+		bundle.context_map,
 		bundle.normalized_counts.len,
 		bundle.normalized_counts,
 		bundle.uint_configs,
@@ -1302,7 +1302,7 @@ test "writeCodestream round-trips a multi-group RGB codestream with tree-driven 
 			group_id,
 			emitted_tree.items,
 			bundle.infos,
-			&context_map,
+			bundle.context_map,
 			bundle.uint_configs,
 			&section_writers[section_id],
 		);

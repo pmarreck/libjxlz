@@ -660,11 +660,13 @@ pub fn writeSimpleContextMapNormalizedHistograms(
 }
 
 pub const ContextualHistogramBundle = struct {
+	context_map: []u8,
 	normalized_counts: [][]i32,
 	infos: [][]ANSEncSymbolInfo,
 	uint_configs: []HybridUintConfig,
 
 	pub fn deinit(self: *ContextualHistogramBundle, allocator: std.mem.Allocator) void {
+		allocator.free(self.context_map);
 		for (self.normalized_counts) |counts| {
 			allocator.free(counts);
 		}
@@ -677,8 +679,14 @@ pub const ContextualHistogramBundle = struct {
 	}
 };
 
-/// Builds one exact histogram per histogram id for an already-chosen simple
-/// context map, so callers can replace flat placeholder tables with real token frequencies.
+fn hybridUintConfigEql(a: HybridUintConfig, b: HybridUintConfig) bool {
+	return a.split_exponent == b.split_exponent and
+		a.msb_in_token == b.msb_in_token and
+		a.lsb_in_token == b.lsb_in_token;
+}
+
+/// Builds exact histograms for an already-chosen context map, then coalesces
+/// byte-identical ANS tables so multiple contexts can share one emitted histogram.
 pub fn buildContextualHistogramBundle(
 	allocator: std.mem.Allocator,
 	tokens: []const Token,
@@ -726,40 +734,96 @@ pub fn buildContextualHistogramBundle(
 		raw_counts[hist_idx][encoded.token] += 1;
 	}
 
-	var bundle = ContextualHistogramBundle{
-		.normalized_counts = try allocator.alloc([]i32, num_histograms),
-		.infos = try allocator.alloc([]ANSEncSymbolInfo, num_histograms),
-		.uint_configs = try allocator.dupe(HybridUintConfig, uint_configs),
-	};
-	errdefer {
-		for (bundle.normalized_counts[0..num_histograms]) |counts| {
+	const normalized_per_hist = try allocator.alloc([]i32, num_histograms);
+	defer allocator.free(normalized_per_hist);
+	const infos_per_hist = try allocator.alloc([]ANSEncSymbolInfo, num_histograms);
+	defer allocator.free(infos_per_hist);
+	for (0..num_histograms) |hist_idx| {
+		normalized_per_hist[hist_idx] = &.{};
+		infos_per_hist[hist_idx] = &.{};
+	}
+	defer {
+		for (normalized_per_hist) |counts| {
 			if (counts.len != 0) allocator.free(counts);
 		}
-		allocator.free(bundle.normalized_counts);
-		for (bundle.infos[0..num_histograms]) |info| {
+		for (infos_per_hist) |info| {
 			if (info.len != 0) freeANSEncSymbolInfoTable(allocator, info);
 		}
-		allocator.free(bundle.infos);
-		allocator.free(bundle.uint_configs);
-	}
-	for (0..num_histograms) |hist_idx| {
-		bundle.normalized_counts[hist_idx] = &.{};
-		bundle.infos[hist_idx] = &.{};
 	}
 
 	for (0..num_histograms) |hist_idx| {
 		if (!used_hist[hist_idx]) {
 			const degenerate = try allocator.alloc(i32, 1);
 			degenerate[0] = @intCast(params.ans_tab_size);
-			bundle.normalized_counts[hist_idx] = degenerate;
+			normalized_per_hist[hist_idx] = degenerate;
 		} else {
-			bundle.normalized_counts[hist_idx] = try normalizeHistogramCounts(allocator, raw_counts[hist_idx]);
+			normalized_per_hist[hist_idx] = try normalizeHistogramCounts(allocator, raw_counts[hist_idx]);
 		}
-		bundle.infos[hist_idx] = try buildANSEncSymbolInfoTable(
+		infos_per_hist[hist_idx] = try buildANSEncSymbolInfoTable(
 			allocator,
-			bundle.normalized_counts[hist_idx],
+			normalized_per_hist[hist_idx],
 			log_alpha_size,
 		);
+	}
+
+	const histogram_to_cluster = try allocator.alloc(usize, num_histograms);
+	defer allocator.free(histogram_to_cluster);
+	const cluster_representative = try allocator.alloc(usize, num_histograms);
+	defer allocator.free(cluster_representative);
+
+	var num_clusters: usize = 0;
+	for (0..num_histograms) |hist_idx| {
+		var found_cluster: ?usize = null;
+		for (0..num_clusters) |cluster_idx| {
+			const rep_idx = cluster_representative[cluster_idx];
+			if (!hybridUintConfigEql(uint_configs[rep_idx], uint_configs[hist_idx])) continue;
+			if (!std.mem.eql(i32, normalized_per_hist[rep_idx], normalized_per_hist[hist_idx])) continue;
+			found_cluster = cluster_idx;
+			break;
+		}
+		if (found_cluster) |cluster_idx| {
+			histogram_to_cluster[hist_idx] = cluster_idx;
+		} else {
+			histogram_to_cluster[hist_idx] = num_clusters;
+			cluster_representative[num_clusters] = hist_idx;
+			num_clusters += 1;
+		}
+	}
+	if (num_clusters == 0 or num_clusters > std.math.maxInt(u8) + 1) return error.GenericError;
+
+	var bundle = ContextualHistogramBundle{
+		.context_map = try allocator.alloc(u8, context_map.len),
+		.normalized_counts = try allocator.alloc([]i32, num_clusters),
+		.infos = try allocator.alloc([]ANSEncSymbolInfo, num_clusters),
+		.uint_configs = try allocator.alloc(HybridUintConfig, num_clusters),
+	};
+	errdefer {
+		allocator.free(bundle.context_map);
+		for (bundle.normalized_counts[0..num_clusters]) |counts| {
+			if (counts.len != 0) allocator.free(counts);
+		}
+		allocator.free(bundle.normalized_counts);
+		for (bundle.infos[0..num_clusters]) |info| {
+			if (info.len != 0) freeANSEncSymbolInfoTable(allocator, info);
+		}
+		allocator.free(bundle.infos);
+		allocator.free(bundle.uint_configs);
+	}
+	for (0..num_clusters) |cluster_idx| {
+		bundle.normalized_counts[cluster_idx] = &.{};
+		bundle.infos[cluster_idx] = &.{};
+	}
+
+	for (0..num_clusters) |cluster_idx| {
+		const rep_idx = cluster_representative[cluster_idx];
+		bundle.normalized_counts[cluster_idx] = normalized_per_hist[rep_idx];
+		normalized_per_hist[rep_idx] = &.{};
+		bundle.infos[cluster_idx] = infos_per_hist[rep_idx];
+		infos_per_hist[rep_idx] = &.{};
+		bundle.uint_configs[cluster_idx] = uint_configs[rep_idx];
+	}
+	for (context_map, 0..) |hist_idx, ctx_idx| {
+		bundle.context_map[ctx_idx] = @intCast(histogram_to_cluster[hist_idx]);
 	}
 
 	return bundle;
@@ -1252,7 +1316,7 @@ test "buildContextualHistogramBundle writes exact non-flat histograms for a toke
 	var writer = BitWriter.init(allocator);
 	defer writer.deinit();
 	try writeSimpleContextMapNormalizedHistograms(
-		&ctx_map,
+		bundle.context_map,
 		bundle.normalized_counts.len,
 		bundle.normalized_counts,
 		bundle.uint_configs,
@@ -1262,7 +1326,7 @@ test "buildContextualHistogramBundle writes exact non-flat histograms for a toke
 	try testing.expectEqual(@as(usize, 0), try writeContextualHistogramTokens(
 		&tokens,
 		bundle.infos,
-		&ctx_map,
+		bundle.context_map,
 		bundle.uint_configs,
 		&writer,
 	));
@@ -1273,7 +1337,67 @@ test "buildContextualHistogramBundle writes exact non-flat histograms for a toke
 	defer code.deinit();
 	const decoded_ctx_map = try dec_ans.decodeHistograms(allocator, &br, ctx_map.len, &code);
 	defer allocator.free(decoded_ctx_map);
-	try testing.expectEqualSlices(u8, &ctx_map, decoded_ctx_map);
+	try testing.expectEqualSlices(u8, bundle.context_map, decoded_ctx_map);
+
+	var reader = try dec_ans.ANSSymbolReader.create(&code, &br, 0, allocator);
+	defer reader.deinit();
+	for (tokens) |token| {
+		try testing.expectEqual(@as(usize, token.value), reader.readHybridUint(token.context, &br, decoded_ctx_map));
+	}
+	try testing.expect(reader.checkANSFinalState());
+	try br.jumpToByteBoundary();
+	try br.close();
+}
+
+test "buildContextualHistogramBundle clusters identical histograms" {
+	const allocator = testing.allocator;
+	const ctx_map = [_]u8{ 0, 1 };
+	const uint_configs = [_]HybridUintConfig{
+		HybridUintConfig.init(5, 0, 0),
+		HybridUintConfig.init(5, 0, 0),
+	};
+	const tokens = [_]Token{
+		Token.init(0, 3),
+		Token.init(0, 3),
+		Token.init(0, 7),
+		Token.init(1, 3),
+		Token.init(1, 3),
+		Token.init(1, 7),
+	};
+
+	var bundle = try buildContextualHistogramBundle(allocator, &tokens, &ctx_map, &uint_configs, 5);
+	defer bundle.deinit(allocator);
+
+	try testing.expectEqual(@as(usize, 1), bundle.normalized_counts.len);
+	try testing.expectEqualSlices(u8, &[_]u8{ 0, 0 }, bundle.context_map);
+	try testing.expectEqual(@as(usize, 1), bundle.infos.len);
+	try testing.expectEqual(@as(usize, 1), bundle.uint_configs.len);
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writeSimpleContextMapNormalizedHistograms(
+		bundle.context_map,
+		bundle.normalized_counts.len,
+		bundle.normalized_counts,
+		bundle.uint_configs,
+		5,
+		&writer,
+	);
+	try testing.expectEqual(@as(usize, 0), try writeContextualHistogramTokens(
+		&tokens,
+		bundle.infos,
+		bundle.context_map,
+		bundle.uint_configs,
+		&writer,
+	));
+	try writer.zeroPadToByte();
+
+	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+	var code = dec_ans.ANSCode.init(allocator);
+	defer code.deinit();
+	const decoded_ctx_map = try dec_ans.decodeHistograms(allocator, &br, ctx_map.len, &code);
+	defer allocator.free(decoded_ctx_map);
+	try testing.expectEqualSlices(u8, &[_]u8{ 0, 0 }, decoded_ctx_map);
 
 	var reader = try dec_ans.ANSSymbolReader.create(&code, &br, 0, allocator);
 	defer reader.deinit();
