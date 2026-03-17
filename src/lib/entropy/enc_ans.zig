@@ -35,6 +35,90 @@ pub const Token = struct {
 	}
 };
 
+pub const Histogram = struct {
+	counts: std.ArrayList(i32) = .{},
+	total_count: usize = 0,
+	entropy: f64 = 0,
+
+	/// Grows symbol counts in the same rounded, sparse-friendly way as upstream's
+	/// encoder histogram builder so later clustering can share the same shape/cost basis.
+	pub fn add(self: *Histogram, allocator: std.mem.Allocator, symbol: usize) !void {
+		if (self.counts.items.len <= symbol) {
+			try self.ensureCapacity(allocator, symbol + 1);
+		}
+		self.counts.items[symbol] += 1;
+		self.total_count += 1;
+	}
+
+	pub fn ensureCapacity(self: *Histogram, allocator: std.mem.Allocator, length: usize) !void {
+		const rounded = std.mem.alignForward(usize, length, 8);
+		if (rounded <= self.counts.items.len) return;
+		const old_len = self.counts.items.len;
+		try self.counts.resize(allocator, rounded);
+		@memset(self.counts.items[old_len..], 0);
+	}
+
+	pub fn addHistogram(self: *Histogram, allocator: std.mem.Allocator, other: *const Histogram) !void {
+		if (other.counts.items.len > self.counts.items.len) {
+			try self.ensureCapacity(allocator, other.counts.items.len);
+		}
+		for (other.counts.items, 0..) |count, i| {
+			self.counts.items[i] += count;
+		}
+		self.total_count += other.total_count;
+	}
+
+	pub fn alphabetSize(self: *const Histogram) usize {
+		var i = self.counts.items.len;
+		while (i > 0) {
+			i -= 1;
+			if (self.counts.items[i] != 0) return i + 1;
+		}
+		return 0;
+	}
+
+	pub fn maxSymbol(self: *const Histogram) usize {
+		if (self.total_count == 0) return 0;
+		var i = self.counts.items.len;
+		while (i > 1) {
+			i -= 1;
+			if (self.counts.items[i] != 0) return i;
+		}
+		return 0;
+	}
+
+	/// Computes the raw data entropy in bits for this histogram,
+	/// matching the `count * -log2(p)` basis upstream uses for clustering.
+	pub fn shannonEntropy(self: *Histogram) f64 {
+		self.entropy = 0;
+		if (self.total_count == 0) return 0;
+
+		const total_f: f64 = @floatFromInt(self.total_count);
+		for (self.counts.items) |count| {
+			if (count == 0) continue;
+			const count_f: f64 = @floatFromInt(count);
+			self.entropy += count_f * std.math.log2(total_f / count_f);
+		}
+		return self.entropy;
+	}
+
+	/// Estimates how many extra data bits result from coding `a` and `b`
+	/// with one merged histogram instead of two separate ones.
+	pub fn distance(a: *Histogram, b: *Histogram, allocator: std.mem.Allocator) !f64 {
+		if (a.total_count == 0 or b.total_count == 0) return 0;
+
+		var merged = Histogram{};
+		defer merged.deinit(allocator);
+		try merged.addHistogram(allocator, a);
+		try merged.addHistogram(allocator, b);
+		return merged.shannonEntropy() - a.shannonEntropy() - b.shannonEntropy();
+	}
+
+	pub fn deinit(self: *Histogram, allocator: std.mem.Allocator) void {
+		self.counts.deinit(allocator);
+	}
+};
+
 pub const ANSEncSymbolInfo = struct {
 	freq: u16 = 0,
 	reverse_map: []u16 = &.{},
@@ -1407,6 +1491,70 @@ test "buildContextualHistogramBundle clusters identical histograms" {
 	try testing.expect(reader.checkANSFinalState());
 	try br.jumpToByteBoundary();
 	try br.close();
+}
+
+test "Histogram tracks alphabet and max symbol with rounded growth" {
+	const allocator = testing.allocator;
+	var hist = Histogram{};
+	defer hist.deinit(allocator);
+
+	try hist.add(allocator, 0);
+	try hist.add(allocator, 7);
+	try hist.add(allocator, 3);
+
+	try testing.expectEqual(@as(usize, 8), hist.counts.items.len);
+	try testing.expectEqual(@as(usize, 8), hist.alphabetSize());
+	try testing.expectEqual(@as(usize, 7), hist.maxSymbol());
+	try testing.expectEqual(@as(usize, 3), hist.total_count);
+}
+
+test "Histogram shannonEntropy matches simple exact cases" {
+	const allocator = testing.allocator;
+	var hist = Histogram{};
+	defer hist.deinit(allocator);
+
+	try testing.expectEqual(@as(f64, 0), hist.shannonEntropy());
+
+	try hist.add(allocator, 0);
+	try hist.add(allocator, 0);
+	try testing.expectEqual(@as(f64, 0), hist.shannonEntropy());
+
+	try hist.add(allocator, 1);
+	try hist.add(allocator, 1);
+	try testing.expectApproxEqAbs(@as(f64, 4), hist.shannonEntropy(), 1e-9);
+}
+
+test "Histogram distance is zero for identical distributions and positive for disjoint ones" {
+	const allocator = testing.allocator;
+	var a = Histogram{};
+	defer a.deinit(allocator);
+	var b = Histogram{};
+	defer b.deinit(allocator);
+	var c = Histogram{};
+	defer c.deinit(allocator);
+	var d = Histogram{};
+	defer d.deinit(allocator);
+
+	try a.add(allocator, 0);
+	try a.add(allocator, 0);
+	try a.add(allocator, 1);
+	try a.add(allocator, 1);
+	try b.add(allocator, 0);
+	try b.add(allocator, 0);
+	try b.add(allocator, 1);
+	try b.add(allocator, 1);
+
+	try c.add(allocator, 0);
+	try c.add(allocator, 0);
+	try c.add(allocator, 0);
+	try c.add(allocator, 0);
+	try d.add(allocator, 1);
+	try d.add(allocator, 1);
+	try d.add(allocator, 1);
+	try d.add(allocator, 1);
+
+	try testing.expectApproxEqAbs(@as(f64, 0), try Histogram.distance(&a, &b, allocator), 1e-9);
+	try testing.expectApproxEqAbs(@as(f64, 8), try Histogram.distance(&c, &d, allocator), 1e-9);
 }
 
 test "SizeWriter matches BitWriter bit count for varlen integers" {
