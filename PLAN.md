@@ -136,6 +136,7 @@
 - [x] Coalesce identical exact histograms after normalization, carry the clustered `bundle.context_map` through exact-histogram DC-global/group emission, and keep direct-section plus full-suite coverage green so the encoder no longer assumes “one logical context == one emitted histogram” — 2026-03-16 ~9:35 PM EDT
 - [x] Add an upstream-shaped encoder histogram cost foundation (`Histogram`, Shannon entropy, merge distance) with focused exact-value tests, so future clustering decisions can be based on measured data-cost deltas instead of ad hoc heuristics — 2026-03-16 ~9:50 PM EDT
 - [x] Port the first real `EncodeContextMap` choice layer: add encoder-side move-to-front transform plus exact bit-cost selection between simple direct entries, raw ANS, and MTF+ANS for context maps, with focused “must stay simple” and “must choose MTF” tests and full-suite verification — 2026-03-16 ~10:05 PM EDT
+- [x] Wire the new context-map chooser into the DC-global flat/exact histogram writers, add a 9-histogram normalized roundtrip through `decodeHistograms`, and re-run `./bm` to confirm the current narrow encoder path stays in-range — 2026-03-16 ~10:25 PM EDT
 - [ ] Port the next upstream histogram-planning slice beyond exact-duplicate coalescing: cost-based histogram merging and less-naive context-map encoding (`BuildAndEncodeHistograms` / `EncodeContextMap`)
 - [ ] Fast lossless encoder
 - [ ] C FFI encode API

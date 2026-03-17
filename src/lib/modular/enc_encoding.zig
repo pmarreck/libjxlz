@@ -1025,7 +1025,7 @@ pub fn writeGlobalTreeDcSectionWithFlatHistograms(
 
 	try writer.write(1, 1); // has_tree = true
 	try enc_ma.writeTree(allocator, tree, writer);
-	try enc_ans.writeSimpleContextMapFlatHistograms(context_map, num_histograms, alphabet_sizes, uint_configs, log_alpha_size, writer);
+	try enc_ans.writeContextMapFlatHistograms(allocator, context_map, num_histograms, alphabet_sizes, uint_configs, log_alpha_size, writer);
 	try writeEmptyModularGroup(writer);
 }
 
@@ -1046,7 +1046,7 @@ pub fn writeGlobalTreeDcSectionWithNormalizedHistograms(
 
 	try writer.write(1, 1); // has_tree = true
 	try enc_ma.writeTree(allocator, tree, writer);
-	try enc_ans.writeSimpleContextMapNormalizedHistograms(context_map, num_histograms, normalized_counts, uint_configs, log_alpha_size, writer);
+	try enc_ans.writeContextMapNormalizedHistograms(allocator, context_map, num_histograms, normalized_counts, uint_configs, log_alpha_size, writer);
 	try writeEmptyModularGroup(writer);
 }
 

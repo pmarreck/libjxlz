@@ -499,6 +499,35 @@ pub fn writeSimpleContextMapFlatHistograms(
 	}
 }
 
+/// Emits a context map using the best currently-supported encoding choice
+/// (simple direct, raw ANS, or MTF+ANS), then one flat histogram per emitted histogram id.
+pub fn writeContextMapFlatHistograms(
+	allocator: std.mem.Allocator,
+	context_map: []const u8,
+	num_histograms: usize,
+	alphabet_sizes: []const u16,
+	uint_configs: []const HybridUintConfig,
+	log_alpha_size: u5,
+	writer: *BitWriter,
+) !void {
+	std.debug.assert(context_map.len > 0);
+	std.debug.assert(num_histograms > 0);
+	std.debug.assert(alphabet_sizes.len == num_histograms);
+	std.debug.assert(uint_configs.len == num_histograms);
+
+	try writer.write(1, 0); // LZ77 disabled
+	try enc_context_map.writeContextMap(allocator, context_map, num_histograms, writer);
+	try writer.write(1, 0); // use_prefix_code = false (ANS mode)
+	try writer.write(2, log_alpha_size - 5);
+	try encodeUintConfigs(uint_configs, writer, log_alpha_size);
+
+	for (alphabet_sizes) |alphabet_size| {
+		try writer.write(1, 0); // histogram simple_code = false
+		try writer.write(1, 1); // is_flat = true
+		try storeVarLenUint8(@intCast(alphabet_size - 1), writer);
+	}
+}
+
 const kMaxNumSymbolsForSmallCode = 2;
 const kBitWidthLengths = [_]u8{
 	5, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 6, 7, 7,
@@ -734,6 +763,33 @@ pub fn writeSimpleContextMapNormalizedHistograms(
 
 	try writer.write(1, 0); // LZ77 disabled
 	try enc_context_map.writeSimpleContextMap(context_map, num_histograms, writer);
+	try writer.write(1, 0); // use_prefix_code = false (ANS mode)
+	try writer.write(2, log_alpha_size - 5);
+	try encodeUintConfigs(uint_configs, writer, log_alpha_size);
+
+	for (normalized_counts) |counts| {
+		try writeNormalizedHistogramBody(counts, writer);
+	}
+}
+
+/// Emits a context map using the best currently-supported encoding choice
+/// (simple direct, raw ANS, or MTF+ANS), then one exact histogram per emitted histogram id.
+pub fn writeContextMapNormalizedHistograms(
+	allocator: std.mem.Allocator,
+	context_map: []const u8,
+	num_histograms: usize,
+	normalized_counts: []const []const i32,
+	uint_configs: []const HybridUintConfig,
+	log_alpha_size: u5,
+	writer: *BitWriter,
+) !void {
+	std.debug.assert(context_map.len > 0);
+	std.debug.assert(num_histograms > 0);
+	std.debug.assert(normalized_counts.len == num_histograms);
+	std.debug.assert(uint_configs.len == num_histograms);
+
+	try writer.write(1, 0); // LZ77 disabled
+	try enc_context_map.writeContextMap(allocator, context_map, num_histograms, writer);
 	try writer.write(1, 0); // use_prefix_code = false (ANS mode)
 	try writer.write(2, log_alpha_size - 5);
 	try encodeUintConfigs(uint_configs, writer, log_alpha_size);
@@ -1316,6 +1372,60 @@ test "writeSimpleContextMapNormalizedHistograms round-trips exact non-flat conte
 			try testing.expectEqual(@as(usize, @intCast(want)), recovered[i]);
 		}
 	}
+	try br.jumpToByteBoundary();
+	try br.close();
+}
+
+test "writeContextMapNormalizedHistograms round-trips a non-simple 9-histogram context map" {
+	const allocator = testing.allocator;
+	const want_ctx_map = [_]u8{
+		0, 1, 2, 3, 4, 5, 6, 7, 8,
+		8, 8, 8, 8, 8, 8, 8, 8,
+		8, 8, 8, 8, 8, 8, 8, 8,
+	};
+	const want_cfgs = [_]HybridUintConfig{HybridUintConfig.init(5, 0, 0)} ** 9;
+	const raw_histograms = [_][6]u32{
+		.{ 50, 3, 1, 0, 0, 0 },
+		.{ 40, 8, 2, 0, 0, 0 },
+		.{ 32, 9, 1, 1, 0, 0 },
+		.{ 31, 10, 2, 1, 0, 0 },
+		.{ 28, 11, 3, 1, 0, 0 },
+		.{ 25, 12, 4, 1, 0, 0 },
+		.{ 23, 12, 5, 2, 0, 0 },
+		.{ 20, 13, 6, 2, 1, 0 },
+		.{ 18, 14, 7, 3, 1, 0 },
+	};
+
+	var want_counts = try allocator.alloc([]i32, raw_histograms.len);
+	defer {
+		for (want_counts) |counts| allocator.free(counts);
+		allocator.free(want_counts);
+	}
+	for (raw_histograms, 0..) |raw, i| {
+		want_counts[i] = try normalizeHistogramCounts(allocator, &raw);
+	}
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writeContextMapNormalizedHistograms(
+		allocator,
+		&want_ctx_map,
+		want_counts.len,
+		want_counts,
+		&want_cfgs,
+		5,
+		&writer,
+	);
+	try writer.zeroPadToByte();
+
+	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+	var code = dec_ans.ANSCode.init(allocator);
+	defer code.deinit();
+	const context_map = try dec_ans.decodeHistograms(allocator, &br, want_ctx_map.len, &code);
+	defer allocator.free(context_map);
+
+	try testing.expectEqual(@as(usize, 9), code.uint_config.len);
+	try testing.expectEqualSlices(u8, &want_ctx_map, context_map);
 	try br.jumpToByteBoundary();
 	try br.close();
 }
