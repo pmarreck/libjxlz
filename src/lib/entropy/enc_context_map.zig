@@ -251,7 +251,7 @@ test "writeContextMap chooses simple form when direct entries are cheaper" {
 	try br.close();
 }
 
-test "writeContextMap chooses MTF form for repetitive larger maps" {
+test "writeContextMap chooses non-simple form for repetitive larger maps" {
 	const allocator = testing.allocator;
 	const original = [_]u8{
 		0, 1, 2, 3, 4, 5, 6, 7, 8,
@@ -262,6 +262,34 @@ test "writeContextMap chooses MTF form for repetitive larger maps" {
 	var writer = BitWriter.init(allocator);
 	defer writer.deinit();
 	try writeContextMap(allocator, &original, 9, &writer);
+	try writer.zeroPadToByte();
+
+	var br = BitReader.init(writer.bytes());
+	try testing.expect(br.readBits(1) == 0);
+
+	var map = [_]u8{0} ** original.len;
+	var num_htrees: usize = 0;
+	br = BitReader.init(writer.bytes());
+	try dec_context_map.decodeContextMapAlloc(&map, &num_htrees, &br, allocator);
+	try testing.expectEqual(@as(usize, 9), num_htrees);
+	try testing.expectEqualSlices(u8, &original, &map);
+	try br.jumpToByteBoundary();
+	try br.close();
+}
+
+test "writeNonSimpleContextMapSymbols round-trips explicit MTF coding" {
+	const allocator = testing.allocator;
+	const original = [_]u8{
+		0, 1, 2, 3, 4, 5, 6, 7, 8,
+		8, 8, 8, 8, 8, 8, 8, 8,
+		8, 8, 8, 8, 8, 8, 8, 8,
+	};
+	const mtf_symbols = try moveToFrontTransform(allocator, &original);
+	defer allocator.free(mtf_symbols);
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writeNonSimpleContextMapSymbols(allocator, mtf_symbols, true, &writer);
 	try writer.zeroPadToByte();
 
 	var br = BitReader.init(writer.bytes());

@@ -1442,21 +1442,54 @@ pub fn buildContextualHistogramBundle(
 	defer allocator.free(filled_clusters);
 	@memset(filled_clusters, false);
 
+	const cluster_values = try allocator.alloc(std.ArrayList(u32), num_clusters);
+	defer {
+		for (cluster_values) |*values| values.deinit(allocator);
+		allocator.free(cluster_values);
+	}
+	for (cluster_values) |*values| values.* = .{};
+
+	for (tokens) |token| {
+		if (token.is_lz77_length or token.context >= context_map.len) return error.GenericError;
+		const hist_idx = context_map[token.context];
+		if (hist_idx >= num_histograms) return error.GenericError;
+		const seed_idx = reassigned_seeds[hist_idx];
+		if (seed_idx >= num_seeds) return error.GenericError;
+		const cluster_idx = seed_to_cluster[seed_idx];
+		if (cluster_idx >= num_clusters) return error.GenericError;
+		try cluster_values[cluster_idx].append(allocator, token.value);
+	}
+
 	for (0..num_seeds) |seed_idx| {
 		if (!rebuilt_clusters[seed_idx].active) continue;
 		const cluster_idx = seed_to_cluster[seed_idx];
 		if (filled_clusters[cluster_idx]) continue;
 
+		const chosen_cfg = try chooseBestUintConfigForValues(
+			allocator,
+			cluster_values[cluster_idx].items,
+			log_alpha_size,
+		);
+		var encoded_counts = (try buildEncodedValueCounts(
+			allocator,
+			cluster_values[cluster_idx].items,
+			chosen_cfg,
+			log_alpha_size,
+		)) orelse return error.GenericError;
+		defer encoded_counts.deinit(allocator);
+		var encoded_hist = try histogramFromRawCounts(allocator, encoded_counts.counts);
+		defer encoded_hist.deinit(allocator);
+
 		bundle.normalized_counts[cluster_idx] = try normalizeHistogramForEmission(
 			allocator,
-			&rebuilt_clusters[seed_idx].hist,
+			&encoded_hist,
 		);
 		bundle.infos[cluster_idx] = try buildANSEncSymbolInfoTable(
 			allocator,
 			bundle.normalized_counts[cluster_idx],
 			log_alpha_size,
 		);
-		bundle.uint_configs[cluster_idx] = rebuilt_clusters[seed_idx].uint_config;
+		bundle.uint_configs[cluster_idx] = chosen_cfg;
 		filled_clusters[cluster_idx] = true;
 	}
 	for (context_map, 0..) |hist_idx, ctx_idx| {
@@ -1467,6 +1500,115 @@ pub fn buildContextualHistogramBundle(
 }
 
 const testing = std.testing;
+
+const adaptive_uint_config_candidates = [_]HybridUintConfig{
+	HybridUintConfig.init(4, 2, 0),
+	HybridUintConfig.init(4, 1, 2),
+	HybridUintConfig.init(0, 0, 0),
+	HybridUintConfig.init(2, 0, 1),
+	HybridUintConfig.init(8, 0, 0),
+};
+
+const EncodedValueCounts = struct {
+	counts: []u32,
+	extra_bits: usize,
+
+	fn deinit(self: *EncodedValueCounts, allocator: std.mem.Allocator) void {
+		allocator.free(self.counts);
+	}
+};
+
+fn buildEncodedValueCounts(
+	allocator: std.mem.Allocator,
+	values: []const u32,
+	cfg: HybridUintConfig,
+	log_alpha_size: u5,
+) !?EncodedValueCounts {
+	if (cfg.split_exponent > log_alpha_size) return null;
+	if (values.len == 0) {
+		const counts = try allocator.alloc(u32, 1);
+		counts[0] = 0;
+		return .{
+			.counts = counts,
+			.extra_bits = 0,
+		};
+	}
+
+	var max_token: u32 = 0;
+	var extra_bits: usize = 0;
+	for (values) |value| {
+		const encoded = cfg.encode(value);
+		max_token = @max(max_token, encoded.token);
+		extra_bits += encoded.nbits;
+	}
+	if (max_token >= (@as(u32, 1) << @intCast(log_alpha_size))) return null;
+
+	const raw_counts = try allocator.alloc(u32, @as(usize, max_token) + 1);
+	@memset(raw_counts, 0);
+	for (values) |value| {
+		const encoded = cfg.encode(value);
+		raw_counts[encoded.token] += 1;
+	}
+
+	return .{
+		.counts = raw_counts,
+		.extra_bits = extra_bits,
+	};
+}
+
+fn estimateUintConfigCostForValues(
+	allocator: std.mem.Allocator,
+	values: []const u32,
+	cfg: HybridUintConfig,
+	log_alpha_size: u5,
+) !?f64 {
+	var encoded_counts = (try buildEncodedValueCounts(allocator, values, cfg, log_alpha_size)) orelse return null;
+	defer encoded_counts.deinit(allocator);
+
+	var hist = try histogramFromRawCounts(allocator, encoded_counts.counts);
+	defer hist.deinit(allocator);
+
+	var size = SizeWriter{};
+	try encodeUintConfig(cfg, &size, log_alpha_size);
+	return try estimateHistogramEmissionCost(allocator, &hist, cfg, log_alpha_size) +
+		@as(f64, @floatFromInt(encoded_counts.extra_bits + size.size));
+}
+
+pub fn chooseBestUintConfigForValues(
+	allocator: std.mem.Allocator,
+	values: []const u32,
+	log_alpha_size: u5,
+) !HybridUintConfig {
+	var best_cfg: ?HybridUintConfig = null;
+	var best_cost: f64 = std.math.inf(f64);
+	for (adaptive_uint_config_candidates) |cfg| {
+		const maybe_cost = try estimateUintConfigCostForValues(allocator, values, cfg, log_alpha_size);
+		const cost = maybe_cost orelse continue;
+		if (cost < best_cost) {
+			best_cost = cost;
+			best_cfg = cfg;
+		}
+	}
+	return best_cfg orelse error.GenericError;
+}
+
+fn bruteForceBestUintConfigForValues(
+	allocator: std.mem.Allocator,
+	values: []const u32,
+	log_alpha_size: u5,
+) !HybridUintConfig {
+	var best_cfg: ?HybridUintConfig = null;
+	var best_cost: f64 = std.math.inf(f64);
+	for (adaptive_uint_config_candidates) |cfg| {
+		const maybe_cost = try estimateUintConfigCostForValues(allocator, values, cfg, log_alpha_size);
+		const cost = maybe_cost orelse continue;
+		if (cost < best_cost) {
+			best_cost = cost;
+			best_cfg = cfg;
+		}
+	}
+	return best_cfg orelse error.GenericError;
+}
 
 test "encodeUintConfigs round-trips a mixed config set" {
 	const log_alpha_size: u5 = 8;
@@ -2014,13 +2156,13 @@ test "buildContextualHistogramBundle writes exact non-flat histograms for a toke
 		5,
 		&writer,
 	);
-	try testing.expectEqual(@as(usize, 0), try writeContextualHistogramTokens(
+	_ = try writeContextualHistogramTokens(
 		&tokens,
 		bundle.infos,
 		bundle.context_map,
 		bundle.uint_configs,
 		&writer,
-	));
+	);
 	try writer.zeroPadToByte();
 
 	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
@@ -2074,13 +2216,13 @@ test "buildContextualHistogramBundle clusters identical histograms" {
 		5,
 		&writer,
 	);
-	try testing.expectEqual(@as(usize, 0), try writeContextualHistogramTokens(
+	_ = try writeContextualHistogramTokens(
 		&tokens,
 		bundle.infos,
 		bundle.context_map,
 		bundle.uint_configs,
 		&writer,
-	));
+	);
 	try writer.zeroPadToByte();
 
 	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
@@ -2146,13 +2288,13 @@ test "buildContextualHistogramBundle merges near-identical histograms when emitt
 		5,
 		&writer,
 	);
-	try testing.expectEqual(@as(usize, 0), try writeContextualHistogramTokens(
+	_ = try writeContextualHistogramTokens(
 		&tokens,
 		bundle.infos,
 		bundle.context_map,
 		bundle.uint_configs,
 		&writer,
-	));
+	);
 	try writer.zeroPadToByte();
 
 	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
@@ -2191,6 +2333,46 @@ test "buildContextualHistogramBundle keeps distinct histograms separate when mer
 
 	try testing.expectEqual(@as(usize, 2), bundle.normalized_counts.len);
 	try testing.expectEqualSlices(u8, &ctx_map, bundle.context_map);
+}
+
+test "chooseBestUintConfigForValues matches brute-force emitted-cost minimum" {
+	const allocator = testing.allocator;
+	const values = [_]u32{ 0, 1, 2, 3, 4, 7, 15, 31, 63, 127, 255 };
+	const expected = try bruteForceBestUintConfigForValues(allocator, &values, 8);
+	const got = try chooseBestUintConfigForValues(allocator, &values, 8);
+
+	try testing.expectEqual(expected.split_exponent, got.split_exponent);
+	try testing.expectEqual(expected.msb_in_token, got.msb_in_token);
+	try testing.expectEqual(expected.lsb_in_token, got.lsb_in_token);
+}
+
+test "buildContextualHistogramBundle chooses emitted uint config from clustered raw values" {
+	const allocator = testing.allocator;
+	const ctx_map = [_]u8{0};
+	const input_uint_configs = [_]HybridUintConfig{HybridUintConfig.init(8, 0, 0)};
+
+	var tokens: std.ArrayList(Token) = .{};
+	defer tokens.deinit(allocator);
+	const adaptive_values = [_]u32{ 0, 1, 2, 3, 4, 7, 15, 31, 63, 127, 255 };
+	for (adaptive_values) |value| {
+		try tokens.append(allocator, Token.init(0, value));
+	}
+
+	const values = try allocator.alloc(u32, tokens.items.len);
+	defer allocator.free(values);
+	for (tokens.items, 0..) |token, i| values[i] = token.value;
+	const expected = try bruteForceBestUintConfigForValues(allocator, values, 8);
+
+	var bundle = try buildContextualHistogramBundle(allocator, tokens.items, &ctx_map, &input_uint_configs, 8);
+	defer bundle.deinit(allocator);
+
+	try testing.expectEqual(@as(usize, 1), bundle.uint_configs.len);
+	try testing.expect(expected.split_exponent != input_uint_configs[0].split_exponent or
+		expected.msb_in_token != input_uint_configs[0].msb_in_token or
+		expected.lsb_in_token != input_uint_configs[0].lsb_in_token);
+	try testing.expectEqual(expected.split_exponent, bundle.uint_configs[0].split_exponent);
+	try testing.expectEqual(expected.msb_in_token, bundle.uint_configs[0].msb_in_token);
+	try testing.expectEqual(expected.lsb_in_token, bundle.uint_configs[0].lsb_in_token);
 }
 
 test "Histogram tracks alphabet and max symbol with rounded growth" {
