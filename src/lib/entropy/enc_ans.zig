@@ -860,6 +860,74 @@ test "reassignHistogramSeeds moves a histogram to the closest surviving seed" {
 	try testing.expectEqualSlices(usize, &[_]usize{ 0, 1, 1 }, assignments);
 }
 
+test "fastClusterHistogramSeeds chooses largest then farthest seed and assigns middles" {
+	const allocator = testing.allocator;
+	const cfg = HybridUintConfig.init(5, 0, 0);
+
+	const raw0 = [_]u32{ 30, 0 };
+	const raw1 = [_]u32{ 0, 30 };
+	const raw2 = [_]u32{ 14, 16 };
+
+	var originals = [_]Histogram{
+		try histogramFromRawCounts(allocator, &raw0),
+		try histogramFromRawCounts(allocator, &raw1),
+		try histogramFromRawCounts(allocator, &raw2),
+	};
+	defer for (&originals) |*hist| hist.deinit(allocator);
+
+	var clustered = try fastClusterHistogramSeeds(
+		allocator,
+		&originals,
+		&[_]HybridUintConfig{ cfg, cfg, cfg },
+		5,
+	);
+	defer clustered.deinit(allocator);
+
+	try testing.expectEqual(@as(usize, 2), clustered.seeds.len);
+	try testing.expectEqualSlices(usize, &[_]usize{ 0, 1 }, clustered.seed_sources);
+	try testing.expectEqualSlices(usize, &[_]usize{ 0, 1, 1 }, clustered.assignments);
+}
+
+test "fastClusterHistogramSeeds keeps HybridUintConfig families separate" {
+	const allocator = testing.allocator;
+	const cfg_a = HybridUintConfig.init(5, 0, 0);
+	const cfg_b = HybridUintConfig.init(4, 0, 0);
+
+	const raw0 = [_]u32{ 30, 0 };
+	const raw1 = [_]u32{ 0, 30 };
+
+	var originals = [_]Histogram{
+		try histogramFromRawCounts(allocator, &raw0),
+		try histogramFromRawCounts(allocator, &raw1),
+	};
+	defer for (&originals) |*hist| hist.deinit(allocator);
+
+	var clustered = try fastClusterHistogramSeeds(
+		allocator,
+		&originals,
+		&[_]HybridUintConfig{ cfg_a, cfg_b },
+		5,
+	);
+	defer clustered.deinit(allocator);
+
+	try testing.expectEqual(@as(usize, 2), clustered.seeds.len);
+	try testing.expectEqualSlices(usize, &[_]usize{ 0, 1 }, clustered.seed_sources);
+	try testing.expectEqualSlices(usize, &[_]usize{ 0, 1 }, clustered.assignments);
+}
+
+const FastClusterResult = struct {
+	assignments: []usize,
+	seeds: []HistogramCluster,
+	seed_sources: []usize,
+
+	fn deinit(self: *FastClusterResult, allocator: std.mem.Allocator) void {
+		allocator.free(self.assignments);
+		for (self.seeds) |*seed| seed.deinit(allocator);
+		allocator.free(self.seeds);
+		allocator.free(self.seed_sources);
+	}
+};
+
 fn hybridUintConfigEql(a: HybridUintConfig, b: HybridUintConfig) bool {
 	return a.split_exponent == b.split_exponent and
 		a.msb_in_token == b.msb_in_token and
@@ -953,6 +1021,130 @@ fn estimateHistogramAssignmentDelta(
 		log_alpha_size,
 	);
 	return merged_cost - seed.cost;
+}
+
+const kMinDistanceForDistinct: f64 = 48.0;
+
+fn sameConfigSeedExists(seed_sources: []const usize, num_seeds: usize, source_idx: usize, uint_configs: []const HybridUintConfig) bool {
+	for (seed_sources[0..num_seeds]) |seed_idx| {
+		if (hybridUintConfigEql(uint_configs[seed_idx], uint_configs[source_idx])) return true;
+	}
+	return false;
+}
+
+/// Chooses a small set of initial histogram seeds by repeatedly taking the
+/// farthest same-config histogram from the current seed set, then aggregates
+/// all logical histograms onto their nearest seed.
+fn fastClusterHistogramSeeds(
+	allocator: std.mem.Allocator,
+	original_histograms: []Histogram,
+	original_uint_configs: []const HybridUintConfig,
+	log_alpha_size: u5,
+) !FastClusterResult {
+	if (original_histograms.len == 0 or original_uint_configs.len != original_histograms.len) return error.GenericError;
+
+	const assignments = try allocator.alloc(usize, original_histograms.len);
+	errdefer allocator.free(assignments);
+	@memset(assignments, std.math.maxInt(usize));
+
+	const dists = try allocator.alloc(f64, original_histograms.len);
+	defer allocator.free(dists);
+	for (dists) |*dist| dist.* = std.math.inf(f64);
+
+	const seed_sources_buf = try allocator.alloc(usize, original_histograms.len);
+	defer allocator.free(seed_sources_buf);
+	var num_seeds: usize = 0;
+
+	var largest_idx: usize = 0;
+	for (1..original_histograms.len) |hist_idx| {
+		if (original_histograms[hist_idx].total_count > original_histograms[largest_idx].total_count) {
+			largest_idx = hist_idx;
+		}
+	}
+
+	while (num_seeds < original_histograms.len) {
+		seed_sources_buf[num_seeds] = largest_idx;
+		assignments[largest_idx] = num_seeds;
+		dists[largest_idx] = 0;
+		num_seeds += 1;
+
+		var next_idx: ?usize = null;
+		var next_dist: f64 = 0;
+		for (0..original_histograms.len) |hist_idx| {
+			if (dists[hist_idx] == 0) continue;
+			if (!hybridUintConfigEql(original_uint_configs[hist_idx], original_uint_configs[largest_idx])) continue;
+			const dist = try Histogram.distance(&original_histograms[hist_idx], &original_histograms[largest_idx], allocator);
+			dists[hist_idx] = @min(dists[hist_idx], dist);
+		}
+		for (0..original_histograms.len) |hist_idx| {
+			if (dists[hist_idx] > next_dist) {
+				next_dist = dists[hist_idx];
+				next_idx = hist_idx;
+			}
+		}
+		if (next_idx == null) break;
+		if (std.math.isFinite(next_dist) and next_dist < kMinDistanceForDistinct) break;
+		largest_idx = next_idx.?;
+	}
+
+	for (0..original_histograms.len) |hist_idx| {
+		if (sameConfigSeedExists(seed_sources_buf, num_seeds, hist_idx, original_uint_configs)) continue;
+		seed_sources_buf[num_seeds] = hist_idx;
+		assignments[hist_idx] = num_seeds;
+		dists[hist_idx] = 0;
+		num_seeds += 1;
+	}
+
+	const seeds = try allocator.alloc(HistogramCluster, num_seeds);
+	errdefer {
+		for (seeds[0..num_seeds]) |*seed| seed.deinit(allocator);
+		allocator.free(seeds);
+	}
+	const seed_sources = try allocator.alloc(usize, num_seeds);
+	errdefer allocator.free(seed_sources);
+
+	for (0..num_seeds) |seed_idx| {
+		const source_idx = seed_sources_buf[seed_idx];
+		seed_sources[seed_idx] = source_idx;
+		seeds[seed_idx] = .{
+			.hist = try cloneHistogram(allocator, &original_histograms[source_idx]),
+			.cost = 0,
+			.uint_config = original_uint_configs[source_idx],
+			.active = true,
+		};
+	}
+
+	for (0..original_histograms.len) |hist_idx| {
+		if (assignments[hist_idx] != std.math.maxInt(usize)) continue;
+		var best_seed: ?usize = null;
+		var best_dist = std.math.inf(f64);
+		for (0..num_seeds) |seed_idx| {
+			if (!hybridUintConfigEql(original_uint_configs[hist_idx], seeds[seed_idx].uint_config)) continue;
+			const dist = try Histogram.distance(&original_histograms[hist_idx], &seeds[seed_idx].hist, allocator);
+			if (best_seed == null or dist < best_dist) {
+				best_seed = seed_idx;
+				best_dist = dist;
+			}
+		}
+		if (best_seed == null) return error.GenericError;
+		assignments[hist_idx] = best_seed.?;
+		try seeds[best_seed.?].hist.addHistogram(allocator, &original_histograms[hist_idx]);
+	}
+
+	for (0..num_seeds) |seed_idx| {
+		seeds[seed_idx].cost = try estimateHistogramEmissionCost(
+			allocator,
+			&seeds[seed_idx].hist,
+			seeds[seed_idx].uint_config,
+			log_alpha_size,
+		);
+	}
+
+	return .{
+		.assignments = assignments,
+		.seeds = seeds,
+		.seed_sources = seed_sources,
+	};
 }
 
 const HistogramCluster = struct {
@@ -1101,29 +1293,29 @@ pub fn buildContextualHistogramBundle(
 		original_histograms[hist_idx] = try histogramFromRawCounts(allocator, raw_counts[hist_idx]);
 	}
 
-	const clusters = try allocator.alloc(HistogramCluster, num_histograms);
+	var fast_clustered = try fastClusterHistogramSeeds(
+		allocator,
+		original_histograms,
+		uint_configs,
+		log_alpha_size,
+	);
+	defer fast_clustered.deinit(allocator);
+
+	const clusters = try allocator.alloc(HistogramCluster, fast_clustered.seeds.len);
 	defer {
 		for (clusters) |*cluster| cluster.deinit(allocator);
 		allocator.free(clusters);
 	}
-	for (0..num_histograms) |hist_idx| {
-		clusters[hist_idx] = .{
-			.hist = try cloneHistogram(allocator, &original_histograms[hist_idx]),
-			.uint_config = uint_configs[hist_idx],
+	for (0..fast_clustered.seeds.len) |seed_idx| {
+		clusters[seed_idx] = .{
+			.hist = try cloneHistogram(allocator, &fast_clustered.seeds[seed_idx].hist),
+			.uint_config = fast_clustered.seeds[seed_idx].uint_config,
 		};
-		clusters[hist_idx].cost = try estimateHistogramEmissionCost(
-			allocator,
-			&clusters[hist_idx].hist,
-			clusters[hist_idx].uint_config,
-			log_alpha_size,
-		);
+		clusters[seed_idx].cost = fast_clustered.seeds[seed_idx].cost;
 	}
 
-	const histogram_to_representative = try allocator.alloc(usize, num_histograms);
+	const histogram_to_representative = try allocator.dupe(usize, fast_clustered.assignments);
 	defer allocator.free(histogram_to_representative);
-	for (0..num_histograms) |hist_idx| {
-		histogram_to_representative[hist_idx] = hist_idx;
-	}
 
 	while (try findBestHistogramMerge(allocator, clusters, log_alpha_size)) |merge| {
 		try clusters[merge.first].hist.addHistogram(allocator, &clusters[merge.second].hist);
@@ -1143,14 +1335,14 @@ pub fn buildContextualHistogramBundle(
 		}
 	}
 
-	const representative_to_seed = try allocator.alloc(usize, num_histograms);
+	const representative_to_seed = try allocator.alloc(usize, clusters.len);
 	defer allocator.free(representative_to_seed);
 	@memset(representative_to_seed, std.math.maxInt(usize));
-	const seed_representatives = try allocator.alloc(usize, num_histograms);
+	const seed_representatives = try allocator.alloc(usize, clusters.len);
 	defer allocator.free(seed_representatives);
 
 	var num_seeds: usize = 0;
-	for (0..num_histograms) |hist_idx| {
+	for (0..original_histograms.len) |hist_idx| {
 		const rep_idx = histogram_to_representative[hist_idx];
 		if (representative_to_seed[rep_idx] == std.math.maxInt(usize)) {
 			representative_to_seed[rep_idx] = num_seeds;
@@ -1987,22 +2179,14 @@ test "buildContextualHistogramBundle keeps distinct histograms separate when mer
 		HybridUintConfig.init(5, 0, 0),
 		HybridUintConfig.init(5, 0, 0),
 	};
-	const tokens = [_]Token{
-		Token.init(0, 3),
-		Token.init(0, 3),
-		Token.init(0, 3),
-		Token.init(0, 3),
-		Token.init(0, 3),
-		Token.init(0, 3),
-		Token.init(1, 7),
-		Token.init(1, 7),
-		Token.init(1, 7),
-		Token.init(1, 7),
-		Token.init(1, 7),
-		Token.init(1, 7),
-	};
+	var tokens: std.ArrayList(Token) = .{};
+	defer tokens.deinit(allocator);
+	for (0..30) |_| {
+		try tokens.append(allocator, Token.init(0, 3));
+		try tokens.append(allocator, Token.init(1, 7));
+	}
 
-	var bundle = try buildContextualHistogramBundle(allocator, &tokens, &ctx_map, &uint_configs, 5);
+	var bundle = try buildContextualHistogramBundle(allocator, tokens.items, &ctx_map, &uint_configs, 5);
 	defer bundle.deinit(allocator);
 
 	try testing.expectEqual(@as(usize, 2), bundle.normalized_counts.len);
