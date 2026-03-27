@@ -825,8 +825,119 @@ fn hybridUintConfigEql(a: HybridUintConfig, b: HybridUintConfig) bool {
 		a.lsb_in_token == b.lsb_in_token;
 }
 
-/// Builds exact histograms for an already-chosen context map, then coalesces
-/// byte-identical ANS tables so multiple contexts can share one emitted histogram.
+/// Rebuilds the sparse rounded histogram shape used by the clustering code
+/// from raw token frequencies so later merge decisions share one cost basis.
+fn histogramFromRawCounts(allocator: std.mem.Allocator, raw_counts: []const u32) !Histogram {
+	var hist = Histogram{};
+	errdefer hist.deinit(allocator);
+
+	const alphabet_size = trimmedAlphabetSizeForCounts(u32, raw_counts);
+	if (alphabet_size == 0) return hist;
+
+	try hist.ensureCapacity(allocator, alphabet_size);
+	for (raw_counts[0..alphabet_size], 0..) |count, i| {
+		hist.counts.items[i] = @intCast(count);
+		hist.total_count += count;
+	}
+	return hist;
+}
+
+/// Converts a raw histogram into the exact normalized ANS population form the
+/// current encoder emits, including the degenerate single-symbol fallback.
+fn normalizeHistogramForEmission(
+	allocator: std.mem.Allocator,
+	hist: *const Histogram,
+) ![]i32 {
+	if (hist.total_count == 0) {
+		const degenerate = try allocator.alloc(i32, 1);
+		degenerate[0] = @intCast(params.ans_tab_size);
+		return degenerate;
+	}
+
+	const alphabet_size = trimmedAlphabetSizeForCounts(i32, hist.counts.items);
+	const raw_counts = try allocator.alloc(u32, alphabet_size);
+	defer allocator.free(raw_counts);
+	for (0..alphabet_size) |i| {
+		raw_counts[i] = @intCast(hist.counts.items[i]);
+	}
+	return normalizeHistogramCounts(allocator, raw_counts);
+}
+
+/// Estimates the emitted cost of one histogram in the current exact-histogram
+/// encoder path: Shannon data bits plus the actual serialized histogram body.
+fn estimateHistogramEmissionCost(
+	allocator: std.mem.Allocator,
+	hist: *Histogram,
+	uint_config: HybridUintConfig,
+	log_alpha_size: u5,
+) !f64 {
+	const normalized_counts = try normalizeHistogramForEmission(allocator, hist);
+	defer allocator.free(normalized_counts);
+
+	var size = SizeWriter{};
+	try encodeUintConfig(uint_config, &size, log_alpha_size);
+	try writeNormalizedHistogramBody(normalized_counts, &size);
+
+	return hist.shannonEntropy() + @as(f64, @floatFromInt(size.size));
+}
+
+const HistogramCluster = struct {
+	hist: Histogram = .{},
+	cost: f64 = 0,
+	uint_config: HybridUintConfig,
+	active: bool = true,
+
+	fn deinit(self: *HistogramCluster, allocator: std.mem.Allocator) void {
+		self.hist.deinit(allocator);
+	}
+};
+
+const HistogramMergeCandidate = struct {
+	first: usize,
+	second: usize,
+	delta: f64,
+};
+
+/// Finds the cheapest beneficial pairwise merge among the currently-active
+/// histogram clusters, using the exact emitted-histogram cost model.
+fn findBestHistogramMerge(
+	allocator: std.mem.Allocator,
+	clusters: []const HistogramCluster,
+	log_alpha_size: u5,
+) !?HistogramMergeCandidate {
+	var best: ?HistogramMergeCandidate = null;
+	for (clusters, 0..) |*first, first_idx| {
+		if (!first.active) continue;
+		for (clusters[first_idx + 1 ..], first_idx + 1..) |*second, second_idx| {
+			if (!second.active) continue;
+			if (!hybridUintConfigEql(first.uint_config, second.uint_config)) continue;
+
+			var merged = Histogram{};
+			defer merged.deinit(allocator);
+			try merged.addHistogram(allocator, &first.hist);
+			try merged.addHistogram(allocator, &second.hist);
+			const merged_cost = try estimateHistogramEmissionCost(
+				allocator,
+				&merged,
+				first.uint_config,
+				log_alpha_size,
+			);
+			const delta = merged_cost - first.cost - second.cost;
+			if (delta >= 0) continue;
+			if (best == null or delta < best.?.delta) {
+				best = .{
+					.first = first_idx,
+					.second = second_idx,
+					.delta = delta,
+				};
+			}
+		}
+	}
+	return best;
+}
+
+/// Builds exact histograms for an already-chosen context map, then greedily
+/// merges same-config histograms when one emitted histogram is cheaper than two.
 pub fn buildContextualHistogramBundle(
 	allocator: std.mem.Allocator,
 	tokens: []const Token,
@@ -874,58 +985,57 @@ pub fn buildContextualHistogramBundle(
 		raw_counts[hist_idx][encoded.token] += 1;
 	}
 
-	const normalized_per_hist = try allocator.alloc([]i32, num_histograms);
-	defer allocator.free(normalized_per_hist);
-	const infos_per_hist = try allocator.alloc([]ANSEncSymbolInfo, num_histograms);
-	defer allocator.free(infos_per_hist);
-	for (0..num_histograms) |hist_idx| {
-		normalized_per_hist[hist_idx] = &.{};
-		infos_per_hist[hist_idx] = &.{};
-	}
+	const clusters = try allocator.alloc(HistogramCluster, num_histograms);
 	defer {
-		for (normalized_per_hist) |counts| {
-			if (counts.len != 0) allocator.free(counts);
-		}
-		for (infos_per_hist) |info| {
-			if (info.len != 0) freeANSEncSymbolInfoTable(allocator, info);
-		}
+		for (clusters) |*cluster| cluster.deinit(allocator);
+		allocator.free(clusters);
 	}
-
 	for (0..num_histograms) |hist_idx| {
-		if (!used_hist[hist_idx]) {
-			const degenerate = try allocator.alloc(i32, 1);
-			degenerate[0] = @intCast(params.ans_tab_size);
-			normalized_per_hist[hist_idx] = degenerate;
-		} else {
-			normalized_per_hist[hist_idx] = try normalizeHistogramCounts(allocator, raw_counts[hist_idx]);
-		}
-		infos_per_hist[hist_idx] = try buildANSEncSymbolInfoTable(
+		clusters[hist_idx] = .{
+			.hist = try histogramFromRawCounts(allocator, raw_counts[hist_idx]),
+			.uint_config = uint_configs[hist_idx],
+		};
+		clusters[hist_idx].cost = try estimateHistogramEmissionCost(
 			allocator,
-			normalized_per_hist[hist_idx],
+			&clusters[hist_idx].hist,
+			clusters[hist_idx].uint_config,
 			log_alpha_size,
 		);
 	}
 
-	const histogram_to_cluster = try allocator.alloc(usize, num_histograms);
-	defer allocator.free(histogram_to_cluster);
-	const cluster_representative = try allocator.alloc(usize, num_histograms);
-	defer allocator.free(cluster_representative);
+	const histogram_to_representative = try allocator.alloc(usize, num_histograms);
+	defer allocator.free(histogram_to_representative);
+	for (0..num_histograms) |hist_idx| {
+		histogram_to_representative[hist_idx] = hist_idx;
+	}
+
+	while (try findBestHistogramMerge(allocator, clusters, log_alpha_size)) |merge| {
+		try clusters[merge.first].hist.addHistogram(allocator, &clusters[merge.second].hist);
+		clusters[merge.first].cost = try estimateHistogramEmissionCost(
+			allocator,
+			&clusters[merge.first].hist,
+			clusters[merge.first].uint_config,
+			log_alpha_size,
+		);
+		clusters[merge.second].deinit(allocator);
+		clusters[merge.second].hist = .{};
+		clusters[merge.second].active = false;
+		clusters[merge.second].cost = 0;
+
+		for (histogram_to_representative) |*rep_idx| {
+			if (rep_idx.* == merge.second) rep_idx.* = merge.first;
+		}
+	}
+
+	const representative_to_cluster = try allocator.alloc(usize, num_histograms);
+	defer allocator.free(representative_to_cluster);
+	@memset(representative_to_cluster, std.math.maxInt(usize));
 
 	var num_clusters: usize = 0;
 	for (0..num_histograms) |hist_idx| {
-		var found_cluster: ?usize = null;
-		for (0..num_clusters) |cluster_idx| {
-			const rep_idx = cluster_representative[cluster_idx];
-			if (!hybridUintConfigEql(uint_configs[rep_idx], uint_configs[hist_idx])) continue;
-			if (!std.mem.eql(i32, normalized_per_hist[rep_idx], normalized_per_hist[hist_idx])) continue;
-			found_cluster = cluster_idx;
-			break;
-		}
-		if (found_cluster) |cluster_idx| {
-			histogram_to_cluster[hist_idx] = cluster_idx;
-		} else {
-			histogram_to_cluster[hist_idx] = num_clusters;
-			cluster_representative[num_clusters] = hist_idx;
+		const rep_idx = histogram_to_representative[hist_idx];
+		if (representative_to_cluster[rep_idx] == std.math.maxInt(usize)) {
+			representative_to_cluster[rep_idx] = num_clusters;
 			num_clusters += 1;
 		}
 	}
@@ -954,16 +1064,29 @@ pub fn buildContextualHistogramBundle(
 		bundle.infos[cluster_idx] = &.{};
 	}
 
-	for (0..num_clusters) |cluster_idx| {
-		const rep_idx = cluster_representative[cluster_idx];
-		bundle.normalized_counts[cluster_idx] = normalized_per_hist[rep_idx];
-		normalized_per_hist[rep_idx] = &.{};
-		bundle.infos[cluster_idx] = infos_per_hist[rep_idx];
-		infos_per_hist[rep_idx] = &.{};
-		bundle.uint_configs[cluster_idx] = uint_configs[rep_idx];
+	const filled_clusters = try allocator.alloc(bool, num_clusters);
+	defer allocator.free(filled_clusters);
+	@memset(filled_clusters, false);
+
+	for (0..num_histograms) |hist_idx| {
+		const rep_idx = histogram_to_representative[hist_idx];
+		const cluster_idx = representative_to_cluster[rep_idx];
+		if (filled_clusters[cluster_idx]) continue;
+
+		bundle.normalized_counts[cluster_idx] = try normalizeHistogramForEmission(
+			allocator,
+			&clusters[rep_idx].hist,
+		);
+		bundle.infos[cluster_idx] = try buildANSEncSymbolInfoTable(
+			allocator,
+			bundle.normalized_counts[cluster_idx],
+			log_alpha_size,
+		);
+		bundle.uint_configs[cluster_idx] = clusters[rep_idx].uint_config;
+		filled_clusters[cluster_idx] = true;
 	}
 	for (context_map, 0..) |hist_idx, ctx_idx| {
-		bundle.context_map[ctx_idx] = @intCast(histogram_to_cluster[hist_idx]);
+		bundle.context_map[ctx_idx] = @intCast(representative_to_cluster[histogram_to_representative[hist_idx]]);
 	}
 
 	return bundle;
@@ -1601,6 +1724,107 @@ test "buildContextualHistogramBundle clusters identical histograms" {
 	try testing.expect(reader.checkANSFinalState());
 	try br.jumpToByteBoundary();
 	try br.close();
+}
+
+test "buildContextualHistogramBundle merges near-identical histograms when emitted cost drops" {
+	const allocator = testing.allocator;
+	const ctx_map = [_]u8{ 0, 1 };
+	const uint_configs = [_]HybridUintConfig{
+		HybridUintConfig.init(5, 0, 0),
+		HybridUintConfig.init(5, 0, 0),
+	};
+	const tokens = [_]Token{
+		Token.init(0, 3),
+		Token.init(0, 3),
+		Token.init(0, 3),
+		Token.init(0, 3),
+		Token.init(0, 3),
+		Token.init(0, 3),
+		Token.init(0, 3),
+		Token.init(0, 3),
+		Token.init(0, 7),
+		Token.init(0, 7),
+		Token.init(1, 3),
+		Token.init(1, 3),
+		Token.init(1, 3),
+		Token.init(1, 3),
+		Token.init(1, 3),
+		Token.init(1, 3),
+		Token.init(1, 3),
+		Token.init(1, 7),
+		Token.init(1, 7),
+		Token.init(1, 7),
+	};
+
+	var bundle = try buildContextualHistogramBundle(allocator, &tokens, &ctx_map, &uint_configs, 5);
+	defer bundle.deinit(allocator);
+
+	try testing.expectEqual(@as(usize, 1), bundle.normalized_counts.len);
+	try testing.expectEqualSlices(u8, &[_]u8{ 0, 0 }, bundle.context_map);
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writeSimpleContextMapNormalizedHistograms(
+		bundle.context_map,
+		bundle.normalized_counts.len,
+		bundle.normalized_counts,
+		bundle.uint_configs,
+		5,
+		&writer,
+	);
+	try testing.expectEqual(@as(usize, 0), try writeContextualHistogramTokens(
+		&tokens,
+		bundle.infos,
+		bundle.context_map,
+		bundle.uint_configs,
+		&writer,
+	));
+	try writer.zeroPadToByte();
+
+	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
+	var code = dec_ans.ANSCode.init(allocator);
+	defer code.deinit();
+	const decoded_ctx_map = try dec_ans.decodeHistograms(allocator, &br, ctx_map.len, &code);
+	defer allocator.free(decoded_ctx_map);
+	try testing.expectEqualSlices(u8, &[_]u8{ 0, 0 }, decoded_ctx_map);
+
+	var reader = try dec_ans.ANSSymbolReader.create(&code, &br, 0, allocator);
+	defer reader.deinit();
+	for (tokens) |token| {
+		try testing.expectEqual(@as(usize, token.value), reader.readHybridUint(token.context, &br, decoded_ctx_map));
+	}
+	try testing.expect(reader.checkANSFinalState());
+	try br.jumpToByteBoundary();
+	try br.close();
+}
+
+test "buildContextualHistogramBundle keeps distinct histograms separate when merge cost rises" {
+	const allocator = testing.allocator;
+	const ctx_map = [_]u8{ 0, 1 };
+	const uint_configs = [_]HybridUintConfig{
+		HybridUintConfig.init(5, 0, 0),
+		HybridUintConfig.init(5, 0, 0),
+	};
+	const tokens = [_]Token{
+		Token.init(0, 3),
+		Token.init(0, 3),
+		Token.init(0, 3),
+		Token.init(0, 3),
+		Token.init(0, 3),
+		Token.init(0, 3),
+		Token.init(1, 7),
+		Token.init(1, 7),
+		Token.init(1, 7),
+		Token.init(1, 7),
+		Token.init(1, 7),
+		Token.init(1, 7),
+	};
+
+	var bundle = try buildContextualHistogramBundle(allocator, &tokens, &ctx_map, &uint_configs, 5);
+	defer bundle.deinit(allocator);
+
+	try testing.expectEqual(@as(usize, 2), bundle.normalized_counts.len);
+	try testing.expectEqualSlices(u8, &ctx_map, bundle.context_map);
 }
 
 test "Histogram tracks alphabet and max symbol with rounded growth" {

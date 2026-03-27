@@ -2201,8 +2201,11 @@ test "buildGlobalTreeHistogramBundleNoWP matches direct tree-driven token histog
 
 	try testing.expect(want_bundle.normalized_counts[0].len > 1);
 	try testing.expect(want_bundle.normalized_counts[0][0] != want_bundle.normalized_counts[0][1]);
-	try testing.expectEqualSlices(i32, want_bundle.normalized_counts[0], got_bundle.normalized_counts[0]);
-	try testing.expectEqualSlices(i32, want_bundle.normalized_counts[1], got_bundle.normalized_counts[1]);
+	try testing.expectEqualSlices(u8, want_bundle.context_map, got_bundle.context_map);
+	try testing.expectEqual(@as(usize, want_bundle.normalized_counts.len), got_bundle.normalized_counts.len);
+	for (want_bundle.normalized_counts, got_bundle.normalized_counts) |want_counts, got_counts| {
+		try testing.expectEqualSlices(i32, want_counts, got_counts);
+	}
 	try testing.expectEqualSlices(HybridUintConfig, want_bundle.uint_configs, got_bundle.uint_configs);
 }
 

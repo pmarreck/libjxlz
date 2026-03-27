@@ -137,7 +137,8 @@
 - [x] Add an upstream-shaped encoder histogram cost foundation (`Histogram`, Shannon entropy, merge distance) with focused exact-value tests, so future clustering decisions can be based on measured data-cost deltas instead of ad hoc heuristics — 2026-03-16 ~9:50 PM EDT
 - [x] Port the first real `EncodeContextMap` choice layer: add encoder-side move-to-front transform plus exact bit-cost selection between simple direct entries, raw ANS, and MTF+ANS for context maps, with focused “must stay simple” and “must choose MTF” tests and full-suite verification — 2026-03-16 ~10:05 PM EDT
 - [x] Wire the new context-map chooser into the DC-global flat/exact histogram writers, add a 9-histogram normalized roundtrip through `decodeHistograms`, and re-run `./bm` to confirm the current narrow encoder path stays in-range — 2026-03-16 ~10:25 PM EDT
-- [ ] Port the next upstream histogram-planning slice beyond exact-duplicate coalescing: cost-based histogram merging and less-naive context-map encoding (`BuildAndEncodeHistograms` / `EncodeContextMap`)
+- [x] Port the next upstream histogram-planning slice beyond exact-duplicate coalescing: cost-based histogram merging and less-naive context-map encoding (`BuildAndEncodeHistograms` / `EncodeContextMap`), using a greedy same-`HybridUintConfig` negative-cost merge pass on top of the new exact histogram/context-map cost model; kept with full-suite green and an accepted narrow encode benchmark shift from `0.009936822875000001 s` to `0.009559646125 s` (`~1.04x`) — 2026-03-27 ~02:38 PM EDT
+- [ ] Port the next upstream histogram-planning slice beyond greedy same-config pair merges: better seed clustering / KL-style reassignment so emitted histogram sets are not limited to pairwise local improvements
 - [ ] Fast lossless encoder
 - [ ] C FFI encode API
 - [ ] cjxlz CLI
