@@ -821,8 +821,6 @@ pub const ContextualHistogramBundle = struct {
 
 test "reassignHistogramSeeds moves a histogram to the closest surviving seed" {
 	const allocator = testing.allocator;
-	const cfg = HybridUintConfig.init(5, 0, 0);
-	const log_alpha_size: u5 = 5;
 
 	const raw0 = [_]u32{ 20, 0 };
 	const raw1 = [_]u32{ 0, 20 };
@@ -835,9 +833,9 @@ test "reassignHistogramSeeds moves a histogram to the closest surviving seed" {
 	};
 	defer for (&originals) |*hist| hist.deinit(allocator);
 
-	var seeds = [_]HistogramCluster{
-		.{ .hist = Histogram{}, .uint_config = cfg },
-		.{ .hist = try histogramFromRawCounts(allocator, &raw2), .uint_config = cfg },
+	var seeds = [_]RawHistogramCluster{
+		.{ .hist = Histogram{} },
+		.{ .hist = try histogramFromRawCounts(allocator, &raw2) },
 	};
 	defer {
 		seeds[0].deinit(allocator);
@@ -845,15 +843,13 @@ test "reassignHistogramSeeds moves a histogram to the closest surviving seed" {
 	}
 	try seeds[0].hist.addHistogram(allocator, &originals[0]);
 	try seeds[0].hist.addHistogram(allocator, &originals[1]);
-	seeds[0].cost = try estimateHistogramEmissionCost(allocator, &seeds[0].hist, cfg, log_alpha_size);
-	seeds[1].cost = try estimateHistogramEmissionCost(allocator, &seeds[1].hist, cfg, log_alpha_size);
+	seeds[0].cost = try estimateRawHistogramPopulationCost(allocator, &seeds[0].hist);
+	seeds[1].cost = try estimateRawHistogramPopulationCost(allocator, &seeds[1].hist);
 
 	const assignments = try reassignHistogramsToSeeds(
 		allocator,
 		&originals,
-		&[_]HybridUintConfig{ cfg, cfg, cfg },
 		&seeds,
-		log_alpha_size,
 	);
 	defer allocator.free(assignments);
 
@@ -862,7 +858,6 @@ test "reassignHistogramSeeds moves a histogram to the closest surviving seed" {
 
 test "fastClusterHistogramSeeds chooses largest then farthest seed and assigns middles" {
 	const allocator = testing.allocator;
-	const cfg = HybridUintConfig.init(5, 0, 0);
 
 	const raw0 = [_]u32{ 30, 0 };
 	const raw1 = [_]u32{ 0, 30 };
@@ -878,8 +873,6 @@ test "fastClusterHistogramSeeds chooses largest then farthest seed and assigns m
 	var clustered = try fastClusterHistogramSeeds(
 		allocator,
 		&originals,
-		&[_]HybridUintConfig{ cfg, cfg, cfg },
-		5,
 	);
 	defer clustered.deinit(allocator);
 
@@ -888,13 +881,11 @@ test "fastClusterHistogramSeeds chooses largest then farthest seed and assigns m
 	try testing.expectEqualSlices(usize, &[_]usize{ 0, 1, 1 }, clustered.assignments);
 }
 
-test "fastClusterHistogramSeeds keeps HybridUintConfig families separate" {
+test "fastClusterHistogramSeeds merges identical raw histograms" {
 	const allocator = testing.allocator;
-	const cfg_a = HybridUintConfig.init(5, 0, 0);
-	const cfg_b = HybridUintConfig.init(4, 0, 0);
 
-	const raw0 = [_]u32{ 30, 0 };
-	const raw1 = [_]u32{ 0, 30 };
+	const raw0 = [_]u32{ 30, 0, 7 };
+	const raw1 = [_]u32{ 30, 0, 7 };
 
 	var originals = [_]Histogram{
 		try histogramFromRawCounts(allocator, &raw0),
@@ -905,19 +896,17 @@ test "fastClusterHistogramSeeds keeps HybridUintConfig families separate" {
 	var clustered = try fastClusterHistogramSeeds(
 		allocator,
 		&originals,
-		&[_]HybridUintConfig{ cfg_a, cfg_b },
-		5,
 	);
 	defer clustered.deinit(allocator);
 
-	try testing.expectEqual(@as(usize, 2), clustered.seeds.len);
-	try testing.expectEqualSlices(usize, &[_]usize{ 0, 1 }, clustered.seed_sources);
-	try testing.expectEqualSlices(usize, &[_]usize{ 0, 1 }, clustered.assignments);
+	try testing.expectEqual(@as(usize, 1), clustered.seeds.len);
+	try testing.expectEqualSlices(usize, &[_]usize{ 0 }, clustered.seed_sources);
+	try testing.expectEqualSlices(usize, &[_]usize{ 0, 0 }, clustered.assignments);
 }
 
 const FastClusterResult = struct {
 	assignments: []usize,
-	seeds: []HistogramCluster,
+	seeds: []RawHistogramCluster,
 	seed_sources: []usize,
 
 	fn deinit(self: *FastClusterResult, allocator: std.mem.Allocator) void {
@@ -927,12 +916,6 @@ const FastClusterResult = struct {
 		allocator.free(self.seed_sources);
 	}
 };
-
-fn hybridUintConfigEql(a: HybridUintConfig, b: HybridUintConfig) bool {
-	return a.split_exponent == b.split_exponent and
-		a.msb_in_token == b.msb_in_token and
-		a.lsb_in_token == b.lsb_in_token;
-}
 
 /// Copies a sparse histogram so clustering/reassignment can keep original
 /// logical histograms intact while mutating separate seed/cluster state.
@@ -1003,45 +986,46 @@ fn estimateHistogramEmissionCost(
 	return hist.shannonEntropy() + @as(f64, @floatFromInt(size.size));
 }
 
-/// Scores assigning one logical histogram to a fixed seed center by measuring
-/// the exact emitted-cost growth of coding the seed plus that histogram together.
-fn estimateHistogramAssignmentDelta(
+/// Approximates the cost of one raw-value histogram before `HybridUintConfig`
+/// choice, matching the population-only surface upstream clusters first.
+fn estimateRawHistogramPopulationCost(
 	allocator: std.mem.Allocator,
-	hist: *const Histogram,
-	seed: *const HistogramCluster,
-	log_alpha_size: u5,
+	hist: *Histogram,
 ) !f64 {
-	var merged = try cloneHistogram(allocator, &seed.hist);
-	defer merged.deinit(allocator);
-	try merged.addHistogram(allocator, hist);
-	const merged_cost = try estimateHistogramEmissionCost(
-		allocator,
-		&merged,
-		seed.uint_config,
-		log_alpha_size,
-	);
-	return merged_cost - seed.cost;
+	if (hist.total_count == 0) return 0;
+	if (hist.alphabetSize() > params.ans_max_alphabet_size) {
+		return hist.shannonEntropy();
+	}
+
+	const normalized_counts = try normalizeHistogramForEmission(allocator, hist);
+	defer allocator.free(normalized_counts);
+
+	var size = SizeWriter{};
+	try writeNormalizedHistogramBody(normalized_counts, &size);
+
+	return hist.shannonEntropy() + @as(f64, @floatFromInt(size.size));
 }
 
 const kMinDistanceForDistinct: f64 = 48.0;
 
-fn sameConfigSeedExists(seed_sources: []const usize, num_seeds: usize, source_idx: usize, uint_configs: []const HybridUintConfig) bool {
-	for (seed_sources[0..num_seeds]) |seed_idx| {
-		if (hybridUintConfigEql(uint_configs[seed_idx], uint_configs[source_idx])) return true;
+const RawHistogramCluster = struct {
+	hist: Histogram = .{},
+	cost: f64 = 0,
+	active: bool = true,
+
+	fn deinit(self: *RawHistogramCluster, allocator: std.mem.Allocator) void {
+		self.hist.deinit(allocator);
 	}
-	return false;
-}
+};
 
 /// Chooses a small set of initial histogram seeds by repeatedly taking the
-/// farthest same-config histogram from the current seed set, then aggregates
-/// all logical histograms onto their nearest seed.
+/// farthest histogram from the current raw-value seed set, then aggregates all
+/// logical histograms onto their nearest seed.
 fn fastClusterHistogramSeeds(
 	allocator: std.mem.Allocator,
 	original_histograms: []Histogram,
-	original_uint_configs: []const HybridUintConfig,
-	log_alpha_size: u5,
 ) !FastClusterResult {
-	if (original_histograms.len == 0 or original_uint_configs.len != original_histograms.len) return error.GenericError;
+	if (original_histograms.len == 0) return error.GenericError;
 
 	const assignments = try allocator.alloc(usize, original_histograms.len);
 	errdefer allocator.free(assignments);
@@ -1072,7 +1056,6 @@ fn fastClusterHistogramSeeds(
 		var next_dist: f64 = 0;
 		for (0..original_histograms.len) |hist_idx| {
 			if (dists[hist_idx] == 0) continue;
-			if (!hybridUintConfigEql(original_uint_configs[hist_idx], original_uint_configs[largest_idx])) continue;
 			const dist = try Histogram.distance(&original_histograms[hist_idx], &original_histograms[largest_idx], allocator);
 			dists[hist_idx] = @min(dists[hist_idx], dist);
 		}
@@ -1087,15 +1070,7 @@ fn fastClusterHistogramSeeds(
 		largest_idx = next_idx.?;
 	}
 
-	for (0..original_histograms.len) |hist_idx| {
-		if (sameConfigSeedExists(seed_sources_buf, num_seeds, hist_idx, original_uint_configs)) continue;
-		seed_sources_buf[num_seeds] = hist_idx;
-		assignments[hist_idx] = num_seeds;
-		dists[hist_idx] = 0;
-		num_seeds += 1;
-	}
-
-	const seeds = try allocator.alloc(HistogramCluster, num_seeds);
+	const seeds = try allocator.alloc(RawHistogramCluster, num_seeds);
 	errdefer {
 		for (seeds[0..num_seeds]) |*seed| seed.deinit(allocator);
 		allocator.free(seeds);
@@ -1109,7 +1084,6 @@ fn fastClusterHistogramSeeds(
 		seeds[seed_idx] = .{
 			.hist = try cloneHistogram(allocator, &original_histograms[source_idx]),
 			.cost = 0,
-			.uint_config = original_uint_configs[source_idx],
 			.active = true,
 		};
 	}
@@ -1119,7 +1093,6 @@ fn fastClusterHistogramSeeds(
 		var best_seed: ?usize = null;
 		var best_dist = std.math.inf(f64);
 		for (0..num_seeds) |seed_idx| {
-			if (!hybridUintConfigEql(original_uint_configs[hist_idx], seeds[seed_idx].uint_config)) continue;
 			const dist = try Histogram.distance(&original_histograms[hist_idx], &seeds[seed_idx].hist, allocator);
 			if (best_seed == null or dist < best_dist) {
 				best_seed = seed_idx;
@@ -1132,12 +1105,7 @@ fn fastClusterHistogramSeeds(
 	}
 
 	for (0..num_seeds) |seed_idx| {
-		seeds[seed_idx].cost = try estimateHistogramEmissionCost(
-			allocator,
-			&seeds[seed_idx].hist,
-			seeds[seed_idx].uint_config,
-			log_alpha_size,
-		);
+		seeds[seed_idx].cost = try estimateRawHistogramPopulationCost(allocator, &seeds[seed_idx].hist);
 	}
 
 	return .{
@@ -1147,17 +1115,6 @@ fn fastClusterHistogramSeeds(
 	};
 }
 
-const HistogramCluster = struct {
-	hist: Histogram = .{},
-	cost: f64 = 0,
-	uint_config: HybridUintConfig,
-	active: bool = true,
-
-	fn deinit(self: *HistogramCluster, allocator: std.mem.Allocator) void {
-		self.hist.deinit(allocator);
-	}
-};
-
 const HistogramMergeCandidate = struct {
 	first: usize,
 	second: usize,
@@ -1165,26 +1122,24 @@ const HistogramMergeCandidate = struct {
 };
 
 /// Reassigns original logical histograms onto a fixed set of surviving seed
-/// clusters, using the seed whose exact emitted-cost growth is smallest.
+/// clusters, using the seed whose raw histogram growth is smallest.
 fn reassignHistogramsToSeeds(
 	allocator: std.mem.Allocator,
 	original_histograms: []const Histogram,
-	original_uint_configs: []const HybridUintConfig,
-	seeds: []const HistogramCluster,
-	log_alpha_size: u5,
+	seeds: []const RawHistogramCluster,
 ) ![]usize {
 	const assignments = try allocator.alloc(usize, original_histograms.len);
 	errdefer allocator.free(assignments);
-
-	if (original_uint_configs.len != original_histograms.len) return error.GenericError;
 
 	for (original_histograms, 0..) |*hist, hist_idx| {
 		var best_seed: ?usize = null;
 		var best_delta: f64 = 0;
 		for (seeds, 0..) |*seed, seed_idx| {
 			if (!seed.active) continue;
-			if (!hybridUintConfigEql(seed.uint_config, original_uint_configs[hist_idx])) continue;
-			const delta = try estimateHistogramAssignmentDelta(allocator, hist, seed, log_alpha_size);
+			var merged = try cloneHistogram(allocator, &seed.hist);
+			defer merged.deinit(allocator);
+			try merged.addHistogram(allocator, hist);
+			const delta = try estimateRawHistogramPopulationCost(allocator, &merged) - seed.cost;
 			if (best_seed == null or delta < best_delta) {
 				best_seed = seed_idx;
 				best_delta = delta;
@@ -1198,29 +1153,22 @@ fn reassignHistogramsToSeeds(
 }
 
 /// Finds the cheapest beneficial pairwise merge among the currently-active
-/// histogram clusters, using the exact emitted-histogram cost model.
+/// histogram clusters, using the raw population-cost model.
 fn findBestHistogramMerge(
 	allocator: std.mem.Allocator,
-	clusters: []const HistogramCluster,
-	log_alpha_size: u5,
+	clusters: []const RawHistogramCluster,
 ) !?HistogramMergeCandidate {
 	var best: ?HistogramMergeCandidate = null;
 	for (clusters, 0..) |*first, first_idx| {
 		if (!first.active) continue;
 		for (clusters[first_idx + 1 ..], first_idx + 1..) |*second, second_idx| {
 			if (!second.active) continue;
-			if (!hybridUintConfigEql(first.uint_config, second.uint_config)) continue;
 
 			var merged = Histogram{};
 			defer merged.deinit(allocator);
 			try merged.addHistogram(allocator, &first.hist);
 			try merged.addHistogram(allocator, &second.hist);
-			const merged_cost = try estimateHistogramEmissionCost(
-				allocator,
-				&merged,
-				first.uint_config,
-				log_alpha_size,
-			);
+			const merged_cost = try estimateRawHistogramPopulationCost(allocator, &merged);
 			const delta = merged_cost - first.cost - second.cost;
 			if (delta >= 0) continue;
 			if (best == null or delta < best.?.delta) {
@@ -1235,8 +1183,8 @@ fn findBestHistogramMerge(
 	return best;
 }
 
-/// Builds exact histograms for an already-chosen context map, then greedily
-/// merges same-config histograms when one emitted histogram is cheaper than two.
+/// Builds exact histograms for an already-chosen context map by clustering raw
+/// token values first, then choosing emitted `HybridUintConfig`s per cluster.
 pub fn buildContextualHistogramBundle(
 	allocator: std.mem.Allocator,
 	tokens: []const Token,
@@ -1247,21 +1195,15 @@ pub fn buildContextualHistogramBundle(
 	if (context_map.len == 0 or uint_configs.len == 0) return error.GenericError;
 
 	const num_histograms = uint_configs.len;
-	const max_tokens = try allocator.alloc(u32, num_histograms);
-	defer allocator.free(max_tokens);
-	@memset(max_tokens, 0);
-
-	const used_hist = try allocator.alloc(bool, num_histograms);
-	defer allocator.free(used_hist);
-	@memset(used_hist, false);
+	const max_values = try allocator.alloc(u32, num_histograms);
+	defer allocator.free(max_values);
+	@memset(max_values, 0);
 
 	for (tokens) |token| {
 		if (token.is_lz77_length or token.context >= context_map.len) return error.GenericError;
 		const hist_idx = context_map[token.context];
 		if (hist_idx >= num_histograms) return error.GenericError;
-		const encoded = uint_configs[hist_idx].encode(token.value);
-		max_tokens[hist_idx] = @max(max_tokens[hist_idx], encoded.token);
-		used_hist[hist_idx] = true;
+		max_values[hist_idx] = @max(max_values[hist_idx], token.value);
 	}
 
 	const raw_counts = try allocator.alloc([]u32, num_histograms);
@@ -1273,15 +1215,14 @@ pub fn buildContextualHistogramBundle(
 		allocator.free(raw_counts);
 	}
 	for (0..num_histograms) |hist_idx| {
-		const len: usize = if (used_hist[hist_idx]) @as(usize, max_tokens[hist_idx]) + 1 else 1;
+		const len: usize = if (max_values[hist_idx] == 0) 1 else @as(usize, max_values[hist_idx]) + 1;
 		raw_counts[hist_idx] = try allocator.alloc(u32, len);
 		@memset(raw_counts[hist_idx], 0);
 	}
 
 	for (tokens) |token| {
 		const hist_idx = context_map[token.context];
-		const encoded = uint_configs[hist_idx].encode(token.value);
-		raw_counts[hist_idx][encoded.token] += 1;
+		raw_counts[hist_idx][token.value] += 1;
 	}
 
 	const original_histograms = try allocator.alloc(Histogram, num_histograms);
@@ -1296,12 +1237,10 @@ pub fn buildContextualHistogramBundle(
 	var fast_clustered = try fastClusterHistogramSeeds(
 		allocator,
 		original_histograms,
-		uint_configs,
-		log_alpha_size,
 	);
 	defer fast_clustered.deinit(allocator);
 
-	const clusters = try allocator.alloc(HistogramCluster, fast_clustered.seeds.len);
+	const clusters = try allocator.alloc(RawHistogramCluster, fast_clustered.seeds.len);
 	defer {
 		for (clusters) |*cluster| cluster.deinit(allocator);
 		allocator.free(clusters);
@@ -1309,7 +1248,6 @@ pub fn buildContextualHistogramBundle(
 	for (0..fast_clustered.seeds.len) |seed_idx| {
 		clusters[seed_idx] = .{
 			.hist = try cloneHistogram(allocator, &fast_clustered.seeds[seed_idx].hist),
-			.uint_config = fast_clustered.seeds[seed_idx].uint_config,
 		};
 		clusters[seed_idx].cost = fast_clustered.seeds[seed_idx].cost;
 	}
@@ -1317,14 +1255,9 @@ pub fn buildContextualHistogramBundle(
 	const histogram_to_representative = try allocator.dupe(usize, fast_clustered.assignments);
 	defer allocator.free(histogram_to_representative);
 
-	while (try findBestHistogramMerge(allocator, clusters, log_alpha_size)) |merge| {
+	while (try findBestHistogramMerge(allocator, clusters)) |merge| {
 		try clusters[merge.first].hist.addHistogram(allocator, &clusters[merge.second].hist);
-		clusters[merge.first].cost = try estimateHistogramEmissionCost(
-			allocator,
-			&clusters[merge.first].hist,
-			clusters[merge.first].uint_config,
-			log_alpha_size,
-		);
+		clusters[merge.first].cost = try estimateRawHistogramPopulationCost(allocator, &clusters[merge.first].hist);
 		clusters[merge.second].deinit(allocator);
 		clusters[merge.second].hist = .{};
 		clusters[merge.second].active = false;
@@ -1351,7 +1284,7 @@ pub fn buildContextualHistogramBundle(
 		}
 	}
 
-	const seeds = try allocator.alloc(HistogramCluster, num_seeds);
+	const seeds = try allocator.alloc(RawHistogramCluster, num_seeds);
 	defer {
 		for (seeds) |*seed| seed.deinit(allocator);
 		allocator.free(seeds);
@@ -1361,7 +1294,6 @@ pub fn buildContextualHistogramBundle(
 		seeds[seed_idx] = .{
 			.hist = try cloneHistogram(allocator, &clusters[rep_idx].hist),
 			.cost = clusters[rep_idx].cost,
-			.uint_config = clusters[rep_idx].uint_config,
 			.active = true,
 		};
 	}
@@ -1369,13 +1301,11 @@ pub fn buildContextualHistogramBundle(
 	const reassigned_seeds = try reassignHistogramsToSeeds(
 		allocator,
 		original_histograms,
-		uint_configs,
 		seeds,
-		log_alpha_size,
 	);
 	defer allocator.free(reassigned_seeds);
 
-	const rebuilt_clusters = try allocator.alloc(HistogramCluster, num_seeds);
+	const rebuilt_clusters = try allocator.alloc(RawHistogramCluster, num_seeds);
 	defer {
 		for (rebuilt_clusters) |*cluster| cluster.deinit(allocator);
 		allocator.free(rebuilt_clusters);
@@ -1384,7 +1314,6 @@ pub fn buildContextualHistogramBundle(
 		rebuilt_clusters[seed_idx] = .{
 			.hist = Histogram{},
 			.cost = 0,
-			.uint_config = seeds[seed_idx].uint_config,
 			.active = false,
 		};
 	}
@@ -1395,12 +1324,7 @@ pub fn buildContextualHistogramBundle(
 	}
 	for (0..num_seeds) |seed_idx| {
 		if (!rebuilt_clusters[seed_idx].active) continue;
-		rebuilt_clusters[seed_idx].cost = try estimateHistogramEmissionCost(
-			allocator,
-			&rebuilt_clusters[seed_idx].hist,
-			rebuilt_clusters[seed_idx].uint_config,
-			log_alpha_size,
-		);
+		rebuilt_clusters[seed_idx].cost = try estimateRawHistogramPopulationCost(allocator, &rebuilt_clusters[seed_idx].hist);
 	}
 
 	const seed_to_cluster = try allocator.alloc(usize, num_seeds);
@@ -2240,6 +2164,29 @@ test "buildContextualHistogramBundle clusters identical histograms" {
 	try testing.expect(reader.checkANSFinalState());
 	try br.jumpToByteBoundary();
 	try br.close();
+}
+
+test "buildContextualHistogramBundle can merge identical raw values across input uint configs" {
+	const allocator = testing.allocator;
+	const ctx_map = [_]u8{ 0, 1 };
+	const uint_configs = [_]HybridUintConfig{
+		HybridUintConfig.init(8, 0, 0),
+		HybridUintConfig.init(0, 0, 0),
+	};
+	const tokens = [_]Token{
+		Token.init(0, 3),
+		Token.init(0, 3),
+		Token.init(0, 7),
+		Token.init(1, 3),
+		Token.init(1, 3),
+		Token.init(1, 7),
+	};
+
+	var bundle = try buildContextualHistogramBundle(allocator, &tokens, &ctx_map, &uint_configs, 8);
+	defer bundle.deinit(allocator);
+
+	try testing.expectEqual(@as(usize, 1), bundle.normalized_counts.len);
+	try testing.expectEqualSlices(u8, &[_]u8{ 0, 0 }, bundle.context_map);
 }
 
 test "buildContextualHistogramBundle merges near-identical histograms when emitted cost drops" {
