@@ -856,6 +856,43 @@ test "reassignHistogramSeeds moves a histogram to the closest surviving seed" {
 	try testing.expectEqualSlices(usize, &[_]usize{ 0, 1, 1 }, assignments);
 }
 
+test "reassignHistogramSeeds avoids zero-probability coding seeds" {
+	const allocator = testing.allocator;
+
+	const raw_actual = [_]u32{ 9, 1 };
+	const raw_bad = [_]u32{ 100, 0 };
+	const raw_good = [_]u32{ 5, 5 };
+
+	var originals = [_]Histogram{
+		try histogramFromRawCounts(allocator, &raw_actual),
+	};
+	defer for (&originals) |*hist| hist.deinit(allocator);
+
+	var seeds = [_]RawHistogramCluster{
+		.{
+			.hist = try histogramFromRawCounts(allocator, &raw_bad),
+		},
+		.{
+			.hist = try histogramFromRawCounts(allocator, &raw_good),
+		},
+	};
+	defer {
+		seeds[0].deinit(allocator);
+		seeds[1].deinit(allocator);
+	}
+	seeds[0].cost = try estimateRawHistogramPopulationCost(allocator, &seeds[0].hist);
+	seeds[1].cost = try estimateRawHistogramPopulationCost(allocator, &seeds[1].hist);
+
+	const assignments = try reassignHistogramsToSeeds(
+		allocator,
+		&originals,
+		&seeds,
+	);
+	defer allocator.free(assignments);
+
+	try testing.expectEqualSlices(usize, &[_]usize{1}, assignments);
+}
+
 test "fastClusterHistogramSeeds chooses largest then farthest seed and assigns middles" {
 	const allocator = testing.allocator;
 
@@ -902,6 +939,37 @@ test "fastClusterHistogramSeeds merges identical raw histograms" {
 	try testing.expectEqual(@as(usize, 1), clustered.seeds.len);
 	try testing.expectEqualSlices(usize, &[_]usize{ 0 }, clustered.seed_sources);
 	try testing.expectEqualSlices(usize, &[_]usize{ 0, 0 }, clustered.assignments);
+}
+
+test "reassignHistogramSeeds prefers the lower-KL coding seed" {
+	const allocator = testing.allocator;
+
+	const raw_actual = [_]u32{ 2, 1, 2, 2, 4, 1 };
+	const raw_seed0 = [_]u32{ 4, 3, 1, 1, 1, 2 };
+	const raw_seed1 = [_]u32{ 1, 3, 2, 3, 1, 2 };
+
+	var originals = [_]Histogram{
+		try histogramFromRawCounts(allocator, &raw_actual),
+	};
+	defer originals[0].deinit(allocator);
+
+	var seeds = [_]RawHistogramCluster{
+		.{ .hist = try histogramFromRawCounts(allocator, &raw_seed0) },
+		.{ .hist = try histogramFromRawCounts(allocator, &raw_seed1) },
+	};
+	defer {
+		seeds[0].deinit(allocator);
+		seeds[1].deinit(allocator);
+	}
+	seeds[0].cost = try estimateRawHistogramPopulationCost(allocator, &seeds[0].hist);
+	seeds[1].cost = try estimateRawHistogramPopulationCost(allocator, &seeds[1].hist);
+
+	const assignments = try reassignHistogramsToSeeds(allocator, &originals, &seeds);
+	defer allocator.free(assignments);
+
+	try testing.expect(histogramKLDivergence(&originals[0], &seeds[1].hist) <
+		histogramKLDivergence(&originals[0], &seeds[0].hist));
+	try testing.expectEqualSlices(usize, &[_]usize{1}, assignments);
 }
 
 const FastClusterResult = struct {
@@ -984,6 +1052,38 @@ fn estimateHistogramEmissionCost(
 	try writeNormalizedHistogramBody(normalized_counts, &size);
 
 	return hist.shannonEntropy() + @as(f64, @floatFromInt(size.size));
+}
+
+fn histogramEntropyValue(hist: *const Histogram) f64 {
+	if (hist.total_count == 0) return 0;
+
+	const total_f: f64 = @floatFromInt(hist.total_count);
+	var total: f64 = 0;
+	for (hist.counts.items) |count| {
+		if (count == 0) continue;
+		const count_f: f64 = @floatFromInt(count);
+		total += count_f * std.math.log2(total_f / count_f);
+	}
+	return total;
+}
+
+/// Scores how costly it is to code an actual histogram with another histogram's
+/// symbol probabilities, matching the encoder clustering KL-divergence heuristic.
+fn histogramKLDivergence(actual: *const Histogram, coding: *const Histogram) f64 {
+	if (actual.total_count == 0) return 0;
+	if (coding.total_count == 0) return std.math.inf(f64);
+
+	const coding_total: f64 = @floatFromInt(coding.total_count);
+	var total: f64 = 0;
+	for (actual.counts.items, 0..) |count, i| {
+		if (count == 0) continue;
+		const coding_count: i32 = if (i < coding.counts.items.len) coding.counts.items[i] else 0;
+		if (coding_count == 0) return std.math.inf(f64);
+		const count_f: f64 = @floatFromInt(count);
+		const coding_count_f: f64 = @floatFromInt(coding_count);
+		total += count_f * std.math.log2(coding_total / coding_count_f);
+	}
+	return total - histogramEntropyValue(actual);
 }
 
 /// Approximates the cost of one raw-value histogram before `HybridUintConfig`
@@ -1122,7 +1222,7 @@ const HistogramMergeCandidate = struct {
 };
 
 /// Reassigns original logical histograms onto a fixed set of surviving seed
-/// clusters, using the seed whose raw histogram growth is smallest.
+/// clusters, using KL divergence so coding support and shape both matter.
 fn reassignHistogramsToSeeds(
 	allocator: std.mem.Allocator,
 	original_histograms: []const Histogram,
@@ -1133,16 +1233,13 @@ fn reassignHistogramsToSeeds(
 
 	for (original_histograms, 0..) |*hist, hist_idx| {
 		var best_seed: ?usize = null;
-		var best_delta: f64 = 0;
+		var best_cost: f64 = 0;
 		for (seeds, 0..) |*seed, seed_idx| {
 			if (!seed.active) continue;
-			var merged = try cloneHistogram(allocator, &seed.hist);
-			defer merged.deinit(allocator);
-			try merged.addHistogram(allocator, hist);
-			const delta = try estimateRawHistogramPopulationCost(allocator, &merged) - seed.cost;
-			if (best_seed == null or delta < best_delta) {
+			const cost = histogramKLDivergence(hist, &seed.hist);
+			if (best_seed == null or cost < best_cost) {
 				best_seed = seed_idx;
-				best_delta = delta;
+				best_cost = cost;
 			}
 		}
 		if (best_seed == null) return error.GenericError;
