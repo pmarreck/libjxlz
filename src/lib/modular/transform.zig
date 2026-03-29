@@ -125,7 +125,89 @@ inline fn pixelAdd(a: pixel_type, b: pixel_type) pixel_type {
     return @bitCast(@as(u32, @bitCast(a)) +% @as(u32, @bitCast(b)));
 }
 
+inline fn pixelSub(a: pixel_type, b: pixel_type) pixel_type {
+    return @bitCast(@as(u32, @bitCast(a)) -% @as(u32, @bitCast(b)));
+}
+
 // ── Inverse RCT ──
+
+fn fwdRCTRow(comptime transform_type: u3, in0: []const pixel_type, in1: []const pixel_type, in2: []const pixel_type, out0: []pixel_type, out1: []pixel_type, out2: []pixel_type) void {
+    const second = transform_type >> 1;
+    const third = transform_type & 1;
+
+    for (0..in0.len) |x| {
+        const First = in0[x];
+        var Second_v = in1[x];
+        var Third_v = in2[x];
+
+        if (transform_type == 6) {
+            const R = First;
+            const G = Second_v;
+            const B = Third_v;
+            const o1 = pixelSub(R, B);
+            const tmp = pixelAdd(B, o1 >> 1);
+            const o2 = pixelSub(G, tmp);
+            out0[x] = pixelAdd(tmp, o2 >> 1);
+            out1[x] = o1;
+            out2[x] = o2;
+            continue;
+        }
+
+        if (second == 1) {
+            Second_v = pixelSub(Second_v, First);
+        } else if (second == 2) {
+            Second_v = pixelSub(Second_v, pixelAdd(First, Third_v) >> 1);
+        }
+        if (third != 0) Third_v = pixelSub(Third_v, First);
+
+        out0[x] = First;
+        out1[x] = Second_v;
+        out2[x] = Third_v;
+    }
+}
+
+pub fn fwdRCT(image: *Image, begin_c: usize, rct_type: u32) JxlError!void {
+    if (rct_type == 0) return;
+
+    const permutation: usize = rct_type / 7;
+    if (permutation >= 6) return error.GenericError;
+    const custom: u3 = @intCast(rct_type % 7);
+
+    const m = begin_c;
+    if (m + 2 >= image.channels.items.len) return error.GenericError;
+
+    const w = image.channels.items[m].w;
+    const h = image.channels.items[m].h;
+    if (image.channels.items[m + 1].w != w or image.channels.items[m + 2].w != w) return error.GenericError;
+    if (image.channels.items[m + 1].h != h or image.channels.items[m + 2].h != h) return error.GenericError;
+
+    const allocator = image.allocator;
+    const buf0 = try allocator.alloc(pixel_type, w);
+    defer allocator.free(buf0);
+    const buf1 = try allocator.alloc(pixel_type, w);
+    defer allocator.free(buf1);
+    const buf2 = try allocator.alloc(pixel_type, w);
+    defer allocator.free(buf2);
+
+    const p0 = permutation % 3;
+    const p1 = (permutation + 1 + permutation / 3) % 3;
+    const p2 = (permutation + 2 -| (permutation / 3)) % 3;
+
+    for (0..h) |y| {
+        const in0 = image.channels.items[m + p0].rowConst(y);
+        const in1 = image.channels.items[m + p1].rowConst(y);
+        const in2 = image.channels.items[m + p2].rowConst(y);
+
+        switch (custom) {
+            inline 0, 1, 2, 3, 4, 5, 6 => |ct| fwdRCTRow(ct, in0, in1, in2, buf0, buf1, buf2),
+            else => unreachable,
+        }
+
+        @memcpy(image.channels.items[m].row(y), buf0);
+        @memcpy(image.channels.items[m + 1].row(y), buf1);
+        @memcpy(image.channels.items[m + 2].row(y), buf2);
+    }
+}
 
 fn invRCTRow(comptime transform_type: u3, in0: []const pixel_type, in1: []const pixel_type, in2: []const pixel_type, out0: []pixel_type, out1: []pixel_type, out2: []pixel_type) void {
     const second = transform_type >> 1;
@@ -804,4 +886,42 @@ test "invRCT YCoCg roundtrip" {
 
     // Just verify it didn't crash and values changed
     try testing.expect(img.channels.items[0].row(0)[0] != 128);
+}
+
+test "fwdRCT YCoCg round-trips exactly through invRCT" {
+    const allocator = testing.allocator;
+    var img = try Image.create(allocator, 3, 2, 8, 3);
+    defer img.deinit();
+
+    const original = [_][3]pixel_type{
+        .{ 12, 34, 56 },
+        .{ -3, 22, 101 },
+        .{ 127, -18, 9 },
+        .{ 0, 0, 0 },
+        .{ -40, 17, -9 },
+        .{ 5, -7, 11 },
+    };
+
+    var idx: usize = 0;
+    for (0..img.h) |y| {
+        for (0..img.w) |x| {
+            img.channels.items[0].row(y)[x] = original[idx][0];
+            img.channels.items[1].row(y)[x] = original[idx][1];
+            img.channels.items[2].row(y)[x] = original[idx][2];
+            idx += 1;
+        }
+    }
+
+    try fwdRCT(&img, 0, 6);
+    try invRCT(&img, 0, 6);
+
+    idx = 0;
+    for (0..img.h) |y| {
+        for (0..img.w) |x| {
+            try testing.expectEqual(original[idx][0], img.channels.items[0].rowConst(y)[x]);
+            try testing.expectEqual(original[idx][1], img.channels.items[1].rowConst(y)[x]);
+            try testing.expectEqual(original[idx][2], img.channels.items[2].rowConst(y)[x]);
+            idx += 1;
+        }
+    }
 }

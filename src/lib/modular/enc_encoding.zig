@@ -5,6 +5,7 @@ const std = @import("std");
 const bits = @import("../base/bits.zig");
 const common = @import("../base/common.zig");
 const pack_signed = @import("../base/pack_signed.zig");
+const fc = @import("../codec/field_coders.zig");
 const BitWriter = @import("../base/bit_writer.zig").BitWriter;
 const ans_common = @import("../entropy/ans_common.zig");
 const ans_params = @import("../entropy/ans_params.zig");
@@ -295,6 +296,25 @@ pub fn writeEmptyModularGroup(writer: *BitWriter) !void {
 	try writer.write(1, 0); // use_global_tree = false
 	try writer.write(1, 1); // weighted header all-default
 	try writer.write(2, 0); // num_transforms = 0 via selector 0
+}
+
+fn writeSingleRCTTransform(begin_c: u32, rct_type: u32, writer: *BitWriter) !void {
+	if (rct_type >= 42) return error.GenericError;
+
+	try writer.write(2, 0); // TransformId.rct
+
+	const bc_enc = fc.U32Enc.init(fc.bits(3), fc.bitsOffset(6, 8), fc.bitsOffset(10, 72), fc.bitsOffset(13, 1096));
+	try fc.U32Coder.write(bc_enc, begin_c, writer);
+
+	const rt_enc = fc.U32Enc.init(fc.val(6), fc.bits(2), fc.bitsOffset(4, 2), fc.bitsOffset(6, 10));
+	try fc.U32Coder.write(rt_enc, rct_type, writer);
+}
+
+pub fn writeEmptyModularGroupWithRCT(begin_c: u32, rct_type: u32, writer: *BitWriter) !void {
+	try writer.write(1, 0); // use_global_tree = false
+	try writer.write(1, 1); // weighted header all-default
+	try writer.write(2, 1); // num_transforms = 1 via selector 1
+	try writeSingleRCTTransform(begin_c, rct_type, writer);
 }
 
 fn subsampledSize(size: usize, shift: i32) usize {
@@ -1048,6 +1068,29 @@ pub fn writeGlobalTreeDcSectionWithNormalizedHistograms(
 	try enc_ma.writeTree(allocator, tree, writer);
 	try enc_ans.writeContextMapNormalizedHistograms(allocator, context_map, num_histograms, normalized_counts, uint_configs, log_alpha_size, writer);
 	try writeEmptyModularGroup(writer);
+}
+
+/// Emits the same exact-histogram DC-global payload as the normalized helper,
+/// but keeps one narrow modular RCT transform in the header for RGB lossless paths.
+pub fn writeGlobalTreeDcSectionWithNormalizedHistogramsAndRCT(
+	allocator: std.mem.Allocator,
+	tree: []const dec_ma.PropertyDecisionNode,
+	context_map: []const u8,
+	num_histograms: usize,
+	normalized_counts: []const []const i32,
+	uint_configs: []const HybridUintConfig,
+	log_alpha_size: u5,
+	begin_c: u32,
+	rct_type: u32,
+	writer: *BitWriter,
+) !void {
+	if (tree.len == 0 or leafCount(tree) != context_map.len) return error.GenericError;
+	if (normalized_counts.len != num_histograms or uint_configs.len != num_histograms) return error.GenericError;
+
+	try writer.write(1, 1); // has_tree = true
+	try enc_ma.writeTree(allocator, tree, writer);
+	try enc_ans.writeContextMapNormalizedHistograms(allocator, context_map, num_histograms, normalized_counts, uint_configs, log_alpha_size, writer);
+	try writeEmptyModularGroupWithRCT(begin_c, rct_type, writer);
 }
 
 /// Tokenizes one channel against a single predictor leaf, producing the packed
