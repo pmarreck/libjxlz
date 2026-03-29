@@ -28,6 +28,7 @@ const pixel_type = options.pixel_type;
 const pixel_type_w = options.pixel_type_w;
 const Token = enc_ans.Token;
 const SqueezeParams = transform_mod.SqueezeParams;
+const Transform = transform_mod.Transform;
 
 const LocalHistogramConfig = struct {
 	uint_config: HybridUintConfig,
@@ -342,6 +343,30 @@ fn writeSingleSqueezeTransform(squeezes: []const SqueezeParams, writer: *BitWrit
 	}
 }
 
+/// Serializes one narrow palette transform block so encoder-authored explicit
+/// palettes can reuse the existing decoder-side `Transform.readFromBitStream`.
+fn writeSinglePaletteTransform(palette: Transform, writer: *BitWriter) !void {
+	if (palette.id != .palette) return error.GenericError;
+	if (palette.num_c == 0 or palette.nb_colors == 0) return error.GenericError;
+	if (@intFromEnum(palette.predictor) >= @intFromEnum(Predictor.best)) return error.GenericError;
+
+	try writer.write(2, 1); // TransformId.palette
+
+	const bc_enc = fc.U32Enc.init(fc.bits(3), fc.bitsOffset(6, 8), fc.bitsOffset(10, 72), fc.bitsOffset(13, 1096));
+	try fc.U32Coder.write(bc_enc, palette.begin_c, writer);
+
+	const nc_enc = fc.U32Enc.init(fc.val(1), fc.val(3), fc.val(4), fc.bitsOffset(13, 1));
+	try fc.U32Coder.write(nc_enc, palette.num_c, writer);
+
+	const nbc_enc = fc.U32Enc.init(fc.bitsOffset(8, 0), fc.bitsOffset(10, 256), fc.bitsOffset(12, 1280), fc.bitsOffset(16, 5376));
+	try fc.U32Coder.write(nbc_enc, palette.nb_colors, writer);
+
+	const nbd_enc = fc.U32Enc.init(fc.val(0), fc.bitsOffset(8, 1), fc.bitsOffset(10, 257), fc.bitsOffset(16, 1281));
+	try fc.U32Coder.write(nbd_enc, palette.nb_deltas, writer);
+
+	try writer.write(4, @intFromEnum(palette.predictor));
+}
+
 pub fn writeEmptyModularGroupWithRCT(begin_c: u32, rct_type: u32, writer: *BitWriter) !void {
 	try writer.write(1, 0); // use_global_tree = false
 	try writer.write(1, 1); // weighted header all-default
@@ -355,6 +380,14 @@ pub fn writeEmptyModularGroupWithSqueeze(squeezes: []const SqueezeParams, writer
 	try writer.write(1, 1); // weighted header all-default
 	try writer.write(2, 1); // num_transforms = 1 via selector 1
 	try writeSingleSqueezeTransform(squeezes, writer);
+}
+
+/// Emits an otherwise-empty modular group header with one explicit palette transform.
+pub fn writeEmptyModularGroupWithPalette(palette: Transform, writer: *BitWriter) !void {
+	try writer.write(1, 0); // use_global_tree = false
+	try writer.write(1, 1); // weighted header all-default
+	try writer.write(2, 1); // num_transforms = 1 via selector 1
+	try writeSinglePaletteTransform(palette, writer);
 }
 
 fn subsampledSize(size: usize, shift: i32) usize {
@@ -1621,6 +1654,31 @@ pub fn writeSingleNodeLocalTreeGroupImageWithSqueeze(
 
 	const cfg = try selectLocalHistogramConfig(tokens.items);
 	try writeEmptyModularGroupWithSqueeze(squeezes, writer);
+	return writeSingleNodeLocalTreeGroupTokensBody(allocator, tokens.items, predictor, null, cfg, writer);
+}
+
+/// Extends the narrow local-tree image writer with one explicit palette transform,
+/// allowing an already palette-transformed grayscale image to round-trip end-to-end.
+pub fn writeSingleNodeLocalTreeGroupImageWithPalette(
+	allocator: std.mem.Allocator,
+	image: *const modular_image.Image,
+	palette: Transform,
+	predictor: Predictor,
+	writer: *BitWriter,
+) !usize {
+	if (image.channels.items.len == 0) return error.GenericError;
+
+	var tokens: std.ArrayList(Token) = .{};
+	defer tokens.deinit(allocator);
+
+	for (image.channels.items) |*channel| {
+		const channel_tokens = try tokenizeSingleNodeChannel(allocator, channel, predictor, 0);
+		defer allocator.free(channel_tokens);
+		try tokens.appendSlice(allocator, channel_tokens);
+	}
+
+	const cfg = try selectLocalHistogramConfig(tokens.items);
+	try writeEmptyModularGroupWithPalette(palette, writer);
 	return writeSingleNodeLocalTreeGroupTokensBody(allocator, tokens.items, predictor, null, cfg, writer);
 }
 

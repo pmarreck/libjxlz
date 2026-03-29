@@ -147,7 +147,8 @@
 - [ ] Port the next upstream histogram-planning slice beyond KL reassignment: iterative refinement / re-seeding so the emitted histogram set can change after the first KL-based assignment pass
 - [x] Port the next encode-side modular transform foundation after RCT: add exact forward horizontal/vertical squeeze plus `fwdSqueeze`, and prove it round-trips exactly through the existing inverse squeeze path on a deterministic single-channel image; kept with focused squeeze tests and full `./test` green — 2026-03-29 ~9:15 AM EDT
 - [x] Port the next encode-side modular transform slice after the squeeze foundation: wire a narrow forward-squeezed grayscale image through a real encoded modular stream/codestream roundtrip, using a local single-leaf tree plus explicit squeeze metadata in the modular group header so `FrameDecoder` replays `metaApply`/`undoTransforms` and recovers the exact original pixels — 2026-03-29 ~10:20 AM EDT
-- [ ] Port the next encode-side modular transform slice after narrow squeeze coverage: add a minimal palette transform writer and exact codestream roundtrip so the second major lossless modular transform family is no longer decode-only
+- [x] Port the next encode-side modular transform slice after narrow squeeze coverage: add a minimal explicit grayscale palette transform writer plus exact transform/codestream roundtrips so the second major lossless modular transform family is no longer decode-only on its simplest path — 2026-03-29 ~10:45 AM EDT
+- [ ] Broaden the narrow palette encode path beyond explicit grayscale/zero-delta mode: support at least one multi-channel palette codestream roundtrip before moving on to more advanced palette heuristics
 - [ ] Fast lossless encoder
 - [ ] C FFI encode API
 - [ ] cjxlz CLI
