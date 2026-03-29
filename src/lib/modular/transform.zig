@@ -466,6 +466,123 @@ pub fn invSqueeze(image: *Image, parameters: []const SqueezeParams) JxlError!voi
 
 const kMaxFirstPreviewSize: usize = 8;
 
+inline fn averagePixel(a: pixel_type, b: pixel_type) pixel_type {
+    const sum: pixel_type_w = @as(pixel_type_w, a) + @as(pixel_type_w, b) + @as(pixel_type_w, @intCast(@intFromBool(a > b)));
+    return @intCast(sum >> 1);
+}
+
+pub fn fwdHSqueeze(image: *Image, c: usize, rc: usize) JxlError!void {
+    const chin = image.channels.items[c];
+    const allocator = chin.allocator orelse return error.GenericError;
+
+    var chout = try Channel.create(allocator, (chin.w + 1) / 2, chin.h, chin.hshift + 1, chin.vshift);
+    errdefer chout.deinit();
+    var chout_residual = try Channel.create(allocator, chin.w - chout.w, chout.h, chin.hshift + 1, chin.vshift);
+    errdefer chout_residual.deinit();
+    chout.component = chin.component;
+    chout_residual.component = chin.component;
+
+    for (0..chout.h) |y| {
+        const p_in = chin.rowConst(y);
+        const p_out = chout.row(y);
+        const p_res = chout_residual.row(y);
+        for (0..chout_residual.w) |x| {
+            const A = p_in[x * 2];
+            const B = p_in[x * 2 + 1];
+            const avg = averagePixel(A, B);
+            p_out[x] = avg;
+
+            const diff = pixelSub(A, B);
+            var next_avg = avg;
+            if (x + 1 < chout_residual.w) {
+                const C = p_in[x * 2 + 2];
+                const D = p_in[x * 2 + 3];
+                next_avg = averagePixel(C, D);
+            } else if ((chin.w & 1) != 0) {
+                next_avg = p_in[x * 2 + 2];
+            }
+            const left = if (x > 0) p_in[x * 2 - 1] else avg;
+            const tendency = smoothTendency(left, avg, next_avg);
+            p_res[x] = @intCast(@as(pixel_type_w, diff) - tendency);
+        }
+        if ((chin.w & 1) != 0) {
+            const x = chout.w - 1;
+            p_out[x] = p_in[x * 2];
+        }
+    }
+
+    image.channels.items[c].deinit();
+    image.channels.items[c] = chout;
+    try image.channels.insert(allocator, rc, chout_residual);
+}
+
+pub fn fwdVSqueeze(image: *Image, c: usize, rc: usize) JxlError!void {
+    const chin = image.channels.items[c];
+    const allocator = chin.allocator orelse return error.GenericError;
+
+    var chout = try Channel.create(allocator, chin.w, (chin.h + 1) / 2, chin.hshift, chin.vshift + 1);
+    errdefer chout.deinit();
+    var chout_residual = try Channel.create(allocator, chin.w, chin.h - chout.h, chin.hshift, chin.vshift + 1);
+    errdefer chout_residual.deinit();
+    chout.component = chin.component;
+    chout_residual.component = chin.component;
+
+    for (0..chout_residual.h) |y| {
+        const p_in = chin.rowConst(y * 2);
+        const p_out = chout.row(y);
+        const p_res = chout_residual.row(y);
+        for (0..chout.w) |x| {
+            const A = p_in[x];
+            const B = chin.rowConst(y * 2 + 1)[x];
+            const avg = averagePixel(A, B);
+            p_out[x] = avg;
+
+            const diff = pixelSub(A, B);
+            var next_avg = avg;
+            if (y + 1 < chout_residual.h) {
+                const C = chin.rowConst(y * 2 + 2)[x];
+                const D = chin.rowConst(y * 2 + 3)[x];
+                next_avg = averagePixel(C, D);
+            } else if ((chin.h & 1) != 0) {
+                next_avg = chin.rowConst(y * 2 + 2)[x];
+            }
+            const top = if (y > 0) chin.rowConst(y * 2 - 1)[x] else avg;
+            const tendency = smoothTendency(top, avg, next_avg);
+            p_res[x] = @intCast(@as(pixel_type_w, diff) - tendency);
+        }
+    }
+
+    if ((chin.h & 1) != 0) {
+        const y = chout.h - 1;
+        const p_in = chin.rowConst(y * 2);
+        const p_out = chout.row(y);
+        @memcpy(p_out, p_in);
+    }
+
+    image.channels.items[c].deinit();
+    image.channels.items[c] = chout;
+    try image.channels.insert(allocator, rc, chout_residual);
+}
+
+pub fn fwdSqueeze(image: *Image, parameters: []const SqueezeParams) JxlError!void {
+    for (parameters) |param| {
+        try checkMetaSqueezeParams(param, image.channels.items.len);
+        const beginc = param.begin_c;
+        const endc = param.begin_c + param.num_c - 1;
+        const offset: usize = if (param.in_place) endc + 1 else image.channels.items.len;
+
+        var c = beginc;
+        while (c <= endc) : (c += 1) {
+            const rc = offset + c - beginc;
+            if (param.horizontal) {
+                try fwdHSqueeze(image, c, rc);
+            } else {
+                try fwdVSqueeze(image, c, rc);
+            }
+        }
+    }
+}
+
 pub fn defaultSqueezeParameters(allocator: std.mem.Allocator, image: *const Image) ![]SqueezeParams {
     var params: std.ArrayList(SqueezeParams) = .{};
     errdefer params.deinit(allocator);
@@ -921,6 +1038,54 @@ test "fwdRCT YCoCg round-trips exactly through invRCT" {
             try testing.expectEqual(original[idx][0], img.channels.items[0].rowConst(y)[x]);
             try testing.expectEqual(original[idx][1], img.channels.items[1].rowConst(y)[x]);
             try testing.expectEqual(original[idx][2], img.channels.items[2].rowConst(y)[x]);
+            idx += 1;
+        }
+    }
+}
+
+test "fwdSqueeze round-trips exactly through invSqueeze" {
+    const allocator = testing.allocator;
+    var img = try Image.create(allocator, 5, 4, 8, 1);
+    defer img.deinit();
+
+    const original = [_]pixel_type{
+        9, 3, 8, 2, 7,
+        1, 4, 6, 5, 0,
+        -3, -1, 2, 4, 6,
+        10, 8, 6, 4, 2,
+    };
+
+    var idx: usize = 0;
+    for (0..img.h) |y| {
+        for (0..img.w) |x| {
+            img.channels.items[0].row(y)[x] = original[idx];
+            idx += 1;
+        }
+    }
+
+    var squeezes = [_]SqueezeParams{
+        .{
+            .horizontal = true,
+            .in_place = false,
+            .begin_c = 0,
+            .num_c = 1,
+        },
+        .{
+            .horizontal = false,
+            .in_place = false,
+            .begin_c = 0,
+            .num_c = 1,
+        },
+    };
+
+    try fwdSqueeze(&img, squeezes[0..]);
+    try invSqueeze(&img, squeezes[0..]);
+
+    try testing.expectEqual(@as(usize, 1), img.channels.items.len);
+    idx = 0;
+    for (0..img.h) |y| {
+        for (0..img.w) |x| {
+            try testing.expectEqual(original[idx], img.channels.items[0].rowConst(y)[x]);
             idx += 1;
         }
     }
