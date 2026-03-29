@@ -17,6 +17,7 @@ const dec_ma = @import("dec_ma.zig");
 const enc_ma = @import("enc_ma.zig");
 const modular_image = @import("modular_image.zig");
 const options = @import("options.zig");
+const transform_mod = @import("transform.zig");
 const weighted = @import("weighted.zig");
 const Rect = @import("../base/rect.zig").Rect;
 
@@ -26,6 +27,7 @@ const TreeKind = options.TreeKind;
 const pixel_type = options.pixel_type;
 const pixel_type_w = options.pixel_type_w;
 const Token = enc_ans.Token;
+const SqueezeParams = transform_mod.SqueezeParams;
 
 const LocalHistogramConfig = struct {
 	uint_config: HybridUintConfig,
@@ -310,11 +312,49 @@ fn writeSingleRCTTransform(begin_c: u32, rct_type: u32, writer: *BitWriter) !voi
 	try fc.U32Coder.write(rt_enc, rct_type, writer);
 }
 
+/// Serializes one squeeze parameter block exactly as `Transform.readFromBitStream`
+/// expects, so encoder-authored squeeze metadata reuses the existing decoder path.
+fn writeSingleSqueezeParam(param: SqueezeParams, writer: *BitWriter) !void {
+	if (param.num_c == 0) return error.GenericError;
+
+	try writer.write(1, @intFromBool(param.horizontal));
+	try writer.write(1, @intFromBool(param.in_place));
+
+	const bc_enc = fc.U32Enc.init(fc.bits(3), fc.bitsOffset(6, 8), fc.bitsOffset(10, 72), fc.bitsOffset(13, 1096));
+	try fc.U32Coder.write(bc_enc, param.begin_c, writer);
+
+	const nc_enc = fc.U32Enc.init(fc.val(1), fc.val(2), fc.val(3), fc.bitsOffset(4, 4));
+	try fc.U32Coder.write(nc_enc, param.num_c, writer);
+}
+
+/// Emits the narrow modular squeeze transform header: one transform containing
+/// an explicit squeeze parameter list for the decoder to meta-apply before ANS decode.
+fn writeSingleSqueezeTransform(squeezes: []const SqueezeParams, writer: *BitWriter) !void {
+	if (squeezes.len == 0) return error.GenericError;
+
+	try writer.write(2, 2); // TransformId.squeeze
+
+	const ns_enc = fc.U32Enc.init(fc.val(0), fc.bitsOffset(4, 1), fc.bitsOffset(6, 9), fc.bitsOffset(8, 41));
+	try fc.U32Coder.write(ns_enc, @intCast(squeezes.len), writer);
+
+	for (squeezes) |param| {
+		try writeSingleSqueezeParam(param, writer);
+	}
+}
+
 pub fn writeEmptyModularGroupWithRCT(begin_c: u32, rct_type: u32, writer: *BitWriter) !void {
 	try writer.write(1, 0); // use_global_tree = false
 	try writer.write(1, 1); // weighted header all-default
 	try writer.write(2, 1); // num_transforms = 1 via selector 1
 	try writeSingleRCTTransform(begin_c, rct_type, writer);
+}
+
+/// Emits an otherwise-empty modular group header with one explicit squeeze transform.
+pub fn writeEmptyModularGroupWithSqueeze(squeezes: []const SqueezeParams, writer: *BitWriter) !void {
+	try writer.write(1, 0); // use_global_tree = false
+	try writer.write(1, 1); // weighted header all-default
+	try writer.write(2, 1); // num_transforms = 1 via selector 1
+	try writeSingleSqueezeTransform(squeezes, writer);
 }
 
 fn subsampledSize(size: usize, shift: i32) usize {
@@ -829,9 +869,20 @@ fn writeSingleNodeLocalTreeGroupTokens(
 	if (tokens.len == 0) return error.GenericError;
 	const cfg = try selectLocalHistogramConfig(tokens);
 
-	try writer.write(1, 0); // use_global_tree = false
-	try writer.write(1, 1); // weighted header all-default
-	try writer.write(2, 0); // num_transforms = 0 via selector 0
+	try writeEmptyModularGroup(writer);
+	return writeSingleNodeLocalTreeGroupTokensBody(allocator, tokens, predictor, cache, cfg, writer);
+}
+
+/// Writes the local tree, histogram, and token payload after any desired modular
+/// header has already been emitted, so narrow transform-bearing paths can reuse the same body.
+fn writeSingleNodeLocalTreeGroupTokensBody(
+	allocator: std.mem.Allocator,
+	tokens: []const Token,
+	predictor: Predictor,
+	cache: ?*FlatHistogramInfoCache,
+	cfg: LocalHistogramConfig,
+	writer: *BitWriter,
+) !usize {
 	try enc_ma.writeSingleLeafTree(allocator, predictor, writer);
 	try enc_ans.writeSingleContextFlatHistogram(@intCast(cfg.alphabet_size), cfg.uint_config, cfg.log_alpha_size, writer);
 
@@ -1546,6 +1597,31 @@ pub fn writeSingleNodeLocalTreeGroupImageWithCache(
 	}
 
 	return writeSingleNodeLocalTreeGroupTokens(allocator, tokens.items, predictor, cache, writer);
+}
+
+/// Extends the narrow local-tree image writer with one squeeze transform header,
+/// allowing a forward-squeezed channel set to round-trip through the standard decoder.
+pub fn writeSingleNodeLocalTreeGroupImageWithSqueeze(
+	allocator: std.mem.Allocator,
+	image: *const modular_image.Image,
+	squeezes: []const SqueezeParams,
+	predictor: Predictor,
+	writer: *BitWriter,
+) !usize {
+	if (image.channels.items.len == 0 or squeezes.len == 0) return error.GenericError;
+
+	var tokens: std.ArrayList(Token) = .{};
+	defer tokens.deinit(allocator);
+
+	for (image.channels.items) |*channel| {
+		const channel_tokens = try tokenizeSingleNodeChannel(allocator, channel, predictor, 0);
+		defer allocator.free(channel_tokens);
+		try tokens.appendSlice(allocator, channel_tokens);
+	}
+
+	const cfg = try selectLocalHistogramConfig(tokens.items);
+	try writeEmptyModularGroupWithSqueeze(squeezes, writer);
+	return writeSingleNodeLocalTreeGroupTokensBody(allocator, tokens.items, predictor, null, cfg, writer);
 }
 
 /// Reuses the existing local-tree image writer for one frame group by first

@@ -194,7 +194,100 @@ test "writeCodestream round-trips a grayscale codestream through header parse an
     try testing.expectEqual(@as(usize, 1), image.channels.items.len);
     try testing.expectEqual(@as(usize, 3), image.w);
     try testing.expectEqual(@as(usize, 3), image.h);
-    try testing.expectEqualSlices(i32, channel.data, image.channels.items[0].data);
+	try testing.expectEqualSlices(i32, channel.data, image.channels.items[0].data);
+}
+
+test "writeCodestream round-trips a squeezed grayscale codestream through header parse and FrameDecoder" {
+	const allocator = testing.allocator;
+	const source_data = @embedFile("../testdata/lossless_600x10_multisection.jxl");
+	const prepared = try prepareFrame(source_data);
+
+	var codec_meta = prepared.codec_meta;
+	codec_meta.size = .{
+		.small = false,
+		.ysize_raw = 4,
+		.ratio = 0,
+		.xsize_raw = 5,
+	};
+
+	const frame_header = blk: {
+		var br = BitReader.init(prepared.frame_data);
+		break :blk try frame_header_mod.FrameHeader.readFromBitStream(&br, &codec_meta, false);
+	};
+
+	var source = try modular_image.Image.create(allocator, 5, 4, 8, 1);
+	defer source.deinit();
+	const original = [_]i32{
+		9, 3, 8, 2, 7,
+		1, 4, 6, 5, 0,
+		-3, -1, 2, 4, 6,
+		10, 8, 6, 4, 2,
+	};
+	var idx: usize = 0;
+	for (0..source.h) |y| {
+		for (0..source.w) |x| {
+			source.channels.items[0].row(y)[x] = original[idx];
+			idx += 1;
+		}
+	}
+
+	var transformed = try modular_image.Image.create(allocator, 5, 4, 8, 1);
+	defer transformed.deinit();
+	@memcpy(transformed.channels.items[0].data, source.channels.items[0].data);
+
+	var squeezes = [_]transform_mod.SqueezeParams{
+		.{ .horizontal = true, .in_place = false, .begin_c = 0, .num_c = 1 },
+		.{ .horizontal = false, .in_place = false, .begin_c = 0, .num_c = 1 },
+	};
+	try transform_mod.fwdSqueeze(&transformed, squeezes[0..]);
+
+	var dc_global = BitWriter.init(allocator);
+	defer dc_global.deinit();
+	try dc_global.write(1, 1); // DequantMatrices all_default
+	try dc_global.write(1, 0); // no global tree
+	try testing.expectEqual(@as(usize, 0), try enc_encoding.writeSingleNodeLocalTreeGroupImageWithSqueeze(
+		allocator,
+		&transformed,
+		squeezes[0..],
+		.zero,
+		&dc_global,
+	));
+	try dc_global.zeroPadToByte();
+
+	const sections = [_][]const u8{dc_global.bytes()};
+	var frame_writer = BitWriter.init(allocator);
+	defer frame_writer.deinit();
+	try enc_frame.writeFrame(&frame_header, &codec_meta, &sections, &frame_writer);
+	try frame_writer.zeroPadToByte();
+
+	var codestream = BitWriter.init(allocator);
+	defer codestream.deinit();
+	try writeCodestream(&codec_meta, frame_writer.bytes(), &codestream);
+	try codestream.zeroPadToByte();
+
+	var br = BitReader.init(codestream.bytes()[2..]);
+	const size = headers.SizeHeader.readFromBitStream(&br);
+	try testing.expectEqual(@as(usize, 5), size.xsize());
+	try testing.expectEqual(@as(usize, 4), size.ysize());
+	const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+	const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+	try br.jumpToByteBoundary();
+
+	var parsed_meta = image_metadata.CodecMetadata{};
+	parsed_meta.m = metadata;
+	parsed_meta.size = size;
+	parsed_meta.transform_data = transform_data;
+
+	const frame_offset = br.totalBitsConsumed() / 8;
+	var frame_dec = dec_frame.FrameDecoder.init(allocator, &parsed_meta);
+	defer frame_dec.deinit();
+	try frame_dec.decodeFrame(codestream.bytes()[2 + frame_offset ..]);
+
+	const image = frame_dec.getDecodedImage();
+	try testing.expectEqual(@as(usize, 1), image.channels.items.len);
+	try testing.expectEqual(@as(usize, 5), image.w);
+	try testing.expectEqual(@as(usize, 4), image.h);
+	try testing.expectEqualSlices(i32, source.channels.items[0].data, image.channels.items[0].data);
 }
 
 test "writeCodestream round-trips an RGB codestream through header parse and FrameDecoder" {
