@@ -785,6 +785,107 @@ pub fn fwdPalette(image: *Image, begin_c: u32, end_c: u32, allocator: std.mem.Al
     };
 }
 
+fn predictPaletteSlowPathGray(channel: *const Channel, x: usize, y: usize, predictor: Predictor) pixel_type {
+    const row = channel.rowConst(y);
+    const left: pixel_type = if (x > 0) row[x - 1] else 0;
+    return switch (predictor) {
+        .zero => 0,
+        .left => left,
+        .gradient => blk: {
+            const top: pixel_type = if (y > 0) channel.rowConst(y - 1)[x] else left;
+            const topleft: pixel_type = if (x > 0 and y > 0) channel.rowConst(y - 1)[x - 1] else left;
+            break :blk context_predict.clampedGradient(left, top, topleft);
+        },
+        else => left,
+    };
+}
+
+/// Applies the first delta-palette encode slice: one grayscale channel, caller-supplied
+/// delta entries, and the same simplified predictor family the current decoder supports.
+pub fn fwdPaletteWithDeltas(
+    image: *Image,
+    begin_c: u32,
+    end_c: u32,
+    delta_values: []const pixel_type,
+    predictor: Predictor,
+    allocator: std.mem.Allocator,
+) JxlError!Transform {
+    if (begin_c != end_c) return error.Unsupported;
+    if (delta_values.len == 0) return error.GenericError;
+    if (begin_c >= image.channels.items.len) return error.GenericError;
+
+    const source = &image.channels.items[begin_c];
+    if (source.w == 0 or source.h == 0) return error.GenericError;
+
+    var explicit_values: std.ArrayList(pixel_type) = .{};
+    defer explicit_values.deinit(allocator);
+    const total = source.w * source.h;
+    const indices = try allocator.alloc(pixel_type, total);
+    defer allocator.free(indices);
+
+    for (0..source.h) |y| {
+        const row = source.rowConst(y);
+        for (0..source.w) |x| {
+            const pixel_index = y * source.w + x;
+            const actual = row[x];
+            const pred = predictPaletteSlowPathGray(source, x, y, predictor);
+            const residual = actual - pred;
+
+            var found_delta: ?u32 = null;
+            for (delta_values, 0..) |delta_value, delta_index| {
+                if (delta_value == residual) {
+                    found_delta = @intCast(delta_index);
+                    break;
+                }
+            }
+            if (found_delta) |delta_index| {
+                indices[pixel_index] = @intCast(delta_index);
+                continue;
+            }
+
+            var explicit_index: ?u32 = null;
+            for (explicit_values.items, 0..) |value, palette_index| {
+                if (value == actual) {
+                    explicit_index = @intCast(palette_index);
+                    break;
+                }
+            }
+            const palette_index = explicit_index orelse blk: {
+                const new_index: u32 = @intCast(explicit_values.items.len);
+                try explicit_values.append(allocator, actual);
+                break :blk new_index;
+            };
+            indices[pixel_index] = @intCast(delta_values.len + palette_index);
+        }
+    }
+
+    const nb_colors: u32 = @intCast(explicit_values.items.len);
+    const nb_deltas: u32 = @intCast(delta_values.len);
+    try metaPalette(image, begin_c, end_c, nb_colors, nb_deltas, allocator);
+
+    const palette_channel = &image.channels.items[0];
+    if (palette_channel.h != 1 or palette_channel.w != nb_colors + nb_deltas) return error.GenericError;
+    for (delta_values, 0..) |delta_value, i| {
+        palette_channel.row(0)[i] = delta_value;
+    }
+    for (explicit_values.items, 0..) |value, i| {
+        palette_channel.row(0)[delta_values.len + i] = value;
+    }
+
+    const index_channel = &image.channels.items[begin_c + 1];
+    @memcpy(index_channel.data[0..total], indices);
+
+    return .{
+        .id = .palette,
+        .begin_c = begin_c,
+        .num_c = 1,
+        .nb_colors = nb_colors,
+        .nb_deltas = nb_deltas,
+        .predictor = predictor,
+        .allocator = allocator,
+    };
+}
+
 pub fn metaPalette(image: *Image, begin_c: u32, end_c: u32, nb_colors: u32, nb_deltas: u32, allocator: std.mem.Allocator) JxlError!void {
     checkEqualChannels(image, begin_c, end_c) catch return error.GenericError;
 
@@ -891,6 +992,7 @@ fn getPaletteValue(palette_data: []const pixel_type, palette_w: usize, index_in:
 }
 
 pub fn invPalette(image: *Image, begin_c: u32, nb_colors: u32, nb_deltas: u32, predictor: Predictor) JxlError!void {
+    _ = nb_colors;
     if (image.nb_meta_channels < 1) return error.GenericError;
 
     const nb: usize = image.channels.items[0].h; // palette height = number of output channels
@@ -904,7 +1006,7 @@ pub fn invPalette(image: *Image, begin_c: u32, nb_colors: u32, nb_deltas: u32, p
     const palette = &image.channels.items[0];
     const palette_data = palette.data;
     const palette_w = palette.w;
-    const palette_size: i32 = @intCast(nb_colors);
+    const palette_size: i32 = @intCast(palette.w);
     const bit_depth = @min(image.bitdepth, 24);
 
     // Create output channels (nb-1 new ones after c0)
@@ -1213,6 +1315,51 @@ test "fwdPalette RGB round-trips exactly through invPalette" {
             try testing.expectEqual(original[idx][0], img.channels.items[0].rowConst(y)[x]);
             try testing.expectEqual(original[idx][1], img.channels.items[1].rowConst(y)[x]);
             try testing.expectEqual(original[idx][2], img.channels.items[2].rowConst(y)[x]);
+            idx += 1;
+        }
+    }
+}
+
+test "fwdPaletteWithDeltas grayscale round-trips exactly through invPalette" {
+    const allocator = testing.allocator;
+    var img = try Image.create(allocator, 4, 2, 8, 1);
+    defer img.deinit();
+
+    const original = [_]pixel_type{
+        10, 12, 14, 16,
+        1, 3, 5, 7,
+    };
+
+    var idx: usize = 0;
+    for (0..img.h) |y| {
+        for (0..img.w) |x| {
+            img.channels.items[0].row(y)[x] = original[idx];
+            idx += 1;
+        }
+    }
+
+    const palette = try fwdPaletteWithDeltas(&img, 0, 0, &.{2}, .left, allocator);
+    try testing.expectEqual(TransformId.palette, palette.id);
+    try testing.expectEqual(@as(u32, 0), palette.begin_c);
+    try testing.expectEqual(@as(u32, 1), palette.num_c);
+    try testing.expectEqual(@as(u32, 2), palette.nb_colors);
+    try testing.expectEqual(@as(u32, 1), palette.nb_deltas);
+    try testing.expectEqual(Predictor.left, palette.predictor);
+
+    try testing.expectEqual(@as(usize, 2), img.channels.items.len);
+    try testing.expectEqual(@as(usize, 1), img.channels.items[0].h);
+    try testing.expectEqual(@as(usize, 3), img.channels.items[0].w);
+    try testing.expectEqualSlices(pixel_type, &.{ 2, 10, 1 }, img.channels.items[0].rowConst(0));
+    try testing.expectEqualSlices(pixel_type, &.{ 1, 0, 0, 0 }, img.channels.items[1].rowConst(0));
+    try testing.expectEqualSlices(pixel_type, &.{ 2, 0, 0, 0 }, img.channels.items[1].rowConst(1));
+
+    try invPalette(&img, palette.begin_c, palette.nb_colors, palette.nb_deltas, palette.predictor);
+
+    try testing.expectEqual(@as(usize, 1), img.channels.items.len);
+    idx = 0;
+    for (0..img.h) |y| {
+        for (0..img.w) |x| {
+            try testing.expectEqual(original[idx], img.channels.items[0].rowConst(y)[x]);
             idx += 1;
         }
     }
