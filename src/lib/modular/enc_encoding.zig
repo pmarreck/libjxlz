@@ -343,11 +343,11 @@ fn writeSingleSqueezeTransform(squeezes: []const SqueezeParams, writer: *BitWrit
 	}
 }
 
-/// Serializes one narrow palette transform block so encoder-authored explicit
-/// palettes can reuse the existing decoder-side `Transform.readFromBitStream`.
+/// Serializes one narrow palette transform block so encoder-authored palette
+/// streams can reuse the existing decoder-side `Transform.readFromBitStream`.
 fn writeSinglePaletteTransform(palette: Transform, writer: *BitWriter) !void {
 	if (palette.id != .palette) return error.GenericError;
-	if (palette.num_c == 0 or palette.nb_colors == 0) return error.GenericError;
+	if (palette.num_c == 0) return error.GenericError;
 	if (@intFromEnum(palette.predictor) >= @intFromEnum(Predictor.best)) return error.GenericError;
 
 	try writer.write(2, 1); // TransformId.palette

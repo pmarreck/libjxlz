@@ -715,74 +715,98 @@ fn checkEqualChannels(image: *const Image, begin_c: usize, end_c: usize) JxlErro
 /// Applies the narrow explicit palette transform: exact first-seen color tuples,
 /// zero deltas, and an index channel that `invPalette` can reconstruct losslessly.
 pub fn fwdPalette(image: *Image, begin_c: u32, end_c: u32, allocator: std.mem.Allocator) JxlError!Transform {
-    if (begin_c > end_c or end_c >= image.channels.items.len) return error.GenericError;
-    try checkEqualChannels(image, begin_c, end_c);
+	if (begin_c > end_c or end_c >= image.channels.items.len) return error.GenericError;
+	try checkEqualChannels(image, begin_c, end_c);
 
-    const num_channels: usize = end_c - begin_c + 1;
-    const source = &image.channels.items[begin_c];
-    if (source.w == 0 or source.h == 0) return error.GenericError;
+	const num_channels: usize = end_c - begin_c + 1;
+	const source = &image.channels.items[begin_c];
+	if (source.w == 0 or source.h == 0) return error.GenericError;
 
-    const total = source.w * source.h;
-    const original = try allocator.alloc(pixel_type, total * num_channels);
-    defer allocator.free(original);
-    for (0..num_channels) |c| {
-        const channel = &image.channels.items[begin_c + c];
-        @memcpy(original[c * total ..][0..total], channel.data[0..total]);
-    }
+	const total = source.w * source.h;
+	const original = try allocator.alloc(pixel_type, total * num_channels);
+	defer allocator.free(original);
+	for (0..num_channels) |c| {
+		const channel = &image.channels.items[begin_c + c];
+		@memcpy(original[c * total ..][0..total], channel.data[0..total]);
+	}
 
-    var palette_values: std.ArrayList(pixel_type) = .{};
-    defer palette_values.deinit(allocator);
-    const indices = try allocator.alloc(pixel_type, total);
-    defer allocator.free(indices);
+	const IndexChoice = union(enum) {
+		explicit: u32,
+		implicit: u32,
+	};
 
-    for (0..total) |pixel_index| {
-        var found_index: ?u32 = null;
-        const num_colors = @divExact(palette_values.items.len, num_channels);
-        color_search: for (0..num_colors) |color_index| {
-            for (0..num_channels) |c| {
-                if (palette_values.items[color_index * num_channels + c] != original[c * total + pixel_index]) {
-                    continue :color_search;
-                }
-            }
-            found_index = @intCast(color_index);
-            break;
-        }
+	var palette_values: std.ArrayList(pixel_type) = .{};
+	defer palette_values.deinit(allocator);
+	const indices = try allocator.alloc(pixel_type, total);
+	defer allocator.free(indices);
+	const choices = try allocator.alloc(IndexChoice, total);
+	defer allocator.free(choices);
+	const bit_depth = @min(image.bitdepth, 24);
 
-        const palette_index = found_index orelse blk: {
-            const new_index: u32 = @intCast(palette_values.items.len / num_channels);
-            for (0..num_channels) |c| {
-                try palette_values.append(allocator, original[c * total + pixel_index]);
-            }
-            break :blk new_index;
-        };
-        indices[pixel_index] = @intCast(palette_index);
-    }
+	for (0..total) |pixel_index| {
+		var color_buf: [kRgbChannels]pixel_type = .{ 0, 0, 0 };
+		if (num_channels <= kRgbChannels) {
+			for (0..num_channels) |c| {
+				color_buf[c] = original[c * total + pixel_index];
+			}
+			if (findImplicitPaletteOffset(color_buf[0..num_channels], bit_depth)) |implicit_offset| {
+				choices[pixel_index] = .{ .implicit = implicit_offset };
+				continue;
+			}
+		}
 
-    if (palette_values.items.len == 0) return error.GenericError;
-    const nb_colors: u32 = @intCast(palette_values.items.len / num_channels);
+		var found_index: ?u32 = null;
+		const num_colors = @divExact(palette_values.items.len, num_channels);
+		color_search: for (0..num_colors) |color_index| {
+			for (0..num_channels) |c| {
+				if (palette_values.items[color_index * num_channels + c] != original[c * total + pixel_index]) {
+					continue :color_search;
+				}
+			}
+			found_index = @intCast(color_index);
+			break;
+		}
 
-    try metaPalette(image, begin_c, end_c, nb_colors, 0, allocator);
+		const palette_index = found_index orelse blk: {
+			const new_index: u32 = @intCast(palette_values.items.len / num_channels);
+			for (0..num_channels) |c| {
+				try palette_values.append(allocator, original[c * total + pixel_index]);
+			}
+			break :blk new_index;
+		};
+		choices[pixel_index] = .{ .explicit = palette_index };
+	}
 
-    const palette_channel = &image.channels.items[0];
-    if (palette_channel.h != num_channels or palette_channel.w != nb_colors) return error.GenericError;
-    for (0..num_channels) |c| {
-        for (0..nb_colors) |color_index| {
-            palette_channel.row(c)[color_index] = palette_values.items[color_index * num_channels + c];
-        }
-    }
+	const nb_colors: u32 = @intCast(palette_values.items.len / num_channels);
+	try metaPalette(image, begin_c, end_c, nb_colors, 0, allocator);
 
-    const index_channel = &image.channels.items[begin_c + 1];
-    @memcpy(index_channel.data[0..total], indices);
+	const palette_channel = &image.channels.items[0];
+	if (palette_channel.h != num_channels or palette_channel.w != nb_colors) return error.GenericError;
+	for (0..num_channels) |c| {
+		for (0..nb_colors) |color_index| {
+			palette_channel.row(c)[color_index] = palette_values.items[color_index * num_channels + c];
+		}
+	}
 
-    return .{
-        .id = .palette,
-        .begin_c = begin_c,
-        .num_c = end_c - begin_c + 1,
-        .nb_colors = nb_colors,
-        .nb_deltas = 0,
-        .predictor = .zero,
-        .allocator = allocator,
-    };
+	for (0..total) |pixel_index| {
+		indices[pixel_index] = switch (choices[pixel_index]) {
+			.explicit => |palette_index| @intCast(palette_index),
+			.implicit => |implicit_offset| @intCast(nb_colors + implicit_offset),
+		};
+	}
+
+	const index_channel = &image.channels.items[begin_c + 1];
+	@memcpy(index_channel.data[0..total], indices);
+
+	return .{
+		.id = .palette,
+		.begin_c = begin_c,
+		.num_c = end_c - begin_c + 1,
+		.nb_colors = nb_colors,
+		.nb_deltas = 0,
+		.predictor = .zero,
+		.allocator = allocator,
+	};
 }
 
 fn predictPaletteSlowPath(channel: *const Channel, x: usize, y: usize, predictor: Predictor) pixel_type {
@@ -1077,6 +1101,24 @@ const kDeltaPalette = [72][3]pixel_type{
 
 fn scalePalette(comptime denom: u64, value: u64, bit_depth: u64) pixel_type {
     return @intCast((value * ((@as(u64, 1) << @intCast(bit_depth)) - 1)) / denom);
+}
+
+/// Finds an exact decoder-visible implicit palette match for up to RGB channels
+/// by scanning the built-in cube palettes the decoder already synthesizes.
+fn findImplicitPaletteOffset(color: []const pixel_type, bit_depth: i32) ?u32 {
+	if (color.len == 0 or color.len > kRgbChannels) return null;
+
+	for (0..@as(usize, @intCast(kImplicitPaletteSize))) |implicit_offset| {
+		var matches = true;
+		for (color, 0..) |value, c| {
+			if (getPaletteValue(&.{}, 0, @intCast(implicit_offset), c, 0, bit_depth) != value) {
+				matches = false;
+				break;
+			}
+		}
+		if (matches) return @intCast(implicit_offset);
+	}
+	return null;
 }
 
 fn getPaletteValue(palette_data: []const pixel_type, palette_w: usize, index_in: i32, c: usize, palette_size: i32, bit_depth: i32) pixel_type {
@@ -1444,7 +1486,61 @@ test "fwdPalette RGB round-trips exactly through invPalette" {
             try testing.expectEqual(original[idx][2], img.channels.items[2].rowConst(y)[x]);
             idx += 1;
         }
-    }
+	}
+}
+
+test "fwdPalette RGB uses implicit colors without explicit palette rows" {
+	const allocator = testing.allocator;
+	var img = try Image.create(allocator, 2, 2, 8, 3);
+	defer img.deinit();
+
+	const black = [_]pixel_type{
+		getPaletteValue(&.{}, 0, 64, 0, 0, 8),
+		getPaletteValue(&.{}, 0, 64, 1, 0, 8),
+		getPaletteValue(&.{}, 0, 64, 2, 0, 8),
+	};
+	const white = [_]pixel_type{
+		getPaletteValue(&.{}, 0, 188, 0, 0, 8),
+		getPaletteValue(&.{}, 0, 188, 1, 0, 8),
+		getPaletteValue(&.{}, 0, 188, 2, 0, 8),
+	};
+	const original = [_][3]pixel_type{
+		black,
+		white,
+		white,
+		black,
+	};
+
+	var idx: usize = 0;
+	for (0..img.h) |y| {
+		for (0..img.w) |x| {
+			img.channels.items[0].row(y)[x] = original[idx][0];
+			img.channels.items[1].row(y)[x] = original[idx][1];
+			img.channels.items[2].row(y)[x] = original[idx][2];
+			idx += 1;
+		}
+	}
+
+	const palette = try fwdPalette(&img, 0, 2, allocator);
+	try testing.expectEqual(TransformId.palette, palette.id);
+	try testing.expectEqual(@as(u32, 0), palette.nb_colors);
+	try testing.expectEqual(@as(u32, 0), palette.nb_deltas);
+	try testing.expectEqual(@as(usize, 0), img.channels.items[0].w);
+	try testing.expectEqualSlices(pixel_type, &.{ 64, 188 }, img.channels.items[1].rowConst(0));
+	try testing.expectEqualSlices(pixel_type, &.{ 188, 64 }, img.channels.items[1].rowConst(1));
+
+	try invPalette(&img, palette.begin_c, palette.nb_colors, palette.nb_deltas, palette.predictor);
+
+	try testing.expectEqual(@as(usize, 3), img.channels.items.len);
+	idx = 0;
+	for (0..img.h) |y| {
+		for (0..img.w) |x| {
+			try testing.expectEqual(original[idx][0], img.channels.items[0].rowConst(y)[x]);
+			try testing.expectEqual(original[idx][1], img.channels.items[1].rowConst(y)[x]);
+			try testing.expectEqual(original[idx][2], img.channels.items[2].rowConst(y)[x]);
+			idx += 1;
+		}
+	}
 }
 
 test "fwdPaletteWithDeltas grayscale round-trips exactly through invPalette" {
