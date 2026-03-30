@@ -850,6 +850,15 @@ pub fn fwdPaletteWithDeltas(
 	const total = source.w * source.h;
 	const indices = try allocator.alloc(pixel_type, total);
 	defer allocator.free(indices);
+	const bit_depth = @min(image.bitdepth, 24);
+
+	const IndexChoice = union(enum) {
+		delta: u32,
+		explicit: u32,
+		implicit: u32,
+	};
+	const choices = try allocator.alloc(IndexChoice, total);
+	defer allocator.free(choices);
 
 	for (0..source.h) |y| {
 		for (0..source.w) |x| {
@@ -870,8 +879,19 @@ pub fn fwdPaletteWithDeltas(
 				break;
 			}
 			if (found_delta) |delta_index| {
-				indices[pixel_index] = @intCast(delta_index);
+				choices[pixel_index] = .{ .delta = delta_index };
 				continue;
+			}
+
+			var color_buf: [kRgbChannels]pixel_type = .{ 0, 0, 0 };
+			if (num_channels <= kRgbChannels) {
+				for (0..num_channels) |c| {
+					color_buf[c] = image.channels.items[begin_c + c].rowConst(y)[x];
+				}
+				if (findImplicitPaletteOffset(color_buf[0..num_channels], bit_depth)) |implicit_offset| {
+					choices[pixel_index] = .{ .implicit = implicit_offset };
+					continue;
+				}
 			}
 
 			var explicit_index: ?u32 = null;
@@ -893,7 +913,7 @@ pub fn fwdPaletteWithDeltas(
 				}
 				break :blk new_index;
 			};
-			indices[pixel_index] = @intCast(num_delta_tuples + palette_index);
+			choices[pixel_index] = .{ .explicit = palette_index };
 		}
 	}
 
@@ -910,6 +930,14 @@ pub fn fwdPaletteWithDeltas(
 		for (0..nb_colors) |color_index| {
 			palette_channel.row(c)[num_delta_tuples + color_index] = explicit_values.items[color_index * num_channels + c];
 		}
+	}
+
+	for (0..total) |pixel_index| {
+		indices[pixel_index] = switch (choices[pixel_index]) {
+			.delta => |delta_index| @intCast(delta_index),
+			.explicit => |palette_index| @intCast(num_delta_tuples + palette_index),
+			.implicit => |implicit_offset| @intCast(num_delta_tuples + nb_colors + implicit_offset),
+		};
 	}
 
 	const index_channel = &image.channels.items[begin_c + 1];
@@ -1640,7 +1668,54 @@ test "fwdPaletteWithDeltas RGB round-trips exactly through invPalette" {
             try testing.expectEqual(original[idx][2], img.channels.items[2].rowConst(y)[x]);
             idx += 1;
         }
-    }
+	}
+}
+
+test "fwdPaletteWithDeltas RGB reuses implicit colors alongside delta entries" {
+	const allocator = testing.allocator;
+	var img = try Image.create(allocator, 3, 1, 8, 3);
+	defer img.deinit();
+
+	const black = [_]pixel_type{
+		getPaletteValue(&.{}, 0, 64, 0, 0, 8),
+		getPaletteValue(&.{}, 0, 64, 1, 0, 8),
+		getPaletteValue(&.{}, 0, 64, 2, 0, 8),
+	};
+	const white = [_]pixel_type{
+		getPaletteValue(&.{}, 0, 188, 0, 0, 8),
+		getPaletteValue(&.{}, 0, 188, 1, 0, 8),
+		getPaletteValue(&.{}, 0, 188, 2, 0, 8),
+	};
+	const original = [_][3]pixel_type{
+		black,
+		white,
+		.{ 254, 255, 255 },
+	};
+
+	for (0..img.w) |x| {
+		img.channels.items[0].row(0)[x] = original[x][0];
+		img.channels.items[1].row(0)[x] = original[x][1];
+		img.channels.items[2].row(0)[x] = original[x][2];
+	}
+
+	const palette = try fwdPaletteWithDeltas(&img, 0, 2, &.{ -1, 0, 0 }, .left, allocator);
+	try testing.expectEqual(TransformId.palette, palette.id);
+	try testing.expectEqual(@as(u32, 0), palette.nb_colors);
+	try testing.expectEqual(@as(u32, 1), palette.nb_deltas);
+	try testing.expectEqual(@as(usize, 1), img.channels.items[0].w);
+	try testing.expectEqualSlices(pixel_type, &.{-1}, img.channels.items[0].rowConst(0));
+	try testing.expectEqualSlices(pixel_type, &.{0}, img.channels.items[0].rowConst(1));
+	try testing.expectEqualSlices(pixel_type, &.{0}, img.channels.items[0].rowConst(2));
+	try testing.expectEqualSlices(pixel_type, &.{ 65, 189, 0 }, img.channels.items[1].rowConst(0));
+
+	try invPalette(&img, palette.begin_c, palette.nb_colors, palette.nb_deltas, palette.predictor);
+
+	try testing.expectEqual(@as(usize, 3), img.channels.items.len);
+	for (0..img.w) |x| {
+		try testing.expectEqual(original[x][0], img.channels.items[0].rowConst(0)[x]);
+		try testing.expectEqual(original[x][1], img.channels.items[1].rowConst(0)[x]);
+		try testing.expectEqual(original[x][2], img.channels.items[2].rowConst(0)[x]);
+	}
 }
 
 test "fwdPaletteAutoDeltas RGB selects the common delta tuple and round-trips" {

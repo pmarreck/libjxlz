@@ -750,6 +750,97 @@ test "writeCodestream round-trips an RGB delta-palette codestream through header
 	}
 }
 
+test "writeCodestream round-trips an RGB implicit-delta palette codestream through header parse and FrameDecoder" {
+	const allocator = testing.allocator;
+	const source_data = @embedFile("../testdata/lossless_4x4.jxl");
+	const prepared = try prepareFrame(source_data);
+
+	var codec_meta = prepared.codec_meta;
+	codec_meta.size = .{
+		.small = false,
+		.ysize_raw = 1,
+		.ratio = 0,
+		.xsize_raw = 3,
+	};
+
+	const frame_header = blk: {
+		var br = BitReader.init(prepared.frame_data);
+		break :blk try frame_header_mod.FrameHeader.readFromBitStream(&br, &codec_meta, false);
+	};
+
+	var source = try modular_image.Image.create(allocator, 3, 1, 8, 3);
+	defer source.deinit();
+	const original = [_][3]i32{
+		.{ 0, 0, 0 },
+		.{ 255, 255, 255 },
+		.{ 254, 255, 255 },
+	};
+	for (0..source.w) |x| {
+		source.channels.items[0].row(0)[x] = original[x][0];
+		source.channels.items[1].row(0)[x] = original[x][1];
+		source.channels.items[2].row(0)[x] = original[x][2];
+	}
+
+	var transformed = try modular_image.Image.create(allocator, 3, 1, 8, 3);
+	defer transformed.deinit();
+	for (source.channels.items, transformed.channels.items) |src, *dst| {
+		@memcpy(dst.data, src.data);
+	}
+	const palette = try transform_mod.fwdPaletteWithDeltas(&transformed, 0, 2, &.{ -1, 0, 0 }, .left, allocator);
+	try testing.expectEqual(@as(u32, 0), palette.nb_colors);
+	try testing.expectEqual(@as(u32, 1), palette.nb_deltas);
+
+	var dc_global = BitWriter.init(allocator);
+	defer dc_global.deinit();
+	try dc_global.write(1, 1); // DequantMatrices all_default
+	try dc_global.write(1, 0); // no global tree
+	_ = try enc_encoding.writeSingleNodeLocalTreeGroupImageWithPalette(
+		allocator,
+		&transformed,
+		palette,
+		.zero,
+		&dc_global,
+	);
+	try dc_global.zeroPadToByte();
+
+	const sections = [_][]const u8{dc_global.bytes()};
+	var frame_writer = BitWriter.init(allocator);
+	defer frame_writer.deinit();
+	try enc_frame.writeFrame(&frame_header, &codec_meta, &sections, &frame_writer);
+	try frame_writer.zeroPadToByte();
+
+	var codestream = BitWriter.init(allocator);
+	defer codestream.deinit();
+	try writeCodestream(&codec_meta, frame_writer.bytes(), &codestream);
+	try codestream.zeroPadToByte();
+
+	var br = BitReader.init(codestream.bytes()[2..]);
+	const size = headers.SizeHeader.readFromBitStream(&br);
+	try testing.expectEqual(@as(usize, 3), size.xsize());
+	try testing.expectEqual(@as(usize, 1), size.ysize());
+	const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+	const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+	try br.jumpToByteBoundary();
+
+	var parsed_meta = image_metadata.CodecMetadata{};
+	parsed_meta.m = metadata;
+	parsed_meta.size = size;
+	parsed_meta.transform_data = transform_data;
+
+	const frame_offset = br.totalBitsConsumed() / 8;
+	var frame_dec = dec_frame.FrameDecoder.init(allocator, &parsed_meta);
+	defer frame_dec.deinit();
+	try frame_dec.decodeFrame(codestream.bytes()[2 + frame_offset ..]);
+
+	const image = frame_dec.getDecodedImage();
+	try testing.expectEqual(@as(usize, 3), image.channels.items.len);
+	try testing.expectEqual(@as(usize, 3), image.w);
+	try testing.expectEqual(@as(usize, 1), image.h);
+	for (source.channels.items, image.channels.items) |want, got| {
+		try testing.expectEqualSlices(i32, want.data, got.data);
+	}
+}
+
 test "writeCodestream round-trips an RGB auto-delta palette codestream through header parse and FrameDecoder" {
 	const allocator = testing.allocator;
 	const source_data = @embedFile("../testdata/lossless_4x4.jxl");
