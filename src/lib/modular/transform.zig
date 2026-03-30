@@ -902,8 +902,119 @@ pub fn fwdPaletteWithDeltas(
 	};
 }
 
+const DeltaTupleCandidate = struct {
+	values: []pixel_type,
+	count: usize,
+	first_seen: usize,
+};
+
+fn deinitDeltaTupleCandidates(allocator: std.mem.Allocator, candidates: *std.ArrayList(DeltaTupleCandidate)) void {
+	for (candidates.items) |candidate| {
+		allocator.free(candidate.values);
+	}
+	candidates.deinit(allocator);
+}
+
+/// Collects the most common predictor residual tuples in first-seen order so
+/// the first auto-delta palette slice can stay deterministic and testable.
+fn chooseCommonDeltaTuples(
+	image: *const Image,
+	begin_c: u32,
+	end_c: u32,
+	max_deltas: usize,
+	predictor: Predictor,
+	allocator: std.mem.Allocator,
+) JxlError![]pixel_type {
+	if (max_deltas == 0) return error.GenericError;
+	if (begin_c > end_c or end_c >= image.channels.items.len) return error.GenericError;
+	try checkEqualChannels(image, begin_c, end_c);
+
+	const num_channels: usize = end_c - begin_c + 1;
+	const source = &image.channels.items[begin_c];
+	var residual: []pixel_type = try allocator.alloc(pixel_type, num_channels);
+	defer allocator.free(residual);
+
+	var candidates: std.ArrayList(DeltaTupleCandidate) = .{};
+	defer deinitDeltaTupleCandidates(allocator, &candidates);
+
+	var first_seen: usize = 0;
+	for (0..source.h) |y| {
+		for (0..source.w) |x| {
+			for (0..num_channels) |c| {
+				const channel = &image.channels.items[begin_c + c];
+				const actual = channel.rowConst(y)[x];
+				const pred = predictPaletteSlowPath(channel, x, y, predictor);
+				residual[c] = actual - pred;
+			}
+
+			var found = false;
+			for (candidates.items) |*candidate| {
+				if (std.mem.eql(pixel_type, candidate.values, residual)) {
+					candidate.count += 1;
+					found = true;
+					break;
+				}
+			}
+			if (!found) {
+				try candidates.append(allocator, .{
+					.values = try allocator.dupe(pixel_type, residual),
+					.count = 1,
+					.first_seen = first_seen,
+				});
+			}
+			first_seen += 1;
+		}
+	}
+
+	if (candidates.items.len == 0) return error.GenericError;
+
+	const num_selected = @min(max_deltas, candidates.items.len);
+	const selected = try allocator.alloc(pixel_type, num_selected * num_channels);
+	errdefer allocator.free(selected);
+	const used = try allocator.alloc(bool, candidates.items.len);
+	defer allocator.free(used);
+	@memset(used, false);
+
+	for (0..num_selected) |selected_index| {
+		var best_index: ?usize = null;
+		for (candidates.items, 0..) |candidate, candidate_index| {
+			if (used[candidate_index]) continue;
+			if (best_index == null) {
+				best_index = candidate_index;
+				continue;
+			}
+			const best = candidates.items[best_index.?];
+			if (candidate.count > best.count or
+				(candidate.count == best.count and candidate.first_seen < best.first_seen))
+			{
+				best_index = candidate_index;
+			}
+		}
+		const chosen = best_index orelse return error.GenericError;
+		used[chosen] = true;
+		@memcpy(selected[selected_index * num_channels ..][0..num_channels], candidates.items[chosen].values);
+	}
+
+	return selected;
+}
+
+/// Uses the most frequent residual tuples under the chosen predictor as the
+/// first auto-discovered delta palette entries, then falls back to explicit colors.
+pub fn fwdPaletteAutoDeltas(
+	image: *Image,
+	begin_c: u32,
+	end_c: u32,
+	max_deltas: usize,
+	predictor: Predictor,
+	allocator: std.mem.Allocator,
+) JxlError!Transform {
+	const delta_values = try chooseCommonDeltaTuples(image, begin_c, end_c, max_deltas, predictor, allocator);
+	defer allocator.free(delta_values);
+	return fwdPaletteWithDeltas(image, begin_c, end_c, delta_values, predictor, allocator);
+}
+
 pub fn metaPalette(image: *Image, begin_c: u32, end_c: u32, nb_colors: u32, nb_deltas: u32, allocator: std.mem.Allocator) JxlError!void {
-    checkEqualChannels(image, begin_c, end_c) catch return error.GenericError;
+	checkEqualChannels(image, begin_c, end_c) catch return error.GenericError;
 
     const nb: usize = end_c - begin_c + 1;
     if (begin_c >= image.nb_meta_channels) {
@@ -1421,6 +1532,52 @@ test "fwdPaletteWithDeltas RGB round-trips exactly through invPalette" {
     try testing.expectEqualSlices(pixel_type, &.{ 2, 30, 5 }, img.channels.items[0].rowConst(2));
     try testing.expectEqualSlices(pixel_type, &.{ 1, 0, 0 }, img.channels.items[1].rowConst(0));
     try testing.expectEqualSlices(pixel_type, &.{ 2, 0, 0 }, img.channels.items[1].rowConst(1));
+
+    try invPalette(&img, palette.begin_c, palette.nb_colors, palette.nb_deltas, palette.predictor);
+
+    try testing.expectEqual(@as(usize, 3), img.channels.items.len);
+    idx = 0;
+    for (0..img.h) |y| {
+        for (0..img.w) |x| {
+            try testing.expectEqual(original[idx][0], img.channels.items[0].rowConst(y)[x]);
+            try testing.expectEqual(original[idx][1], img.channels.items[1].rowConst(y)[x]);
+            try testing.expectEqual(original[idx][2], img.channels.items[2].rowConst(y)[x]);
+            idx += 1;
+        }
+    }
+}
+
+test "fwdPaletteAutoDeltas RGB selects the common delta tuple and round-trips" {
+    const allocator = testing.allocator;
+    var img = try Image.create(allocator, 3, 2, 8, 3);
+    defer img.deinit();
+
+    const original = [_][3]pixel_type{
+        .{ 10, 20, 30 },
+        .{ 11, 19, 32 },
+        .{ 12, 18, 34 },
+        .{ 5, 5, 5 },
+        .{ 6, 4, 7 },
+        .{ 7, 3, 9 },
+    };
+
+    var idx: usize = 0;
+    for (0..img.h) |y| {
+        for (0..img.w) |x| {
+            img.channels.items[0].row(y)[x] = original[idx][0];
+            img.channels.items[1].row(y)[x] = original[idx][1];
+            img.channels.items[2].row(y)[x] = original[idx][2];
+            idx += 1;
+        }
+    }
+
+    const palette = try fwdPaletteAutoDeltas(&img, 0, 2, 1, .left, allocator);
+    try testing.expectEqual(TransformId.palette, palette.id);
+    try testing.expectEqual(@as(u32, 3), palette.num_c);
+    try testing.expectEqual(@as(u32, 1), palette.nb_deltas);
+    try testing.expectEqualSlices(pixel_type, &.{ 1, 10, 5 }, img.channels.items[0].rowConst(0));
+    try testing.expectEqualSlices(pixel_type, &.{ -1, 20, 5 }, img.channels.items[0].rowConst(1));
+    try testing.expectEqualSlices(pixel_type, &.{ 2, 30, 5 }, img.channels.items[0].rowConst(2));
 
     try invPalette(&img, palette.begin_c, palette.nb_colors, palette.nb_deltas, palette.predictor);
 

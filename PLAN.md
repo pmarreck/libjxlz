@@ -151,7 +151,8 @@
 - [x] Broaden the narrow palette encode path beyond explicit grayscale/zero-delta mode: support a multi-channel explicit palette codestream roundtrip so RGB palette transforms are no longer decode-only on their simplest path — 2026-03-29 ~11:05 AM EDT
 - [x] Broaden palette beyond explicit zero-delta mode: add a grayscale delta/predictor palette roundtrip (`left` + one delta entry) at both transform and codestream scope, and fix decode-side palette indexing to use the full palette width so delta-prefixed palettes reconstruct correctly — 2026-03-29 ~11:25 AM EDT
 - [x] Broaden palette beyond grayscale delta mode: add a multi-channel delta/predictor palette roundtrip so RGB delta palettes are no longer decode-only on the narrow `left`-predictor path — 2026-03-29 ~11:40 AM EDT
-- [ ] Move beyond explicit/delta narrow palette coverage into more heuristic palette construction: selection, ordering, and richer delta discovery closer to upstream `enc_palette.cc`
+- [x] Move beyond explicit/delta narrow palette coverage into the first heuristic palette-construction slice: deterministically choose the most common residual tuples as auto-delta entries and prove the result on a tiny RGB transform plus codestream roundtrip — 2026-03-29 ~11:55 AM EDT
+- [ ] Continue palette-construction parity toward upstream `enc_palette.cc`: richer delta discovery, better color selection, and ordering heuristics instead of only “top N frequent residual tuples”
 - [ ] Fast lossless encoder
 - [ ] C FFI encode API
 - [ ] cjxlz CLI
