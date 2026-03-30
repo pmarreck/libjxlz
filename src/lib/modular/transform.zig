@@ -742,6 +742,20 @@ pub fn fwdPalette(image: *Image, begin_c: u32, end_c: u32, allocator: std.mem.Al
 	const choices = try allocator.alloc(IndexChoice, total);
 	defer allocator.free(choices);
 	const bit_depth = @min(image.bitdepth, 24);
+	const frequent_implicit_threshold: usize = 10;
+	var implicit_counts = [_]usize{0} ** @as(usize, @intCast(kImplicitPaletteSize));
+
+	if (num_channels <= kRgbChannels) {
+		for (0..total) |pixel_index| {
+			var color_buf: [kRgbChannels]pixel_type = .{ 0, 0, 0 };
+			for (0..num_channels) |c| {
+				color_buf[c] = original[c * total + pixel_index];
+			}
+			if (findImplicitPaletteOffset(color_buf[0..num_channels], bit_depth)) |implicit_offset| {
+				implicit_counts[implicit_offset] += 1;
+			}
+		}
+	}
 
 	for (0..total) |pixel_index| {
 		var color_buf: [kRgbChannels]pixel_type = .{ 0, 0, 0 };
@@ -750,8 +764,10 @@ pub fn fwdPalette(image: *Image, begin_c: u32, end_c: u32, allocator: std.mem.Al
 				color_buf[c] = original[c * total + pixel_index];
 			}
 			if (findImplicitPaletteOffset(color_buf[0..num_channels], bit_depth)) |implicit_offset| {
-				choices[pixel_index] = .{ .implicit = implicit_offset };
-				continue;
+				if (implicit_counts[implicit_offset] <= frequent_implicit_threshold) {
+					choices[pixel_index] = .{ .implicit = implicit_offset };
+					continue;
+				}
 			}
 		}
 
@@ -1567,6 +1583,53 @@ test "fwdPalette RGB uses implicit colors without explicit palette rows" {
 			try testing.expectEqual(original[idx][1], img.channels.items[1].rowConst(y)[x]);
 			try testing.expectEqual(original[idx][2], img.channels.items[2].rowConst(y)[x]);
 			idx += 1;
+		}
+	}
+}
+
+test "fwdPalette RGB promotes frequent implicit colors into explicit palette rows" {
+	const allocator = testing.allocator;
+	var img = try Image.create(allocator, 4, 3, 8, 3);
+	defer img.deinit();
+
+	const black = [_]pixel_type{
+		getPaletteValue(&.{}, 0, 64, 0, 0, 8),
+		getPaletteValue(&.{}, 0, 64, 1, 0, 8),
+		getPaletteValue(&.{}, 0, 64, 2, 0, 8),
+	};
+	const white = [_]pixel_type{
+		getPaletteValue(&.{}, 0, 188, 0, 0, 8),
+		getPaletteValue(&.{}, 0, 188, 1, 0, 8),
+		getPaletteValue(&.{}, 0, 188, 2, 0, 8),
+	};
+
+	for (0..img.h) |y| {
+		for (0..img.w) |x| {
+			const color = if (y == img.h - 1 and x == img.w - 1) black else white;
+			img.channels.items[0].row(y)[x] = color[0];
+			img.channels.items[1].row(y)[x] = color[1];
+			img.channels.items[2].row(y)[x] = color[2];
+		}
+	}
+
+	const palette = try fwdPalette(&img, 0, 2, allocator);
+	try testing.expectEqual(TransformId.palette, palette.id);
+	try testing.expectEqual(@as(u32, 1), palette.nb_colors);
+	try testing.expectEqual(@as(u32, 0), palette.nb_deltas);
+	try testing.expectEqual(@as(usize, 1), img.channels.items[0].w);
+	try testing.expectEqualSlices(pixel_type, &.{255}, img.channels.items[0].rowConst(0));
+	try testing.expectEqualSlices(pixel_type, &.{255}, img.channels.items[0].rowConst(1));
+	try testing.expectEqualSlices(pixel_type, &.{255}, img.channels.items[0].rowConst(2));
+	try testing.expectEqual(@as(pixel_type, 65), img.channels.items[1].rowConst(2)[3]);
+
+	try invPalette(&img, palette.begin_c, palette.nb_colors, palette.nb_deltas, palette.predictor);
+
+	for (0..img.h) |y| {
+		for (0..img.w) |x| {
+			const color = if (y == img.h - 1 and x == img.w - 1) black else white;
+			try testing.expectEqual(color[0], img.channels.items[0].rowConst(y)[x]);
+			try testing.expectEqual(color[1], img.channels.items[1].rowConst(y)[x]);
+			try testing.expectEqual(color[2], img.channels.items[2].rowConst(y)[x]);
 		}
 	}
 }
