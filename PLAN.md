@@ -150,7 +150,8 @@
 - [x] Port the next encode-side modular transform slice after narrow squeeze coverage: add a minimal explicit grayscale palette transform writer plus exact transform/codestream roundtrips so the second major lossless modular transform family is no longer decode-only on its simplest path — 2026-03-29 ~10:45 AM EDT
 - [x] Broaden the narrow palette encode path beyond explicit grayscale/zero-delta mode: support a multi-channel explicit palette codestream roundtrip so RGB palette transforms are no longer decode-only on their simplest path — 2026-03-29 ~11:05 AM EDT
 - [x] Broaden palette beyond explicit zero-delta mode: add a grayscale delta/predictor palette roundtrip (`left` + one delta entry) at both transform and codestream scope, and fix decode-side palette indexing to use the full palette width so delta-prefixed palettes reconstruct correctly — 2026-03-29 ~11:25 AM EDT
-- [ ] Broaden palette beyond grayscale delta mode: add at least one multi-channel delta/predictor palette roundtrip before moving on to more heuristic palette construction
+- [x] Broaden palette beyond grayscale delta mode: add a multi-channel delta/predictor palette roundtrip so RGB delta palettes are no longer decode-only on the narrow `left`-predictor path — 2026-03-29 ~11:40 AM EDT
+- [ ] Move beyond explicit/delta narrow palette coverage into more heuristic palette construction: selection, ordering, and richer delta discovery closer to upstream `enc_palette.cc`
 - [ ] Fast lossless encoder
 - [ ] C FFI encode API
 - [ ] cjxlz CLI
