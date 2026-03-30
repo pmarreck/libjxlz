@@ -980,11 +980,30 @@ const DeltaTupleCandidate = struct {
 	first_seen: usize,
 };
 
+const DeltaBucketCandidate = struct {
+	values: []pixel_type,
+	total_count: usize,
+	representative_index: usize,
+	first_seen: usize,
+};
+
 fn deinitDeltaTupleCandidates(allocator: std.mem.Allocator, candidates: *std.ArrayList(DeltaTupleCandidate)) void {
 	for (candidates.items) |candidate| {
 		allocator.free(candidate.values);
 	}
 	candidates.deinit(allocator);
+}
+
+fn deinitDeltaBucketCandidates(allocator: std.mem.Allocator, buckets: *std.ArrayList(DeltaBucketCandidate)) void {
+	for (buckets.items) |bucket| {
+		allocator.free(bucket.values);
+	}
+	buckets.deinit(allocator);
+}
+
+fn roundIntSymmetric(value: pixel_type, div: pixel_type) pixel_type {
+	if (value < 0) return -roundIntSymmetric(-value, div);
+	return @divTrunc(value + @divTrunc(div, 2), div);
 }
 
 fn explicitPaletteLuma(values: []const pixel_type, num_channels: usize, color_index: usize) f32 {
@@ -1093,31 +1112,68 @@ fn chooseCommonDeltaTuples(
 
 	if (candidates.items.len == 0) return error.GenericError;
 
-	const num_selected = @min(max_deltas, candidates.items.len);
+	const bucket_shift: u5 = @intCast(@max(image.bitdepth - 8, 0));
+	const bucket_size: pixel_type = @intCast(@as(i32, 3) << bucket_shift);
+	var rounded = try allocator.alloc(pixel_type, num_channels);
+	defer allocator.free(rounded);
+	var buckets: std.ArrayList(DeltaBucketCandidate) = .{};
+	defer deinitDeltaBucketCandidates(allocator, &buckets);
+
+	for (candidates.items, 0..) |candidate, candidate_index| {
+		for (0..num_channels) |c| {
+			rounded[c] = roundIntSymmetric(candidate.values[c], bucket_size);
+		}
+
+		var found_bucket = false;
+		for (buckets.items) |*bucket| {
+			if (!std.mem.eql(pixel_type, bucket.values, rounded)) continue;
+			bucket.total_count += candidate.count;
+			const representative = candidates.items[bucket.representative_index];
+			if (candidate.count > representative.count or
+				(candidate.count == representative.count and candidate.first_seen < representative.first_seen))
+			{
+				bucket.representative_index = candidate_index;
+			}
+			if (candidate.first_seen < bucket.first_seen) bucket.first_seen = candidate.first_seen;
+			found_bucket = true;
+			break;
+		}
+		if (!found_bucket) {
+			try buckets.append(allocator, .{
+				.values = try allocator.dupe(pixel_type, rounded),
+				.total_count = candidate.count,
+				.representative_index = candidate_index,
+				.first_seen = candidate.first_seen,
+			});
+		}
+	}
+
+	const num_selected = @min(max_deltas, buckets.items.len);
 	const selected = try allocator.alloc(pixel_type, num_selected * num_channels);
 	errdefer allocator.free(selected);
-	const used = try allocator.alloc(bool, candidates.items.len);
+	const used = try allocator.alloc(bool, buckets.items.len);
 	defer allocator.free(used);
 	@memset(used, false);
 
 	for (0..num_selected) |selected_index| {
 		var best_index: ?usize = null;
-		for (candidates.items, 0..) |candidate, candidate_index| {
-			if (used[candidate_index]) continue;
+		for (buckets.items, 0..) |bucket, bucket_index| {
+			if (used[bucket_index]) continue;
 			if (best_index == null) {
-				best_index = candidate_index;
+				best_index = bucket_index;
 				continue;
 			}
-			const best = candidates.items[best_index.?];
-			if (candidate.count > best.count or
-				(candidate.count == best.count and candidate.first_seen < best.first_seen))
+			const best = buckets.items[best_index.?];
+			if (bucket.total_count > best.total_count or
+				(bucket.total_count == best.total_count and bucket.first_seen < best.first_seen))
 			{
-				best_index = candidate_index;
+				best_index = bucket_index;
 			}
 		}
 		const chosen = best_index orelse return error.GenericError;
 		used[chosen] = true;
-		@memcpy(selected[selected_index * num_channels ..][0..num_channels], candidates.items[chosen].values);
+		const representative = candidates.items[buckets.items[chosen].representative_index];
+		@memcpy(selected[selected_index * num_channels ..][0..num_channels], representative.values);
 	}
 
 	return selected;
@@ -1951,7 +2007,26 @@ test "fwdPaletteAutoDeltas RGB selects the common delta tuple and round-trips" {
             try testing.expectEqual(original[idx][2], img.channels.items[2].rowConst(y)[x]);
             idx += 1;
         }
-    }
+	}
+}
+
+test "fwdPaletteAutoDeltas grayscale prefers the densest residual bucket" {
+	const allocator = testing.allocator;
+	var img = try Image.create(allocator, 3, 1, 8, 1);
+	defer img.deinit();
+
+	const original = [_]pixel_type{ 30, 35, 41 };
+	for (0..img.w) |x| {
+		img.channels.items[0].row(0)[x] = original[x];
+	}
+
+	const palette = try fwdPaletteAutoDeltas(&img, 0, 0, 1, .left, allocator);
+	try testing.expectEqual(TransformId.palette, palette.id);
+	try testing.expectEqual(@as(u32, 1), palette.nb_deltas);
+	try testing.expectEqualSlices(pixel_type, &.{ 5, 30, 41 }, img.channels.items[0].rowConst(0));
+
+	try invPalette(&img, palette.begin_c, palette.nb_colors, palette.nb_deltas, palette.predictor);
+	try testing.expectEqualSlices(pixel_type, &original, img.channels.items[0].rowConst(0));
 }
 
 test "fwdSqueeze round-trips exactly through invSqueeze" {

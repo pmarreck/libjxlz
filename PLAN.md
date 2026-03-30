@@ -157,7 +157,8 @@
 - [x] Port the first upstream-style implicit-color selection heuristic: promote very frequent implicit RGB colors into explicit palette rows so they get short indexes instead of always staying implicit — 2026-03-29 ~12:50 PM EDT
 - [x] Port the first explicit-color ordering heuristic: sort plain RGB palette rows by luma instead of raw image order, remap indices accordingly, and keep exact roundtrip coverage — 2026-03-29 ~1:05 PM EDT
 - [x] Extend luma ordering into the delta/auto-delta explicit-fallback rows, keeping delta matches first while reordering only the surviving explicit RGB palette rows — 2026-03-29 ~1:15 PM EDT
-- [ ] Continue palette-construction parity toward upstream `enc_palette.cc`: improve richer delta discovery instead of only “top N frequent residual tuples”
+- [x] Port the first richer auto-delta discovery step: bucket nearby residual tuples before ranking them, then emit the strongest exact tuple inside the winning bucket so dense neighborhoods beat unrelated first-seen singletons — 2026-03-30 ~12:05 AM EDT
+- [ ] Continue palette-construction parity toward upstream `enc_palette.cc`: add stronger bucket scoring / distance weighting for auto-delta discovery instead of only raw bucket population
 - [ ] Fast lossless encoder
 - [ ] C FFI encode API
 - [ ] cjxlz CLI
