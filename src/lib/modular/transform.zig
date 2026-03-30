@@ -1006,6 +1006,17 @@ fn roundIntSymmetric(value: pixel_type, div: pixel_type) pixel_type {
 	return @divTrunc(value + @divTrunc(div, 2), div);
 }
 
+/// Measures how far a rounded delta bucket sits from zero so the palette
+/// chooser can break frequency ties in favor of more meaningful residuals.
+fn deltaBucketDistance(values: []const pixel_type) f64 {
+	var squared_sum: f64 = 0;
+	for (values) |value| {
+		const f = @as(f64, @floatFromInt(value));
+		squared_sum += f * f;
+	}
+	return @sqrt(squared_sum);
+}
+
 fn explicitPaletteLuma(values: []const pixel_type, num_channels: usize, color_index: usize) f32 {
 	const base = color_index * num_channels;
 	const r = @as(f32, @floatFromInt(values[base + 0]));
@@ -1164,8 +1175,11 @@ fn chooseCommonDeltaTuples(
 				continue;
 			}
 			const best = buckets.items[best_index.?];
+			const bucket_distance = deltaBucketDistance(bucket.values);
+			const best_distance = deltaBucketDistance(best.values);
 			if (bucket.total_count > best.total_count or
-				(bucket.total_count == best.total_count and bucket.first_seen < best.first_seen))
+				(bucket.total_count == best.total_count and bucket_distance > best_distance) or
+				(bucket.total_count == best.total_count and bucket_distance == best_distance and bucket.first_seen < best.first_seen))
 			{
 				best_index = bucket_index;
 			}
@@ -2024,6 +2038,25 @@ test "fwdPaletteAutoDeltas grayscale prefers the densest residual bucket" {
 	try testing.expectEqual(TransformId.palette, palette.id);
 	try testing.expectEqual(@as(u32, 1), palette.nb_deltas);
 	try testing.expectEqualSlices(pixel_type, &.{ 5, 30, 41 }, img.channels.items[0].rowConst(0));
+
+	try invPalette(&img, palette.begin_c, palette.nb_colors, palette.nb_deltas, palette.predictor);
+	try testing.expectEqualSlices(pixel_type, &original, img.channels.items[0].rowConst(0));
+}
+
+test "fwdPaletteAutoDeltas grayscale bucket scoring prefers larger-magnitude ties" {
+	const allocator = testing.allocator;
+	var img = try Image.create(allocator, 4, 1, 8, 1);
+	defer img.deinit();
+
+	const original = [_]pixel_type{ 5, 11, 41, 72 };
+	for (0..img.w) |x| {
+		img.channels.items[0].row(0)[x] = original[x];
+	}
+
+	const palette = try fwdPaletteAutoDeltas(&img, 0, 0, 1, .left, allocator);
+	try testing.expectEqual(TransformId.palette, palette.id);
+	try testing.expectEqual(@as(u32, 1), palette.nb_deltas);
+	try testing.expectEqualSlices(pixel_type, &.{ 30, 5, 11, 72 }, img.channels.items[0].rowConst(0));
 
 	try invPalette(&img, palette.begin_c, palette.nb_colors, palette.nb_deltas, palette.predictor);
 	try testing.expectEqualSlices(pixel_type, &original, img.channels.items[0].rowConst(0));

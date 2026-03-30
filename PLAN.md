@@ -1,5 +1,11 @@
 # libjxlz Plan
 
+## Current Checkpoint (2026-03-30)
+- [x] Decoder status: public-C-API decode remains modestly ahead of upstream `libjxl` on the checked harnesses (`full_corpus` and the real `600x300` multi-group RGB case), with the current wins generally in the `~1.07x` to `~1.10x` range depending on the accepted run
+- [x] Encoder status: the narrow lossless modular encoder is now real end-to-end for static grayscale and RGB images, including multi-group codestream roundtrips plus the current modular transform slices (`RCT`, `squeeze`, explicit/delta/implicit/auto-delta palette paths)
+- [ ] Nearest parity gaps: iterative histogram refinement / re-seeding, broader upstream `enc_palette.cc` heuristics, more-general modular/frame encoding, encode-side public C FFI + `cjxlz`, then lossy / VarDCT and broader conformance coverage
+- [ ] Near-term direction: keep porting upstream lossless modular encode structure in narrow tested slices, prefer real roundtrip coverage first, and only keep performance changes that survive `./bm`
+
 ## Phase 1: Foundation (complete)
 - [x] build.zig + build.zig.zon — 2026-03-06 ~3:00 PM EST
 - [x] ./build and ./test scripts — 2026-03-06 ~3:00 PM EST
@@ -158,7 +164,8 @@
 - [x] Port the first explicit-color ordering heuristic: sort plain RGB palette rows by luma instead of raw image order, remap indices accordingly, and keep exact roundtrip coverage — 2026-03-29 ~1:05 PM EDT
 - [x] Extend luma ordering into the delta/auto-delta explicit-fallback rows, keeping delta matches first while reordering only the surviving explicit RGB palette rows — 2026-03-29 ~1:15 PM EDT
 - [x] Port the first richer auto-delta discovery step: bucket nearby residual tuples before ranking them, then emit the strongest exact tuple inside the winning bucket so dense neighborhoods beat unrelated first-seen singletons — 2026-03-30 ~12:05 AM EDT
-- [ ] Continue palette-construction parity toward upstream `enc_palette.cc`: add stronger bucket scoring / distance weighting for auto-delta discovery instead of only raw bucket population
+- [x] Continue palette-construction parity toward upstream `enc_palette.cc`: keep bucket population as the primary auto-delta signal, but break ties by rounded-delta magnitude so equally dense buckets no longer fall back to first-seen order; proved with a new grayscale counterexample while keeping the existing RGB auto-delta regression green — 2026-03-30 ~1:10 AM EDT
+- [ ] Continue palette-construction parity toward upstream `enc_palette.cc`: move beyond count-first bucket ranking by incorporating real residual-distance weighting into auto-delta discovery, closer to upstream `FindFrequentColorDeltas`
 - [ ] Fast lossless encoder
 - [ ] C FFI encode API
 - [ ] cjxlz CLI
