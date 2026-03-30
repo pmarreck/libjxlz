@@ -190,6 +190,27 @@ pub const ExtraChannelInfo = struct {
     }
 };
 
+fn isDefaultExtraChannelInfo(extra: *const ExtraChannelInfo) bool {
+    return extra.type == .alpha and
+        !extra.bit_depth.floating_point_sample and
+        extra.bit_depth.bits_per_sample == 8 and
+        extra.bit_depth.exponent_bits_per_sample == 0 and
+        extra.dim_shift == 0 and
+        extra.name.len == 0 and
+        extra.name_len == 0 and
+        !extra.alpha_associated and
+        std.mem.eql(f32, &extra.spot_color, &[_]f32{ 0, 0, 0, 0 }) and
+        extra.cfa_channel == 0;
+}
+
+/// Starts the write-side extra-channel surface with the decoder's all-default
+/// alpha channel so codestream writers can grow into RGBA before broader
+/// spot/CFA/named-channel coverage exists.
+pub fn writeExtraChannelInfo(extra: *const ExtraChannelInfo, writer: anytype) !void {
+    if (!isDefaultExtraChannelInfo(extra)) return error.Unsupported;
+    try fc.writeAllDefault(true, writer);
+}
+
 // ── ToneMapping ──
 
 pub const ToneMapping = struct {
@@ -333,7 +354,6 @@ pub const ImageMetadata = struct {
 /// no extra channels, non-XYB grayscale/RGB color encodings, and no extensions.
 pub fn writeImageMetadata(metadata: *const ImageMetadata, writer: anytype) !void {
     if (metadata.extensions != 0) return error.Unsupported;
-    if (metadata.num_extra_channels != 0 or metadata.extra_channel_count != 0) return error.Unsupported;
 
     const tone_mapping_default = isDefaultToneMapping(&metadata.tone_mapping);
     const extra_fields = metadata.orientation != 1 or
@@ -350,6 +370,10 @@ pub fn writeImageMetadata(metadata: *const ImageMetadata, writer: anytype) !void
 
     const extra_channels_enc = fc.U32Enc.init(fc.val(0), fc.val(1), fc.bitsOffset(4, 2), fc.bitsOffset(12, 1));
     try fc.U32Coder.write(extra_channels_enc, metadata.num_extra_channels, writer);
+    if (metadata.extra_channel_count != metadata.num_extra_channels) return error.Unsupported;
+    for (0..metadata.extra_channel_count) |i| {
+        try writeExtraChannelInfo(&metadata.extra_channel_info[i], writer);
+    }
 
     try writer.write(1, @intFromBool(metadata.xyb_encoded));
     try color_encoding_mod.writeColorEncoding(&metadata.color_encoding, writer);
@@ -525,6 +549,30 @@ test "writeImageMetadata plus CustomTransformData matches simple grayscale fixtu
 
     try testing.expectEqual(extracted.len_bits, writer.bitsWritten() - ((8 - (extracted.len_bits % 8)) % 8));
     try expectBitsEqual(data[2..], extracted.offset_bits, extracted.len_bits, writer.bytes());
+}
+
+test "writeImageMetadata round-trips a default alpha extra channel" {
+    const allocator = testing.allocator;
+    const data = @embedFile("../testdata/lossless_4x4.jxl");
+    const extracted = try extractMetadataBits(data);
+
+    var metadata = extracted.metadata;
+    metadata.num_extra_channels = 1;
+    metadata.extra_channel_count = 1;
+    metadata.extra_channel_info[0] = .{};
+
+    var writer = BitWriter.init(allocator);
+    defer writer.deinit();
+    try writeImageMetadata(&metadata, &writer);
+    try writer.zeroPadToByte();
+
+    var br = BitReader.init(writer.bytes());
+    const roundtrip = try ImageMetadata.readFromBitStream(&br);
+    try testing.expectEqual(@as(u32, 1), roundtrip.num_extra_channels);
+    try testing.expectEqual(@as(u32, 1), roundtrip.extra_channel_count);
+    try testing.expectEqual(ExtraChannel.alpha, roundtrip.extra_channel_info[0].type);
+    try testing.expectEqual(@as(u32, 8), roundtrip.extra_channel_info[0].bit_depth.bits_per_sample);
+    try testing.expect(!roundtrip.extra_channel_info[0].alpha_associated);
 }
 
 test "BitDepth default (8-bit uint)" {
