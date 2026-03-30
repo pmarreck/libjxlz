@@ -155,7 +155,8 @@
 - [x] Add the first implicit-palette encode slice: let `fwdPalette` emit decoder-native implicit RGB colors without materializing explicit palette rows, including the all-implicit codestream case with `nb_colors == 0` — 2026-03-29 ~12:20 PM EDT
 - [x] Extend implicit-color reuse into the delta/auto-delta palette path: let `fwdPaletteWithDeltas` keep delta matches first, then reuse decoder-native implicit colors before falling back to explicit rows, including an RGB codestream that mixes implicit colors with one explicit delta entry — 2026-03-29 ~12:35 PM EDT
 - [x] Port the first upstream-style implicit-color selection heuristic: promote very frequent implicit RGB colors into explicit palette rows so they get short indexes instead of always staying implicit — 2026-03-29 ~12:50 PM EDT
-- [ ] Continue palette-construction parity toward upstream `enc_palette.cc`: improve color ordering and richer delta discovery instead of only image order plus “top N frequent residual tuples”
+- [x] Port the first explicit-color ordering heuristic: sort plain RGB palette rows by luma instead of raw image order, remap indices accordingly, and keep exact roundtrip coverage — 2026-03-29 ~1:05 PM EDT
+- [ ] Continue palette-construction parity toward upstream `enc_palette.cc`: extend luma ordering to the delta/auto-delta explicit-fallback rows, then improve richer delta discovery instead of only image order plus “top N frequent residual tuples”
 - [ ] Fast lossless encoder
 - [ ] C FFI encode API
 - [ ] cjxlz CLI

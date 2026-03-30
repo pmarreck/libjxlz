@@ -794,6 +794,40 @@ pub fn fwdPalette(image: *Image, begin_c: u32, end_c: u32, allocator: std.mem.Al
 	}
 
 	const nb_colors: u32 = @intCast(palette_values.items.len / num_channels);
+	const explicit_remap = try allocator.alloc(u32, nb_colors);
+	defer allocator.free(explicit_remap);
+	for (0..nb_colors) |color_index| {
+		explicit_remap[color_index] = @intCast(color_index);
+	}
+	if (num_channels >= 3 and nb_colors > 1) {
+		var sorted = try allocator.alloc(pixel_type, palette_values.items.len);
+		defer allocator.free(sorted);
+		var inverse_remap = try allocator.alloc(u32, nb_colors);
+		defer allocator.free(inverse_remap);
+
+		var i: usize = 1;
+		while (i < nb_colors) : (i += 1) {
+			const current = explicit_remap[i];
+			const current_luma = explicitPaletteLuma(palette_values.items, num_channels, current);
+			var j = i;
+			while (j > 0) {
+				const prev = explicit_remap[j - 1];
+				if (explicitPaletteLuma(palette_values.items, num_channels, prev) <= current_luma) break;
+				explicit_remap[j] = prev;
+				j -= 1;
+			}
+			explicit_remap[j] = current;
+		}
+
+		for (explicit_remap, 0..) |old_index, new_index| {
+			inverse_remap[old_index] = @intCast(new_index);
+			for (0..num_channels) |c| {
+				sorted[new_index * num_channels + c] = palette_values.items[old_index * num_channels + c];
+			}
+		}
+		@memcpy(palette_values.items, sorted);
+		@memcpy(explicit_remap, inverse_remap);
+	}
 	try metaPalette(image, begin_c, end_c, nb_colors, 0, allocator);
 
 	const palette_channel = &image.channels.items[0];
@@ -806,7 +840,7 @@ pub fn fwdPalette(image: *Image, begin_c: u32, end_c: u32, allocator: std.mem.Al
 
 	for (0..total) |pixel_index| {
 		indices[pixel_index] = switch (choices[pixel_index]) {
-			.explicit => |palette_index| @intCast(palette_index),
+			.explicit => |palette_index| @intCast(explicit_remap[palette_index]),
 			.implicit => |implicit_offset| @intCast(nb_colors + implicit_offset),
 		};
 	}
@@ -981,6 +1015,14 @@ fn deinitDeltaTupleCandidates(allocator: std.mem.Allocator, candidates: *std.Arr
 		allocator.free(candidate.values);
 	}
 	candidates.deinit(allocator);
+}
+
+fn explicitPaletteLuma(values: []const pixel_type, num_channels: usize, color_index: usize) f32 {
+	const base = color_index * num_channels;
+	const r = @as(f32, @floatFromInt(values[base + 0]));
+	const g = @as(f32, @floatFromInt(values[base + 1]));
+	const b = @as(f32, @floatFromInt(values[base + 2]));
+	return 0.299 * r + 0.587 * g + 0.114 * b;
 }
 
 /// Collects the most common predictor residual tuples in first-seen order so
@@ -1510,14 +1552,14 @@ test "fwdPalette RGB round-trips exactly through invPalette" {
     try testing.expectEqual(@as(u32, 0), palette.nb_deltas);
     try testing.expectEqual(Predictor.zero, palette.predictor);
 
-    try testing.expectEqual(@as(usize, 2), img.channels.items.len);
-    try testing.expectEqual(@as(usize, 3), img.channels.items[0].h);
-    try testing.expectEqual(@as(usize, 3), img.channels.items[0].w);
-    try testing.expectEqualSlices(pixel_type, &.{ 10, 3, 9 }, img.channels.items[0].rowConst(0));
-    try testing.expectEqualSlices(pixel_type, &.{ 20, 4, 9 }, img.channels.items[0].rowConst(1));
-    try testing.expectEqualSlices(pixel_type, &.{ 30, 5, 1 }, img.channels.items[0].rowConst(2));
-    try testing.expectEqualSlices(pixel_type, &.{ 0, 1, 0 }, img.channels.items[1].rowConst(0));
-    try testing.expectEqualSlices(pixel_type, &.{ 2, 1, 2 }, img.channels.items[1].rowConst(1));
+	try testing.expectEqual(@as(usize, 2), img.channels.items.len);
+	try testing.expectEqual(@as(usize, 3), img.channels.items[0].h);
+	try testing.expectEqual(@as(usize, 3), img.channels.items[0].w);
+	try testing.expectEqualSlices(pixel_type, &.{ 3, 9, 10 }, img.channels.items[0].rowConst(0));
+	try testing.expectEqualSlices(pixel_type, &.{ 4, 9, 20 }, img.channels.items[0].rowConst(1));
+	try testing.expectEqualSlices(pixel_type, &.{ 5, 1, 30 }, img.channels.items[0].rowConst(2));
+	try testing.expectEqualSlices(pixel_type, &.{ 2, 0, 2 }, img.channels.items[1].rowConst(0));
+	try testing.expectEqualSlices(pixel_type, &.{ 1, 0, 1 }, img.channels.items[1].rowConst(1));
 
     try invPalette(&img, palette.begin_c, palette.nb_colors, palette.nb_deltas, palette.predictor);
 
@@ -1631,6 +1673,40 @@ test "fwdPalette RGB promotes frequent implicit colors into explicit palette row
 			try testing.expectEqual(color[1], img.channels.items[1].rowConst(y)[x]);
 			try testing.expectEqual(color[2], img.channels.items[2].rowConst(y)[x]);
 		}
+	}
+}
+
+test "fwdPalette RGB orders explicit colors by luma instead of image order" {
+	const allocator = testing.allocator;
+	var img = try Image.create(allocator, 3, 1, 8, 3);
+	defer img.deinit();
+
+	const original = [_][3]pixel_type{
+		.{ 100, 0, 0 },
+		.{ 0, 100, 0 },
+		.{ 0, 0, 100 },
+	};
+
+	for (0..img.w) |x| {
+		img.channels.items[0].row(0)[x] = original[x][0];
+		img.channels.items[1].row(0)[x] = original[x][1];
+		img.channels.items[2].row(0)[x] = original[x][2];
+	}
+
+	const palette = try fwdPalette(&img, 0, 2, allocator);
+	try testing.expectEqual(TransformId.palette, palette.id);
+	try testing.expectEqual(@as(u32, 3), palette.nb_colors);
+	try testing.expectEqualSlices(pixel_type, &.{ 0, 100, 0 }, img.channels.items[0].rowConst(0));
+	try testing.expectEqualSlices(pixel_type, &.{ 0, 0, 100 }, img.channels.items[0].rowConst(1));
+	try testing.expectEqualSlices(pixel_type, &.{ 100, 0, 0 }, img.channels.items[0].rowConst(2));
+	try testing.expectEqualSlices(pixel_type, &.{ 1, 2, 0 }, img.channels.items[1].rowConst(0));
+
+	try invPalette(&img, palette.begin_c, palette.nb_colors, palette.nb_deltas, palette.predictor);
+
+	for (0..img.w) |x| {
+		try testing.expectEqual(original[x][0], img.channels.items[0].rowConst(0)[x]);
+		try testing.expectEqual(original[x][1], img.channels.items[1].rowConst(0)[x]);
+		try testing.expectEqual(original[x][2], img.channels.items[2].rowConst(0)[x]);
 	}
 }
 
