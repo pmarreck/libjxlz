@@ -30,6 +30,7 @@
 - `tests/cli/encode_codestream_bench_smoke.sh` — checksum smoke test proving the packaged ReleaseFast narrow encode harness emits the expected deterministic codestream checksum, while still cross-compiling cleanly for `x86_64-linux`
 - `tests/cli/cjxlz_smoke.sh` — end-to-end C CLI smoke test for the first encoder CLI; builds the packaged `cjxlz`, feeds it a tiny raw PPM through stdin/stdout aliases, and proves `djxlz` decodes the resulting codestream back to the exact original pixels
 - `tests/cli/cjxlz_extra_info.c` / `tests/cli/cjxlz_extra_smoke.sh` — CLI smoke for the widened `cjxlz --extra TYPE PATH` surface; encodes a tiny RGB PPM plus a P5 `selection_mask` sidecar, proves `djxlz` still round-trips the color pixels, and uses a tiny C decoder helper to assert the resulting codestream reports one extra channel through `JxlDecoderGetBasicInfo`
+- `tests/cli/cjxlz_alpha_extra_smoke.sh` — mixed-path CLI smoke for `cjxlz --extra`; feeds `cjxlz` a narrow `RGB_ALPHA` PAM plus a `selection_mask` sidecar, proves `djxlz` round-trips the PAM color+alpha pixels, and reuses `cjxlz_extra_info.c` to assert the resulting codestream reports `alpha_bits = 8` and two total extra channels
 - `tests/cli/windows_cross_compile_smoke.sh` — compile-only portability smoke test for `x86_64-windows-gnu`; cross-builds the pure Zig library, C API, both C CLIs (`djxlz`, `cjxlz`), and the encoder scaffolds so `./test`, Linux Actions, and Garnix all catch Windows portability regressions before runtime support exists
 
 ## src/
