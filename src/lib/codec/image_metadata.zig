@@ -203,17 +203,41 @@ fn isDefaultExtraChannelInfo(extra: *const ExtraChannelInfo) bool {
         extra.cfa_channel == 0;
 }
 
+fn isPlainExtraChannelType(extra_type: ExtraChannel) bool {
+	return switch (extra_type) {
+		.depth,
+		.selection_mask,
+		.black,
+		.thermal,
+		.optional,
+		=> true,
+		else => false,
+	};
+}
+
 /// Starts the write-side extra-channel surface with the decoder's all-default
 /// alpha channel, then grows into the explicit alpha-field form so codestream
-/// writers can cover associated alpha before broader spot/CFA support exists.
+/// writers can cover alpha plus the plain shared-field extra-channel family
+/// before broader spot/CFA support exists.
 pub fn writeExtraChannelInfo(extra: *const ExtraChannelInfo, writer: anytype) !void {
     if (isDefaultExtraChannelInfo(extra)) {
         try fc.writeAllDefault(true, writer);
         return;
     }
 
-    if (extra.type != .alpha) return error.Unsupported;
     if (extra.name_len != 0 and extra.name_len != extra.name.len) return error.Unsupported;
+    if ((extra.type == .alpha and !std.mem.eql(f32, &extra.spot_color, &[_]f32{ 0, 0, 0, 0 })) or
+        (extra.type == .alpha and extra.cfa_channel != 0))
+    {
+        return error.Unsupported;
+    }
+    if (isPlainExtraChannelType(extra.type)) {
+        if (extra.alpha_associated) return error.Unsupported;
+        if (!std.mem.eql(f32, &extra.spot_color, &[_]f32{ 0, 0, 0, 0 })) return error.Unsupported;
+        if (extra.cfa_channel != 0) return error.Unsupported;
+    } else if (extra.type != .alpha) {
+        return error.Unsupported;
+    }
 
     try fc.writeAllDefault(false, writer);
     try fc.writeEnum(@intFromEnum(extra.type), writer);
@@ -229,7 +253,9 @@ pub fn writeExtraChannelInfo(extra: *const ExtraChannelInfo, writer: anytype) !v
         try writer.write(8, byte);
     }
 
-    try writer.write(1, @intFromBool(extra.alpha_associated));
+    if (extra.type == .alpha) {
+        try writer.write(1, @intFromBool(extra.alpha_associated));
+    }
 }
 
 // ── ToneMapping ──
@@ -647,6 +673,62 @@ test "writeImageMetadata round-trips a subsampled alpha extra channel" {
 	try testing.expectEqual(@as(u32, 1), roundtrip.extra_channel_info[0].dim_shift);
 	try testing.expectEqualStrings("alpha-quarter", roundtrip.extra_channel_info[0].name);
 	try testing.expect(!roundtrip.extra_channel_info[0].alpha_associated);
+}
+
+test "writeImageMetadata round-trips a selection-mask extra channel" {
+	const allocator = testing.allocator;
+	const data = @embedFile("../testdata/lossless_4x4.jxl");
+	const extracted = try extractMetadataBits(data);
+
+	var metadata = extracted.metadata;
+	metadata.num_extra_channels = 1;
+	metadata.extra_channel_count = 1;
+	metadata.extra_channel_info[0] = .{
+		.type = .selection_mask,
+		.name = "mask",
+		.name_len = "mask".len,
+	};
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writeImageMetadata(&metadata, &writer);
+	try writer.zeroPadToByte();
+
+	var br = BitReader.init(writer.bytes());
+	const roundtrip = try ImageMetadata.readFromBitStream(&br);
+	try testing.expectEqual(@as(u32, 1), roundtrip.num_extra_channels);
+	try testing.expectEqual(@as(u32, 1), roundtrip.extra_channel_count);
+	try testing.expectEqual(ExtraChannel.selection_mask, roundtrip.extra_channel_info[0].type);
+	try testing.expectEqualStrings("mask", roundtrip.extra_channel_info[0].name);
+}
+
+test "writeImageMetadata round-trips a subsampled depth extra channel" {
+	const allocator = testing.allocator;
+	const data = @embedFile("../testdata/lossless_4x4.jxl");
+	const extracted = try extractMetadataBits(data);
+
+	var metadata = extracted.metadata;
+	metadata.num_extra_channels = 1;
+	metadata.extra_channel_count = 1;
+	metadata.extra_channel_info[0] = .{
+		.type = .depth,
+		.dim_shift = 1,
+		.name = "depth-half",
+		.name_len = "depth-half".len,
+	};
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writeImageMetadata(&metadata, &writer);
+	try writer.zeroPadToByte();
+
+	var br = BitReader.init(writer.bytes());
+	const roundtrip = try ImageMetadata.readFromBitStream(&br);
+	try testing.expectEqual(@as(u32, 1), roundtrip.num_extra_channels);
+	try testing.expectEqual(@as(u32, 1), roundtrip.extra_channel_count);
+	try testing.expectEqual(ExtraChannel.depth, roundtrip.extra_channel_info[0].type);
+	try testing.expectEqual(@as(u32, 1), roundtrip.extra_channel_info[0].dim_shift);
+	try testing.expectEqualStrings("depth-half", roundtrip.extra_channel_info[0].name);
 }
 
 test "BitDepth default (8-bit uint)" {
