@@ -217,8 +217,8 @@ fn isPlainExtraChannelType(extra_type: ExtraChannel) bool {
 
 /// Starts the write-side extra-channel surface with the decoder's all-default
 /// alpha channel, then grows into the explicit alpha-field form so codestream
-/// writers can cover alpha, plain shared-field extra channels, and the
-/// smallest conditional payload form (`spot_color`) before broader CFA support.
+/// writers can cover alpha, plain shared-field extra channels, and the small
+/// conditional payload forms (`spot_color`, `cfa`) while rejecting unknown/reserved.
 pub fn writeExtraChannelInfo(extra: *const ExtraChannelInfo, writer: anytype) !void {
     if (isDefaultExtraChannelInfo(extra)) {
         try fc.writeAllDefault(true, writer);
@@ -238,6 +238,9 @@ pub fn writeExtraChannelInfo(extra: *const ExtraChannelInfo, writer: anytype) !v
     } else if (extra.type == .spot_color) {
         if (extra.alpha_associated) return error.Unsupported;
         if (extra.cfa_channel != 0) return error.Unsupported;
+    } else if (extra.type == .cfa) {
+        if (extra.alpha_associated) return error.Unsupported;
+        if (!std.mem.eql(f32, &extra.spot_color, &[_]f32{ 0, 0, 0, 0 })) return error.Unsupported;
     } else if (extra.type != .alpha) {
         return error.Unsupported;
     }
@@ -262,6 +265,9 @@ pub fn writeExtraChannelInfo(extra: *const ExtraChannelInfo, writer: anytype) !v
         for (extra.spot_color) |component| {
             try fc.F16Coder.write(component, writer);
         }
+    } else if (extra.type == .cfa) {
+        const cfa_enc = fc.U32Enc.init(fc.val(1), fc.bits(2), fc.bitsOffset(4, 3), fc.bitsOffset(8, 19));
+        try fc.U32Coder.write(cfa_enc, extra.cfa_channel, writer);
     }
 }
 
@@ -768,6 +774,35 @@ test "writeImageMetadata round-trips a spot-color extra channel" {
 	try testing.expectEqual(@as(f32, 0.5), roundtrip.extra_channel_info[0].spot_color[1]);
 	try testing.expectEqual(@as(f32, 0.25), roundtrip.extra_channel_info[0].spot_color[2]);
 	try testing.expectEqual(@as(f32, 0.75), roundtrip.extra_channel_info[0].spot_color[3]);
+}
+
+test "writeImageMetadata round-trips a CFA extra channel" {
+	const allocator = testing.allocator;
+	const data = @embedFile("../testdata/lossless_4x4.jxl");
+	const extracted = try extractMetadataBits(data);
+
+	var metadata = extracted.metadata;
+	metadata.num_extra_channels = 1;
+	metadata.extra_channel_count = 1;
+	metadata.extra_channel_info[0] = .{
+		.type = .cfa,
+		.name = "cfa",
+		.name_len = "cfa".len,
+		.cfa_channel = 2,
+	};
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writeImageMetadata(&metadata, &writer);
+	try writer.zeroPadToByte();
+
+	var br = BitReader.init(writer.bytes());
+	const roundtrip = try ImageMetadata.readFromBitStream(&br);
+	try testing.expectEqual(@as(u32, 1), roundtrip.num_extra_channels);
+	try testing.expectEqual(@as(u32, 1), roundtrip.extra_channel_count);
+	try testing.expectEqual(ExtraChannel.cfa, roundtrip.extra_channel_info[0].type);
+	try testing.expectEqualStrings("cfa", roundtrip.extra_channel_info[0].name);
+	try testing.expectEqual(@as(u32, 2), roundtrip.extra_channel_info[0].cfa_channel);
 }
 
 test "BitDepth default (8-bit uint)" {
