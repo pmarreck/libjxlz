@@ -18,6 +18,7 @@ pub const SimpleInterleavedU8Image = struct {
 	num_channels: u32,
 	num_extra_channels: u32 = 0,
 	alpha_associated: bool = false,
+	extra_channel_info: []const image_metadata.ExtraChannelInfo = &.{},
 	row_stride: usize,
 	pixels: []const u8,
 };
@@ -41,6 +42,8 @@ fn validateSimpleImage(image: SimpleInterleavedU8Image) !void {
 		(image.num_extra_channels == 0 or image.num_extra_channels == 1))) return error.Unsupported;
 	if (image.num_extra_channels == 1 and !(image.num_channels == 2 or image.num_channels == 4)) return error.Unsupported;
 	if (image.num_extra_channels == 0 and image.alpha_associated) return error.Unsupported;
+	if (image.num_extra_channels > 1 and image.extra_channel_info.len != image.num_extra_channels) return error.InvalidArgs;
+	if (image.extra_channel_info.len != 0 and image.extra_channel_info.len != image.num_extra_channels) return error.InvalidArgs;
 
 	const min_row_stride = @as(usize, image.width) * image.num_channels;
 	if (image.row_stride < min_row_stride) return error.InvalidArgs;
@@ -65,14 +68,20 @@ fn buildCodecMetadata(
 		.xyb_encoded = false,
 		.color_encoding = color_encoding,
 	};
-	if (image.num_extra_channels == 1) {
-		codec_meta.m.num_extra_channels = 1;
-		codec_meta.m.extra_channel_count = 1;
-		codec_meta.m.extra_channel_info[0] = .{
-			.type = .alpha,
-			.bit_depth = .{},
-			.alpha_associated = image.alpha_associated,
-		};
+	if (image.num_extra_channels != 0) {
+		codec_meta.m.num_extra_channels = image.num_extra_channels;
+		codec_meta.m.extra_channel_count = image.num_extra_channels;
+		if (image.extra_channel_info.len != 0) {
+			for (image.extra_channel_info, 0..) |extra, i| {
+				codec_meta.m.extra_channel_info[i] = extra;
+			}
+		} else if (image.num_extra_channels == 1) {
+			codec_meta.m.extra_channel_info[0] = .{
+				.type = .alpha,
+				.bit_depth = .{},
+				.alpha_associated = image.alpha_associated,
+			};
+		}
 	}
 	codec_meta.transform_data = .{};
 	return codec_meta;
