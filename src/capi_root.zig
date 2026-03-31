@@ -478,7 +478,8 @@ fn rowStrideBytes(width: usize, format: JxlPixelFormat) ?usize {
 }
 
 /// Validates the narrow one-shot encoder surface: 8-bit grayscale/RGB with an
-/// optional single 8-bit alpha extra channel, no preview/animation, and identity orientation.
+/// optional 8-bit alpha plus full-size uint8 sidecar extras, no preview/animation,
+/// and identity orientation.
 fn validateBasicInfoForSimpleEncode(info: *const JxlBasicInfo) !void {
 	if (info.xsize == 0 or info.ysize == 0) return error.InvalidArgs;
 	if (info.have_container != 0 or info.have_preview != 0 or info.have_animation != 0) return error.Unsupported;
@@ -493,7 +494,6 @@ fn validateBasicInfoForSimpleEncode(info: *const JxlBasicInfo) !void {
 		if (info.alpha_exponent_bits != 0 or info.alpha_premultiplied != 0) return error.Unsupported;
 		return;
 	}
-	if (info.num_extra_channels != 1) return error.Unsupported;
 	if (info.alpha_bits != 8 or info.alpha_exponent_bits != 0) return error.Unsupported;
 	if (!(info.alpha_premultiplied == 0 or info.alpha_premultiplied == 1)) return error.Unsupported;
 }
@@ -557,11 +557,12 @@ fn extraChannelTypeToInternal(extra_type: JxlExtraChannelType) ?image_metadata.E
 /// channels only, with only the metadata shapes the current Zig codestream writer can serialize.
 fn validateExtraChannelInfoForSimpleEncode(
 	basic_info: *const JxlBasicInfo,
+	index: usize,
 	info: *const JxlExtraChannelInfo,
 ) !void {
 	const extra_type = extraChannelTypeToInternal(info.type) orelse return error.Unsupported;
 	if (basic_info.num_extra_channels == 0) return error.Unsupported;
-	if (basic_info.alpha_bits != 0) return error.Unsupported;
+	if (basic_info.alpha_bits != 0 and index == 0) return error.Unsupported;
 	if (extra_type == .alpha) return error.Unsupported;
 	if (info.bits_per_sample != 8 or info.exponent_bits_per_sample != 0) return error.Unsupported;
 	if (info.dim_shift != 0) return error.Unsupported;
@@ -622,11 +623,28 @@ fn finalizeSimpleEncode(impl: *EncoderImpl) !void {
 
 	var extra_infos: [256]image_metadata.ExtraChannelInfo = undefined;
 	var extra_info_slice: []const image_metadata.ExtraChannelInfo = &.{};
-	if (impl.basic_info.alpha_bits == 0 and impl.basic_info.num_extra_channels != 0) {
-		for (0..impl.basic_info.num_extra_channels) |extra_index| {
-			const pending = &impl.pending_extra_channels[extra_index];
-			if (!pending.info_set or !pending.buffer_set) return error.InvalidArgs;
-			extra_infos[extra_index] = try toInternalExtraChannelInfo(pending);
+	if (impl.basic_info.num_extra_channels != 0) {
+		if (impl.basic_info.alpha_bits != 0) {
+			extra_infos[0] = .{
+				.type = .alpha,
+				.bit_depth = .{
+					.floating_point_sample = impl.basic_info.alpha_exponent_bits != 0,
+					.bits_per_sample = impl.basic_info.alpha_bits,
+					.exponent_bits_per_sample = impl.basic_info.alpha_exponent_bits,
+				},
+				.alpha_associated = impl.basic_info.alpha_premultiplied != 0,
+			};
+			for (1..impl.basic_info.num_extra_channels) |extra_index| {
+				const pending = &impl.pending_extra_channels[extra_index];
+				if (!pending.info_set or !pending.buffer_set) return error.InvalidArgs;
+				extra_infos[extra_index] = try toInternalExtraChannelInfo(pending);
+			}
+		} else {
+			for (0..impl.basic_info.num_extra_channels) |extra_index| {
+				const pending = &impl.pending_extra_channels[extra_index];
+				if (!pending.info_set or !pending.buffer_set) return error.InvalidArgs;
+				extra_infos[extra_index] = try toInternalExtraChannelInfo(pending);
+			}
 		}
 		extra_info_slice = extra_infos[0..impl.basic_info.num_extra_channels];
 	}
@@ -638,8 +656,20 @@ fn finalizeSimpleEncode(impl: *EncoderImpl) !void {
 		const src_row = impl.image_bytes[y * image_stride .. y * image_stride + image_stride];
 		const dst_row = packed_pixels[y * packed_row_stride .. y * packed_row_stride + packed_row_stride];
 		if (impl.basic_info.alpha_bits != 0) {
-			const pixel_bytes = @as(usize, impl.basic_info.xsize) * @as(usize, total_channels);
-			@memcpy(dst_row[0..pixel_bytes], src_row[0..pixel_bytes]);
+			for (0..impl.basic_info.xsize) |x| {
+				const src_pixel = x * (num_color_channels + 1);
+				const dst_pixel = x * total_channels;
+				@memcpy(
+					dst_row[dst_pixel .. dst_pixel + num_color_channels],
+					src_row[src_pixel .. src_pixel + num_color_channels],
+				);
+				dst_row[dst_pixel + num_color_channels] = src_row[src_pixel + num_color_channels];
+				for (1..impl.basic_info.num_extra_channels) |extra_index| {
+					const pending = &impl.pending_extra_channels[extra_index];
+					const extra_row = pending.buffer[y * pending.row_stride .. y * pending.row_stride + pending.row_stride];
+					dst_row[dst_pixel + num_color_channels + extra_index] = extra_row[x];
+				}
+			}
 			continue;
 		}
 
@@ -1199,7 +1229,7 @@ pub export fn JxlEncoderSetExtraChannelInfo(
 	const info = info_ptr orelse return .JXL_ENC_ERROR;
 	if (!impl.basic_info_set or impl.started_processing or impl.added_frame) return .JXL_ENC_ERROR;
 	if (index >= impl.basic_info.num_extra_channels) return .JXL_ENC_ERROR;
-	validateExtraChannelInfoForSimpleEncode(&impl.basic_info, info) catch return .JXL_ENC_ERROR;
+	validateExtraChannelInfoForSimpleEncode(&impl.basic_info, index, info) catch return .JXL_ENC_ERROR;
 
 	const pending = &impl.pending_extra_channels[index];
 	pending.info = info.*;
@@ -1248,7 +1278,7 @@ pub export fn JxlEncoderAddImageFrame(
 	if (format.data_type != .JXL_TYPE_UINT8) return .JXL_ENC_ERROR;
 
 	const expected_channels = if (impl.basic_info.alpha_bits != 0)
-		impl.basic_info.num_color_channels + impl.basic_info.num_extra_channels
+		impl.basic_info.num_color_channels + 1
 	else
 		impl.basic_info.num_color_channels;
 	if (format.num_channels != expected_channels) return .JXL_ENC_ERROR;
@@ -1279,7 +1309,7 @@ pub export fn JxlEncoderSetExtraChannelBuffer(
 	const data = buffer orelse return .JXL_ENC_ERROR;
 	if (!impl.basic_info_set or !impl.color_encoding_set or !impl.added_frame or impl.started_processing) return .JXL_ENC_ERROR;
 	if (index >= impl.basic_info.num_extra_channels) return .JXL_ENC_ERROR;
-	if (impl.basic_info.alpha_bits != 0) return .JXL_ENC_ERROR;
+	if (impl.basic_info.alpha_bits != 0 and index == 0) return .JXL_ENC_ERROR;
 
 	const pending = &impl.pending_extra_channels[index];
 	if (!pending.info_set) return .JXL_ENC_ERROR;
@@ -1610,4 +1640,103 @@ test "JxlEncoder encodes multiple non-alpha extra channel buffers" {
 	try testing.expectEqual(@as(usize, 5), image.channels.items.len);
 	try testing.expectEqualSlices(i32, &.{ 0, 255, 255, 0 }, image.channels.items[3].data);
 	try testing.expectEqualSlices(i32, &.{ 1, 2, 3, 4 }, image.channels.items[4].data);
+}
+
+test "JxlEncoder encodes interleaved alpha plus a sidecar extra channel" {
+	const testing = std.testing;
+	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlEncoderDestroy(enc);
+
+	var info: JxlBasicInfo = undefined;
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 2;
+	info.ysize = 2;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 3;
+	info.num_extra_channels = 2;
+	info.alpha_bits = 8;
+
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetBasicInfo(enc, &info));
+
+	var color = std.mem.zeroes(JxlColorEncoding);
+	JxlColorEncodingSetToSRGB(&color, 0);
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetColorEncoding(enc, &color));
+
+	var selection_mask = std.mem.zeroes(JxlExtraChannelInfo);
+	JxlEncoderInitExtraChannelInfo(.JXL_CHANNEL_SELECTION_MASK, &selection_mask);
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetExtraChannelInfo(enc, 1, &selection_mask));
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetExtraChannelName(enc, 1, "mask".ptr, 4));
+
+	const settings = JxlEncoderFrameSettingsCreate(enc, null) orelse return error.OutOfMemory;
+
+	const rgba_pixels = [_]u8{
+		0, 10, 20, 255, 30, 40, 50, 128,
+		60, 70, 80, 64, 90, 100, 110, 0,
+	};
+	const rgba_format = JxlPixelFormat{
+		.num_channels = 4,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderAddImageFrame(settings, &rgba_format, &rgba_pixels, rgba_pixels.len),
+	);
+
+	const mask_pixels = [_]u8{
+		0, 255,
+		255, 0,
+	};
+	const mask_format = JxlPixelFormat{
+		.num_channels = 1,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderSetExtraChannelBuffer(settings, &mask_format, &mask_pixels, mask_pixels.len, 1),
+	);
+
+	JxlEncoderCloseInput(enc);
+
+	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	defer encoded.deinit(testing.allocator);
+	while (true) {
+		var chunk: [32]u8 = undefined;
+		var next_out = chunk[0..].ptr;
+		var avail_out: usize = chunk.len;
+		const status = JxlEncoderProcessOutput(enc, &next_out, &avail_out);
+		const produced = chunk.len - avail_out;
+		try encoded.appendSlice(testing.allocator, chunk[0..produced]);
+		if (status == .JXL_ENC_SUCCESS) break;
+		try testing.expectEqual(JxlEncoderStatus.JXL_ENC_NEED_MORE_OUTPUT, status);
+	}
+
+	var br = BitReader.init(encoded.items[2..]);
+	const size = headers.SizeHeader.readFromBitStream(&br);
+	const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+	const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+	try br.jumpToByteBoundary();
+
+	try testing.expectEqual(@as(u32, 2), metadata.num_extra_channels);
+	try testing.expectEqual(image_metadata.ExtraChannel.alpha, metadata.extra_channel_info[0].type);
+	try testing.expectEqual(image_metadata.ExtraChannel.selection_mask, metadata.extra_channel_info[1].type);
+	try testing.expectEqualStrings("mask", metadata.extra_channel_info[1].name);
+
+	var codec_meta = image_metadata.CodecMetadata{};
+	codec_meta.size = size;
+	codec_meta.m = metadata;
+	codec_meta.transform_data = transform_data;
+
+	const frame_offset = br.totalBitsConsumed() / 8;
+	var frame_dec = dec_frame.FrameDecoder.init(testing.allocator, &codec_meta);
+	defer frame_dec.deinit();
+	try frame_dec.decodeFrame(encoded.items[2 + frame_offset ..]);
+
+	const image = frame_dec.getDecodedImage();
+	try testing.expectEqual(@as(usize, 5), image.channels.items.len);
+	try testing.expectEqualSlices(i32, &.{ 255, 128, 64, 0 }, image.channels.items[3].data);
+	try testing.expectEqualSlices(i32, &.{ 0, 255, 255, 0 }, image.channels.items[4].data);
 }
