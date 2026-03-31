@@ -57,14 +57,17 @@ static void print_help(FILE* out) {
 		"Options:\n"
 		"  -h, --help                Show this help\n"
 		"  --about                   Show version, platform, and architecture\n"
-		"  --extra TYPE PATH         Add a full-size grayscale sidecar extra channel\n"
+		"  --extra TYPE PATH         Add a grayscale sidecar extra channel\n"
 		"                            TYPE may be one of:\n"
-		"                              selection_mask, depth, black, thermal, optional\n"
-		"                              spot_color:R,G,B,S\n\n"
+		"                              selection_mask[:SHIFT], depth[:SHIFT], black[:SHIFT]\n"
+		"                              thermal[:SHIFT], optional[:SHIFT]\n"
+		"                              spot_color:R,G,B,S\n"
+		"                              cfa:N\n\n"
 		"Formats:\n"
 		"  INPUT must be raw binary P5/P6 with MAXVAL 255, or narrow P7 PAM with\n"
 		"  TUPLTYPE GRAYSCALE, RGB, GRAYSCALE_ALPHA, or RGB_ALPHA and MAXVAL 255\n"
-		"  --extra PATH must be a raw binary P5 grayscale image with matching dimensions\n\n"
+		"  --extra PATH must be a raw binary P5 grayscale image with matching dimensions\n"
+		"  after optional SHIFT subsampling (for example depth:1 expects ceil(W/2)xceil(H/2))\n\n"
 		"Paths:\n"
 		"  INPUT accepts '-' or '@stdin'\n"
 		"  OUTPUT accepts '-' or '@stdout' or '@stderr'\n");
@@ -198,6 +201,20 @@ static int parse_spot_color(const char* args, JxlExtraChannelInfo* info) {
 	return part == NULL;
 }
 
+static int parse_cfa_channel(const char* args, JxlExtraChannelInfo* info) {
+	uint32_t channel = 0;
+	if (!args || !parse_u32_token(args, &channel)) return 0;
+	info->cfa_channel = channel;
+	return 1;
+}
+
+static int parse_dim_shift(const char* args, JxlExtraChannelInfo* info) {
+	uint32_t shift = 0;
+	if (!args || !parse_u32_token(args, &shift) || shift > 3) return 0;
+	info->dim_shift = shift;
+	return 1;
+}
+
 static int parse_extra_spec(ParsedExtraInput* extra, const char* text) {
 	memset(&extra->info, 0, sizeof(extra->info));
 
@@ -216,34 +233,39 @@ static int parse_extra_spec(ParsedExtraInput* extra, const char* text) {
 		JxlEncoderInitExtraChannelInfo(extra->type, &extra->info);
 		return 1;
 	}
-	if (strcmp(type_name, "depth") == 0 && !args) {
+	if (strcmp(type_name, "depth") == 0) {
 		extra->type = JXL_CHANNEL_DEPTH;
 		extra->type_name = "depth";
 		JxlEncoderInitExtraChannelInfo(extra->type, &extra->info);
+		if (args && !parse_dim_shift(args, &extra->info)) return 0;
 		return 1;
 	}
-	if (strcmp(type_name, "black") == 0 && !args) {
+	if (strcmp(type_name, "black") == 0) {
 		extra->type = JXL_CHANNEL_BLACK;
 		extra->type_name = "black";
 		JxlEncoderInitExtraChannelInfo(extra->type, &extra->info);
+		if (args && !parse_dim_shift(args, &extra->info)) return 0;
 		return 1;
 	}
-	if (strcmp(type_name, "thermal") == 0 && !args) {
+	if (strcmp(type_name, "thermal") == 0) {
 		extra->type = JXL_CHANNEL_THERMAL;
 		extra->type_name = "thermal";
 		JxlEncoderInitExtraChannelInfo(extra->type, &extra->info);
+		if (args && !parse_dim_shift(args, &extra->info)) return 0;
 		return 1;
 	}
-	if (strcmp(type_name, "optional") == 0 && !args) {
+	if (strcmp(type_name, "optional") == 0) {
 		extra->type = JXL_CHANNEL_OPTIONAL;
 		extra->type_name = "optional";
 		JxlEncoderInitExtraChannelInfo(extra->type, &extra->info);
+		if (args && !parse_dim_shift(args, &extra->info)) return 0;
 		return 1;
 	}
-	if ((strcmp(type_name, "selection_mask") == 0 || strcmp(type_name, "selection-mask") == 0) && !args) {
+	if (strcmp(type_name, "selection_mask") == 0 || strcmp(type_name, "selection-mask") == 0) {
 		extra->type = JXL_CHANNEL_SELECTION_MASK;
 		extra->type_name = "selection_mask";
 		JxlEncoderInitExtraChannelInfo(extra->type, &extra->info);
+		if (args && !parse_dim_shift(args, &extra->info)) return 0;
 		return 1;
 	}
 	if (strcmp(type_name, "spot_color") == 0 && args) {
@@ -253,7 +275,20 @@ static int parse_extra_spec(ParsedExtraInput* extra, const char* text) {
 		if (!parse_spot_color(args, &extra->info)) return 0;
 		return 1;
 	}
+	if (strcmp(type_name, "cfa") == 0 && args) {
+		extra->type = JXL_CHANNEL_CFA;
+		extra->type_name = "cfa";
+		JxlEncoderInitExtraChannelInfo(extra->type, &extra->info);
+		if (!parse_cfa_channel(args, &extra->info)) return 0;
+		return 1;
+	}
 	return 0;
+}
+
+static uint32_t subsampled_size(uint32_t size, uint32_t shift) {
+	if (shift == 0) return size;
+	uint32_t step = 1u << shift;
+	return (size + step - 1) / step;
 }
 
 static int parse_pnm(const uint8_t* data, size_t size, ParsedImage* image, char* err, size_t err_cap) {
@@ -413,14 +448,23 @@ static int parse_extra_input(ParsedExtraInput* extra, uint32_t width, uint32_t h
 	if (!parse_pnm(extra->file_data, extra->file_size, &extra->image, err, err_cap)) {
 		return 0;
 	}
+	const uint32_t expected_width = subsampled_size(width, extra->info.dim_shift);
+	const uint32_t expected_height = subsampled_size(height, extra->info.dim_shift);
 	if (
-		extra->image.width != width ||
-		extra->image.height != height ||
+		extra->image.width != expected_width ||
+		extra->image.height != expected_height ||
 		extra->image.channels != 1 ||
 		extra->image.num_color_channels != 1 ||
 		extra->image.num_extra_channels != 0
 	) {
-		snprintf(err, err_cap, "--extra input must be a matching full-size P5 image");
+		snprintf(
+			err,
+			err_cap,
+			"--extra input must be a matching P5 image for dim_shift=%u (%ux%u expected)",
+			extra->info.dim_shift,
+			expected_width,
+			expected_height
+		);
 		return 0;
 	}
 	return 1;

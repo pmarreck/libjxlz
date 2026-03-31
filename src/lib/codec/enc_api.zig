@@ -1,4 +1,5 @@
 const std = @import("std");
+const common = @import("../base/common.zig");
 const BitReader = @import("../base/bit_reader.zig").BitReader;
 const BitWriter = @import("../base/bit_writer.zig").BitWriter;
 const headers = @import("headers.zig");
@@ -21,6 +22,24 @@ pub const SimpleInterleavedU8Image = struct {
 	extra_channel_info: []const image_metadata.ExtraChannelInfo = &.{},
 	row_stride: usize,
 	pixels: []const u8,
+};
+
+pub const SimpleExtraPlaneU8 = struct {
+	info: image_metadata.ExtraChannelInfo,
+	row_stride: usize,
+	pixels: []const u8,
+};
+
+pub const SimplePackedU8Image = struct {
+	width: u32,
+	height: u32,
+	num_color_channels: u32,
+	color_row_stride: usize,
+	color_pixels: []const u8,
+	alpha_row_stride: usize = 0,
+	alpha_pixels: []const u8 = &.{},
+	alpha_associated: bool = false,
+	extra_planes: []const SimpleExtraPlaneU8 = &.{},
 };
 
 fn graySrgbColorEncoding() color_encoding_mod.ColorEncoding {
@@ -47,16 +66,47 @@ fn validateSimpleImage(image: SimpleInterleavedU8Image) !void {
 	if (image.pixels.len < needed) return error.InvalidArgs;
 }
 
+fn subsampledSize(size: u32, shift: u32) usize {
+	return common.divCeil(@as(usize, size), @as(usize, 1) << @intCast(shift));
+}
+
+fn validateSimplePackedImage(image: SimplePackedU8Image) !void {
+	if (image.width == 0 or image.height == 0) return error.InvalidArgs;
+	if (!(image.num_color_channels == 1 or image.num_color_channels == 3)) return error.Unsupported;
+	if (image.alpha_pixels.len == 0 and image.alpha_associated) return error.Unsupported;
+
+	const min_color_row_stride = @as(usize, image.width) * image.num_color_channels;
+	if (image.color_row_stride < min_color_row_stride) return error.InvalidArgs;
+	if (image.color_pixels.len < image.color_row_stride * @as(usize, image.height)) return error.InvalidArgs;
+
+	if (image.alpha_pixels.len != 0) {
+		if (image.alpha_row_stride < @as(usize, image.width)) return error.InvalidArgs;
+		if (image.alpha_pixels.len < image.alpha_row_stride * @as(usize, image.height)) return error.InvalidArgs;
+	}
+
+	for (image.extra_planes) |extra| {
+		if (extra.info.type == .alpha) return error.InvalidArgs;
+		const plane_width = subsampledSize(image.width, extra.info.dim_shift);
+		const plane_height = subsampledSize(image.height, extra.info.dim_shift);
+		if (extra.row_stride < plane_width) return error.InvalidArgs;
+		if (extra.pixels.len < extra.row_stride * plane_height) return error.InvalidArgs;
+	}
+}
+
 fn buildCodecMetadata(
-	image: SimpleInterleavedU8Image,
+	width: u32,
+	height: u32,
+	num_extra_channels: u32,
+	alpha_associated: bool,
+	extra_channel_info: []const image_metadata.ExtraChannelInfo,
 	color_encoding: color_encoding_mod.ColorEncoding,
 ) image_metadata.CodecMetadata {
 	var codec_meta = image_metadata.CodecMetadata{};
 	codec_meta.size = .{
 		.small = false,
-		.ysize_raw = image.height,
+		.ysize_raw = height,
 		.ratio = 0,
-		.xsize_raw = image.width,
+		.xsize_raw = width,
 	};
 	codec_meta.m = .{
 		.bit_depth = .{},
@@ -64,18 +114,18 @@ fn buildCodecMetadata(
 		.xyb_encoded = false,
 		.color_encoding = color_encoding,
 	};
-	if (image.num_extra_channels != 0) {
-		codec_meta.m.num_extra_channels = image.num_extra_channels;
-		codec_meta.m.extra_channel_count = image.num_extra_channels;
-		if (image.extra_channel_info.len != 0) {
-			for (image.extra_channel_info, 0..) |extra, i| {
+	if (num_extra_channels != 0) {
+		codec_meta.m.num_extra_channels = num_extra_channels;
+		codec_meta.m.extra_channel_count = num_extra_channels;
+		if (extra_channel_info.len != 0) {
+			for (extra_channel_info, 0..) |extra, i| {
 				codec_meta.m.extra_channel_info[i] = extra;
 			}
-		} else if (image.num_extra_channels == 1) {
+		} else if (num_extra_channels == 1) {
 			codec_meta.m.extra_channel_info[0] = .{
 				.type = .alpha,
 				.bit_depth = .{},
-				.alpha_associated = image.alpha_associated,
+				.alpha_associated = alpha_associated,
 			};
 		}
 	}
@@ -83,12 +133,16 @@ fn buildCodecMetadata(
 	return codec_meta;
 }
 
-fn buildSimpleFrameHeader() frame_header_mod.FrameHeader {
-	return .{
+fn buildSimpleFrameHeader(extra_channel_info: []const image_metadata.ExtraChannelInfo) frame_header_mod.FrameHeader {
+	var frame_header: frame_header_mod.FrameHeader = .{
 		.encoding = .modular,
 		.color_transform = .none,
 		.loop_filter = .{},
 	};
+	for (extra_channel_info, 0..) |extra, i| {
+		frame_header.extra_channel_upsampling[i] = @as(u32, 1) << @intCast(extra.dim_shift);
+	}
+	return frame_header;
 }
 
 fn buildSourceImage(allocator: std.mem.Allocator, image: SimpleInterleavedU8Image) !modular_image.Image {
@@ -114,33 +168,74 @@ fn buildSourceImage(allocator: std.mem.Allocator, image: SimpleInterleavedU8Imag
 	return source;
 }
 
-/// Encodes the current narrow lossless modular surface from interleaved uint8
-/// grayscale or RGB pixels by tiling local-tree groups and assembling a full
-/// native codestream entirely in Zig.
-pub fn encodeSimpleInterleavedU8(
-	allocator: std.mem.Allocator,
-	image: SimpleInterleavedU8Image,
-	color_encoding: ?color_encoding_mod.ColorEncoding,
-) ![]u8 {
-	try validateSimpleImage(image);
-	const num_color_channels = image.num_channels - image.num_extra_channels;
+fn buildPackedSourceImage(allocator: std.mem.Allocator, image: SimplePackedU8Image) !modular_image.Image {
+	var source = try modular_image.Image.create(allocator, image.width, image.height, 8, 0);
+	errdefer source.deinit();
 
-	const effective_color_encoding = color_encoding orelse if (num_color_channels == 1)
-		graySrgbColorEncoding()
-	else
-		color_encoding_mod.ColorEncoding{};
-	if (effective_color_encoding.channels() != num_color_channels) return error.Unsupported;
-	if (effective_color_encoding.want_icc) return error.Unsupported;
-
-	const codec_meta = buildCodecMetadata(image, effective_color_encoding);
-	var frame_header = buildSimpleFrameHeader();
-	for (0..image.num_extra_channels) |extra_index| {
-		frame_header.extra_channel_upsampling[extra_index] = 1;
+	for (0..image.num_color_channels) |_| {
+		try source.channels.append(allocator, try modular_image.Channel.create(allocator, image.width, image.height, 0, 0));
 	}
+	if (image.alpha_pixels.len != 0) {
+		try source.channels.append(allocator, try modular_image.Channel.create(allocator, image.width, image.height, 0, 0));
+	}
+	for (image.extra_planes) |extra| {
+		const plane_width = subsampledSize(image.width, extra.info.dim_shift);
+		const plane_height = subsampledSize(image.height, extra.info.dim_shift);
+		try source.channels.append(
+			allocator,
+			try modular_image.Channel.create(
+				allocator,
+				plane_width,
+				plane_height,
+				@intCast(extra.info.dim_shift),
+				@intCast(extra.info.dim_shift),
+			),
+		);
+	}
+
+	for (0..source.h) |y| {
+		const row = image.color_pixels[y * image.color_row_stride .. y * image.color_row_stride + image.color_row_stride];
+		for (0..source.w) |x| {
+			const pixel_base = x * @as(usize, image.num_color_channels);
+			for (0..image.num_color_channels) |c| {
+				source.channels.items[c].row(y)[x] = row[pixel_base + c];
+			}
+		}
+	}
+
+	if (image.alpha_pixels.len != 0) {
+		const alpha_channel: usize = @intCast(image.num_color_channels);
+		for (0..image.height) |y| {
+			const row = image.alpha_pixels[y * image.alpha_row_stride .. y * image.alpha_row_stride + image.alpha_row_stride];
+			for (0..image.width) |x| {
+				source.channels.items[alpha_channel].row(y)[x] = row[x];
+			}
+		}
+	}
+
+	var extra_channel_index: usize = @intCast(image.num_color_channels + @as(u32, @intFromBool(image.alpha_pixels.len != 0)));
+	for (image.extra_planes) |extra| {
+		const channel = &source.channels.items[extra_channel_index];
+		for (0..channel.h) |y| {
+			const row = extra.pixels[y * extra.row_stride .. y * extra.row_stride + extra.row_stride];
+			for (0..channel.w) |x| {
+				channel.row(y)[x] = row[x];
+			}
+		}
+		extra_channel_index += 1;
+	}
+
+	return source;
+}
+
+fn encodePreparedSource(
+	allocator: std.mem.Allocator,
+	codec_meta: image_metadata.CodecMetadata,
+	frame_header: frame_header_mod.FrameHeader,
+	source: *modular_image.Image,
+) ![]u8 {
 	const frame_dim = frame_header.toFrameDimensions(&codec_meta, false);
 
-	var source = try buildSourceImage(allocator, image);
-	defer source.deinit();
 	var hist_cache = enc_encoding.FlatHistogramInfoCache.init(allocator);
 	defer hist_cache.deinit();
 
@@ -165,7 +260,7 @@ pub fn encodeSimpleInterleavedU8(
 	if (num_sections == 1) {
 		_ = try enc_encoding.writeSingleNodeLocalTreeGroupImageWithCache(
 			allocator,
-			&source,
+			source,
 			.gradient,
 			&hist_cache,
 			&section_writers[0],
@@ -179,7 +274,7 @@ pub fn encodeSimpleInterleavedU8(
 			const group_id = (section_id - ac_global_index - 1) % frame_dim.num_groups;
 			_ = try enc_encoding.writeSingleNodeLocalTreeGroupImageRectWithCache(
 				allocator,
-				&source,
+				source,
 				frame_dim.groupRect(group_id),
 				.gradient,
 				&hist_cache,
@@ -206,6 +301,89 @@ pub fn encodeSimpleInterleavedU8(
 	try codestream.zeroPadToByte();
 
 	return allocator.dupe(u8, codestream.bytes());
+}
+
+/// Encodes narrow static lossless modular images from a full-size color plane,
+/// optional full-size alpha plane, and separately staged sidecar extra planes.
+pub fn encodeSimplePackedU8(
+	allocator: std.mem.Allocator,
+	image: SimplePackedU8Image,
+	color_encoding: ?color_encoding_mod.ColorEncoding,
+) ![]u8 {
+	try validateSimplePackedImage(image);
+
+	const num_extra_channels = @as(u32, @intFromBool(image.alpha_pixels.len != 0)) + @as(u32, @intCast(image.extra_planes.len));
+	var extra_info_storage: [256]image_metadata.ExtraChannelInfo = undefined;
+	var extra_info_len: usize = 0;
+	if (image.alpha_pixels.len != 0) {
+		extra_info_storage[extra_info_len] = .{
+			.type = .alpha,
+			.bit_depth = .{},
+			.alpha_associated = image.alpha_associated,
+		};
+		extra_info_len += 1;
+	}
+	for (image.extra_planes) |extra| {
+		extra_info_storage[extra_info_len] = extra.info;
+		extra_info_len += 1;
+	}
+	const extra_info_slice = extra_info_storage[0..extra_info_len];
+
+	const effective_color_encoding = color_encoding orelse if (image.num_color_channels == 1)
+		graySrgbColorEncoding()
+	else
+		color_encoding_mod.ColorEncoding{};
+	if (effective_color_encoding.channels() != image.num_color_channels) return error.Unsupported;
+	if (effective_color_encoding.want_icc) return error.Unsupported;
+
+	const codec_meta = buildCodecMetadata(
+		image.width,
+		image.height,
+		num_extra_channels,
+		image.alpha_associated,
+		extra_info_slice,
+		effective_color_encoding,
+	);
+	const frame_header = buildSimpleFrameHeader(extra_info_slice);
+
+	var source = try buildPackedSourceImage(allocator, image);
+	defer source.deinit();
+
+	return encodePreparedSource(allocator, codec_meta, frame_header, &source);
+}
+
+/// Encodes the current narrow lossless modular surface from interleaved uint8
+/// grayscale or RGB pixels by tiling local-tree groups and assembling a full
+/// native codestream entirely in Zig.
+pub fn encodeSimpleInterleavedU8(
+	allocator: std.mem.Allocator,
+	image: SimpleInterleavedU8Image,
+	color_encoding: ?color_encoding_mod.ColorEncoding,
+) ![]u8 {
+	try validateSimpleImage(image);
+	const num_color_channels = image.num_channels - image.num_extra_channels;
+
+	const effective_color_encoding = color_encoding orelse if (num_color_channels == 1)
+		graySrgbColorEncoding()
+	else
+		color_encoding_mod.ColorEncoding{};
+	if (effective_color_encoding.channels() != num_color_channels) return error.Unsupported;
+	if (effective_color_encoding.want_icc) return error.Unsupported;
+
+	const codec_meta = buildCodecMetadata(
+		image.width,
+		image.height,
+		image.num_extra_channels,
+		image.alpha_associated,
+		image.extra_channel_info,
+		effective_color_encoding,
+	);
+	const frame_header = buildSimpleFrameHeader(codec_meta.m.extra_channel_info[0..@intCast(codec_meta.m.num_extra_channels)]);
+
+	var source = try buildSourceImage(allocator, image);
+	defer source.deinit();
+
+	return encodePreparedSource(allocator, codec_meta, frame_header, &source);
 }
 
 const testing = std.testing;
@@ -315,4 +493,161 @@ test "encodeSimpleInterleavedU8 round-trips RGBA through FrameDecoder" {
 	const encoded = try encodeSimpleInterleavedU8(testing.allocator, image, null);
 	defer testing.allocator.free(encoded);
 	try expectCodestreamRoundtrip(testing.allocator, encoded, image);
+}
+
+test "buildPackedSourceImage matches equivalent interleaved RGBA plus mask source" {
+	const interleaved_pixels = [_]u8{
+		0, 10, 20, 255, 0, 30, 40, 50, 128, 255,
+		60, 70, 80, 64, 255, 90, 100, 110, 0, 0,
+	};
+	const interleaved = SimpleInterleavedU8Image{
+		.width = 2,
+		.height = 2,
+		.num_channels = 5,
+		.num_extra_channels = 2,
+		.row_stride = 10,
+		.pixels = &interleaved_pixels,
+		.extra_channel_info = &.{
+			.{ .type = .alpha, .bit_depth = .{} },
+			.{ .type = .selection_mask, .bit_depth = .{}, .name = "mask", .name_len = 4 },
+		},
+	};
+	var expected = try buildSourceImage(testing.allocator, interleaved);
+	defer expected.deinit();
+
+	const color_pixels = [_]u8{
+		0, 10, 20, 30, 40, 50,
+		60, 70, 80, 90, 100, 110,
+	};
+	const alpha_pixels = [_]u8{ 255, 128, 64, 0 };
+	const mask_pixels = [_]u8{ 0, 255, 255, 0 };
+	const extra = [_]SimpleExtraPlaneU8{
+		.{
+			.info = .{ .type = .selection_mask, .bit_depth = .{}, .name = "mask", .name_len = 4 },
+			.row_stride = 2,
+			.pixels = &mask_pixels,
+		},
+	};
+	var actual = try buildPackedSourceImage(testing.allocator, .{
+		.width = 2,
+		.height = 2,
+		.num_color_channels = 3,
+		.color_row_stride = 6,
+		.color_pixels = &color_pixels,
+		.alpha_row_stride = 2,
+		.alpha_pixels = &alpha_pixels,
+		.extra_planes = &extra,
+	});
+	defer actual.deinit();
+
+	try testing.expectEqual(expected.channels.items.len, actual.channels.items.len);
+	for (expected.channels.items, actual.channels.items) |expected_channel, actual_channel| {
+		try testing.expectEqual(expected_channel.w, actual_channel.w);
+		try testing.expectEqual(expected_channel.h, actual_channel.h);
+		try testing.expectEqualSlices(i32, expected_channel.data, actual_channel.data);
+	}
+}
+
+test "encodeSimplePackedU8 round-trips RGBA plus mask through FrameDecoder" {
+	const color_pixels = [_]u8{
+		0, 10, 20, 30, 40, 50,
+		60, 70, 80, 90, 100, 110,
+	};
+	const alpha_pixels = [_]u8{ 255, 128, 64, 0 };
+	const mask_pixels = [_]u8{ 0, 255, 255, 0 };
+	const extra = [_]SimpleExtraPlaneU8{
+		.{
+			.info = .{
+				.type = .selection_mask,
+				.bit_depth = .{},
+				.name = "mask",
+				.name_len = 4,
+			},
+			.row_stride = 2,
+			.pixels = &mask_pixels,
+		},
+	};
+
+	const encoded = try encodeSimplePackedU8(testing.allocator, .{
+		.width = 2,
+		.height = 2,
+		.num_color_channels = 3,
+		.color_row_stride = 6,
+		.color_pixels = &color_pixels,
+		.alpha_row_stride = 2,
+		.alpha_pixels = &alpha_pixels,
+		.extra_planes = &extra,
+	}, null);
+	defer testing.allocator.free(encoded);
+
+	const expected_pixels = [_]u8{
+		0, 10, 20, 255, 0, 30, 40, 50, 128, 255,
+		60, 70, 80, 64, 255, 90, 100, 110, 0, 0,
+	};
+	try expectCodestreamRoundtrip(testing.allocator, encoded, .{
+		.width = 2,
+		.height = 2,
+		.num_channels = 5,
+		.num_extra_channels = 2,
+		.row_stride = 10,
+		.pixels = &expected_pixels,
+	});
+}
+
+test "encodeSimplePackedU8 round-trips RGB plus subsampled depth through FrameDecoder" {
+	const color_pixels = [_]u8{
+		4, 8, 12, 6, 10, 14, 8, 12, 16, 10, 14, 18,
+		3, 6, 9, 5, 8, 11, 7, 10, 13, 9, 12, 15,
+	};
+	const depth_pixels = [_]u8{ 100, 25 };
+	const extra = [_]SimpleExtraPlaneU8{
+		.{
+			.info = .{
+				.type = .depth,
+				.dim_shift = 1,
+				.name = "depth-half",
+				.name_len = "depth-half".len,
+			},
+			.row_stride = 2,
+			.pixels = &depth_pixels,
+		},
+	};
+
+	const encoded = try encodeSimplePackedU8(testing.allocator, .{
+		.width = 4,
+		.height = 2,
+		.num_color_channels = 3,
+		.color_row_stride = 12,
+		.color_pixels = &color_pixels,
+		.extra_planes = &extra,
+	}, null);
+	defer testing.allocator.free(encoded);
+
+	var br = BitReader.init(encoded[2..]);
+	const size = headers.SizeHeader.readFromBitStream(&br);
+	const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+	const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+	try br.jumpToByteBoundary();
+
+	try testing.expectEqual(@as(usize, 4), size.xsize());
+	try testing.expectEqual(@as(usize, 2), size.ysize());
+	try testing.expectEqual(@as(u32, 1), metadata.num_extra_channels);
+	try testing.expectEqual(image_metadata.ExtraChannel.depth, metadata.extra_channel_info[0].type);
+	try testing.expectEqual(@as(u32, 1), metadata.extra_channel_info[0].dim_shift);
+
+	var parsed_meta = image_metadata.CodecMetadata{};
+	parsed_meta.size = size;
+	parsed_meta.m = metadata;
+	parsed_meta.transform_data = transform_data;
+
+	const frame_offset = br.totalBitsConsumed() / 8;
+	var frame_dec = dec_frame.FrameDecoder.init(testing.allocator, &parsed_meta);
+	defer frame_dec.deinit();
+	try frame_dec.decodeFrame(encoded[2 + frame_offset ..]);
+
+	const image = frame_dec.getDecodedImage();
+	try testing.expectEqual(@as(usize, 4), image.channels.items.len);
+	try testing.expectEqual(@as(usize, 2), image.channels.items[3].w);
+	try testing.expectEqual(@as(usize, 1), image.channels.items[3].h);
+	try testing.expectEqualSlices(i32, &.{ 100, 25 }, image.channels.items[3].data);
 }
