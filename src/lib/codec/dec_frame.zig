@@ -109,6 +109,34 @@ fn applyYCbCrChromaSubsampling(
     }
 }
 
+/// Applies `ExtraChannelInfo.dim_shift` to the in-memory modular image so
+/// subsampled alpha/depth planes use their encoded reduced geometry before
+/// ANS token decode and per-group tiling begin.
+fn applyExtraChannelDimShift(
+	allocator: std.mem.Allocator,
+	image: *Image,
+	frame_dim: FrameDimensions,
+	metadata: *const CodecMetadata,
+	color_channels: usize,
+) JxlError!void {
+	for (0..metadata.m.num_extra_channels) |extra_index| {
+		const channel_index = color_channels + extra_index;
+		if (channel_index >= image.channels.items.len) return error.GenericError;
+
+		const shift: i32 = @intCast(metadata.m.extra_channel_info[extra_index].dim_shift);
+		const width = subsampledSize(frame_dim.xsize, shift);
+		const height = subsampledSize(frame_dim.ysize, shift);
+
+		var ch = &image.channels.items[channel_index];
+		ch.hshift = shift;
+		ch.vshift = shift;
+		if (ch.w == width and ch.h == height and ch.row_stride == width) continue;
+
+		ch.deinit();
+		ch.* = try Channel.create(allocator, width, height, shift, shift);
+	}
+}
+
 // ── DequantMatrices DC quantization ──
 // Transliterated from lib/jxl/quant_weights.cc DequantMatrices::DecodeDC
 
@@ -272,6 +300,15 @@ pub const ModularFrameDecoder = struct {
                 &self.full_image,
                 self.frame_dim,
                 frame_header.chroma_subsampling,
+                nb_chans,
+            );
+        }
+        if (nb_extra != 0) {
+            try applyExtraChannelDimShift(
+                self.allocator,
+                &self.full_image,
+                self.frame_dim,
+                metadata,
                 nb_chans,
             );
         }
@@ -672,4 +709,33 @@ test "applyYCbCrChromaSubsampling shrinks chroma channels" {
     try testing.expectEqual(@as(i32, 1), image.channels.items[1].vshift);
     try testing.expectEqual(@as(usize, 7), image.channels.items[2].w);
     try testing.expectEqual(@as(usize, 5), image.channels.items[2].h);
+}
+
+test "applyExtraChannelDimShift shrinks extra channels" {
+	const allocator = testing.allocator;
+	var image = try Image.create(allocator, 4, 2, 8, 4);
+	defer image.deinit();
+
+	var frame_dim = FrameDimensions{};
+	frame_dim.set(4, 2, 1, 0, 0, true, 1);
+
+	var metadata = CodecMetadata{};
+	metadata.size = .{
+		.small = false,
+		.ysize_raw = 2,
+		.ratio = 0,
+		.xsize_raw = 4,
+	};
+	metadata.m.num_extra_channels = 1;
+	metadata.m.extra_channel_count = 1;
+	metadata.m.extra_channel_info[0] = .{ .dim_shift = 1 };
+
+	try applyExtraChannelDimShift(allocator, &image, frame_dim, &metadata, 3);
+
+	try testing.expectEqual(@as(usize, 4), image.channels.items[0].w);
+	try testing.expectEqual(@as(usize, 2), image.channels.items[0].h);
+	try testing.expectEqual(@as(usize, 2), image.channels.items[3].w);
+	try testing.expectEqual(@as(usize, 1), image.channels.items[3].h);
+	try testing.expectEqual(@as(i32, 1), image.channels.items[3].hshift);
+	try testing.expectEqual(@as(i32, 1), image.channels.items[3].vshift);
 }

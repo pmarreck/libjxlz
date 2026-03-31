@@ -620,6 +620,35 @@ test "writeImageMetadata round-trips an associated alpha extra channel" {
 	try testing.expect(roundtrip.extra_channel_info[0].alpha_associated);
 }
 
+test "writeImageMetadata round-trips a subsampled alpha extra channel" {
+	const allocator = testing.allocator;
+	const data = @embedFile("../testdata/lossless_4x4.jxl");
+	const extracted = try extractMetadataBits(data);
+
+	var metadata = extracted.metadata;
+	metadata.num_extra_channels = 1;
+	metadata.extra_channel_count = 1;
+	metadata.extra_channel_info[0] = .{
+		.dim_shift = 1,
+		.name = "alpha-quarter",
+		.name_len = "alpha-quarter".len,
+	};
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writeImageMetadata(&metadata, &writer);
+	try writer.zeroPadToByte();
+
+	var br = BitReader.init(writer.bytes());
+	const roundtrip = try ImageMetadata.readFromBitStream(&br);
+	try testing.expectEqual(@as(u32, 1), roundtrip.num_extra_channels);
+	try testing.expectEqual(@as(u32, 1), roundtrip.extra_channel_count);
+	try testing.expectEqual(ExtraChannel.alpha, roundtrip.extra_channel_info[0].type);
+	try testing.expectEqual(@as(u32, 1), roundtrip.extra_channel_info[0].dim_shift);
+	try testing.expectEqualStrings("alpha-quarter", roundtrip.extra_channel_info[0].name);
+	try testing.expect(!roundtrip.extra_channel_info[0].alpha_associated);
+}
+
 test "BitDepth default (8-bit uint)" {
     // floating_point=0, selector=00 -> Val(8)
     // bits: 0, 00 = byte 0x00
