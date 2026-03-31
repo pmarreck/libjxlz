@@ -431,16 +431,21 @@ fn rowStrideBytes(width: usize, format: JxlPixelFormat) ?usize {
 	return common.roundUpTo(row_bytes, row_align);
 }
 
-/// Validates the narrow one-shot encoder surface: 8-bit grayscale or RGB,
-/// no preview/animation/extras, and identity orientation.
+/// Validates the narrow one-shot encoder surface: 8-bit grayscale/RGB with an
+/// optional single 8-bit alpha extra channel, no preview/animation, and identity orientation.
 fn validateBasicInfoForSimpleEncode(info: *const JxlBasicInfo) !void {
 	if (info.xsize == 0 or info.ysize == 0) return error.InvalidArgs;
 	if (info.have_container != 0 or info.have_preview != 0 or info.have_animation != 0) return error.Unsupported;
 	if (info.orientation != .JXL_ORIENT_IDENTITY) return error.Unsupported;
 	if (info.bits_per_sample != 8 or info.exponent_bits_per_sample != 0) return error.Unsupported;
 	if (!(info.num_color_channels == 1 or info.num_color_channels == 3)) return error.Unsupported;
-	if (info.num_extra_channels != 0) return error.Unsupported;
-	if (info.alpha_bits != 0 or info.alpha_exponent_bits != 0 or info.alpha_premultiplied != 0) return error.Unsupported;
+	if (info.num_extra_channels == 0) {
+		if (info.alpha_bits != 0 or info.alpha_exponent_bits != 0 or info.alpha_premultiplied != 0) return error.Unsupported;
+		return;
+	}
+	if (info.num_extra_channels != 1) return error.Unsupported;
+	if (info.alpha_bits != 8 or info.alpha_exponent_bits != 0) return error.Unsupported;
+	if (!(info.alpha_premultiplied == 0 or info.alpha_premultiplied == 1)) return error.Unsupported;
 }
 
 fn clearEncodedBytes(enc: *EncoderImpl) void {
@@ -975,9 +980,8 @@ pub export fn JxlEncoderAddImageFrame(
 	const data = buffer orelse return .JXL_ENC_ERROR;
 
 	if (!impl.basic_info_set or !impl.color_encoding_set or impl.added_frame or impl.started_processing) return .JXL_ENC_ERROR;
-	if (impl.basic_info.num_extra_channels != 0) return .JXL_ENC_ERROR;
 	if (format.data_type != .JXL_TYPE_UINT8) return .JXL_ENC_ERROR;
-	if (format.num_channels != impl.basic_info.num_color_channels) return .JXL_ENC_ERROR;
+	if (format.num_channels != impl.basic_info.num_color_channels + impl.basic_info.num_extra_channels) return .JXL_ENC_ERROR;
 
 	const stride = rowStrideBytes(impl.basic_info.xsize, format.*) orelse return .JXL_ENC_ERROR;
 	const needed = stride * impl.basic_info.ysize;
@@ -988,7 +992,9 @@ pub export fn JxlEncoderAddImageFrame(
 	impl.encoded_bytes = enc_api.encodeSimpleInterleavedU8(std.heap.c_allocator, .{
 		.width = impl.basic_info.xsize,
 		.height = impl.basic_info.ysize,
-		.num_channels = impl.basic_info.num_color_channels,
+		.num_channels = format.num_channels,
+		.num_extra_channels = impl.basic_info.num_extra_channels,
+		.alpha_associated = impl.basic_info.alpha_premultiplied != 0,
 		.row_stride = stride,
 		.pixels = pixels[0..size],
 	}, impl.internal_color_encoding) catch return .JXL_ENC_ERROR;

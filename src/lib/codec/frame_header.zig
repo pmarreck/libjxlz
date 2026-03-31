@@ -270,11 +270,11 @@ pub const FrameHeader = struct {
     frame_size: FrameSize = .{},
     frame_origin: FrameOrigin = .{},
 
-    upsampling: u32 = 1,
-    extra_channel_upsampling: [256]u32 = [_]u32{1} ** 256,
+	upsampling: u32 = 1,
+	extra_channel_upsampling: [256]u32 = [_]u32{1} ** 256,
 
-    blending_info: BlendingInfo = .{},
-    extra_channel_blending_info: [256]BlendingInfo = undefined,
+	blending_info: BlendingInfo = .{},
+	extra_channel_blending_info: [256]BlendingInfo = [_]BlendingInfo{.{}} ** 256,
 
     animation_frame: AnimationFrame = .{},
     is_last: bool = true,

@@ -10,6 +10,8 @@ typedef struct {
 	uint32_t width;
 	uint32_t height;
 	uint32_t channels;
+	uint32_t num_color_channels;
+	uint32_t num_extra_channels;
 	const uint8_t* pixels;
 	size_t pixels_size;
 } ParsedImage;
@@ -39,12 +41,13 @@ static const char* arch_name(void) {
 static void print_help(FILE* out) {
 	fprintf(out,
 		"Usage: cjxlz [options] INPUT OUTPUT\n"
-		"Encode raw binary PGM/PPM into JPEG XL using the public C FFI only.\n\n"
+		"Encode raw binary PNM/PAM into JPEG XL using the public C FFI only.\n\n"
 		"Options:\n"
 		"  -h, --help   Show this help\n"
 		"  --about      Show version, platform, and architecture\n\n"
 		"Formats:\n"
-		"  INPUT must be raw binary P5 (grayscale) or P6 (RGB) PNM with MAXVAL 255\n\n"
+		"  INPUT must be raw binary P5/P6 with MAXVAL 255, or narrow P7 PAM with\n"
+		"  TUPLTYPE GRAYSCALE, RGB, GRAYSCALE_ALPHA, or RGB_ALPHA and MAXVAL 255\n\n"
 		"Paths:\n"
 		"  INPUT accepts '-' or '@stdin'\n"
 		"  OUTPUT accepts '-' or '@stdout' or '@stderr'\n");
@@ -166,8 +169,110 @@ static int parse_pnm(const uint8_t* data, size_t size, ParsedImage* image, char*
 	}
 	if (strcmp(token, "P5") == 0) {
 		image->channels = 1;
+		image->num_color_channels = 1;
 	} else if (strcmp(token, "P6") == 0) {
 		image->channels = 3;
+		image->num_color_channels = 3;
+	} else if (strcmp(token, "P7") == 0) {
+		uint32_t width = 0;
+		uint32_t height = 0;
+		uint32_t depth = 0;
+		uint32_t maxval = 0;
+		char tupletype[64];
+		int have_width = 0;
+		int have_height = 0;
+		int have_depth = 0;
+		int have_maxval = 0;
+		int have_tupletype = 0;
+
+		for (;;) {
+			if (!read_token(data, size, &pos, token, sizeof(token))) {
+				snprintf(err, err_cap, "truncated PAM header");
+				return 0;
+			}
+			if (strcmp(token, "ENDHDR") == 0) break;
+			if (strcmp(token, "WIDTH") == 0) {
+				if (!read_token(data, size, &pos, token, sizeof(token)) || !parse_u32_token(token, &width) || width == 0) {
+					snprintf(err, err_cap, "invalid PAM width");
+					return 0;
+				}
+				have_width = 1;
+				continue;
+			}
+			if (strcmp(token, "HEIGHT") == 0) {
+				if (!read_token(data, size, &pos, token, sizeof(token)) || !parse_u32_token(token, &height) || height == 0) {
+					snprintf(err, err_cap, "invalid PAM height");
+					return 0;
+				}
+				have_height = 1;
+				continue;
+			}
+			if (strcmp(token, "DEPTH") == 0) {
+				if (!read_token(data, size, &pos, token, sizeof(token)) || !parse_u32_token(token, &depth) || depth == 0) {
+					snprintf(err, err_cap, "invalid PAM depth");
+					return 0;
+				}
+				have_depth = 1;
+				continue;
+			}
+			if (strcmp(token, "MAXVAL") == 0) {
+				if (!read_token(data, size, &pos, token, sizeof(token)) || !parse_u32_token(token, &maxval) || maxval != 255) {
+					snprintf(err, err_cap, "only PAM MAXVAL 255 is supported");
+					return 0;
+				}
+				have_maxval = 1;
+				continue;
+			}
+			if (strcmp(token, "TUPLTYPE") == 0) {
+				if (!read_token(data, size, &pos, tupletype, sizeof(tupletype))) {
+					snprintf(err, err_cap, "invalid PAM tupletype");
+					return 0;
+				}
+				have_tupletype = 1;
+				continue;
+			}
+			snprintf(err, err_cap, "unsupported PAM header key: %s", token);
+			return 0;
+		}
+
+		if (!(have_width && have_height && have_depth && have_maxval && have_tupletype)) {
+			snprintf(err, err_cap, "incomplete PAM header");
+			return 0;
+		}
+
+		image->width = width;
+		image->height = height;
+		image->channels = depth;
+		if (strcmp(tupletype, "GRAYSCALE") == 0) {
+			image->num_color_channels = 1;
+			image->num_extra_channels = 0;
+		} else if (strcmp(tupletype, "RGB") == 0) {
+			image->num_color_channels = 3;
+			image->num_extra_channels = 0;
+		} else if (strcmp(tupletype, "GRAYSCALE_ALPHA") == 0) {
+			image->num_color_channels = 1;
+			image->num_extra_channels = 1;
+		} else if (strcmp(tupletype, "RGB_ALPHA") == 0) {
+			image->num_color_channels = 3;
+			image->num_extra_channels = 1;
+		} else {
+			snprintf(err, err_cap, "unsupported PAM tupletype: %s", tupletype);
+			return 0;
+		}
+
+		if (image->channels != image->num_color_channels + image->num_extra_channels) {
+			snprintf(err, err_cap, "unexpected PAM depth for tuple type");
+			return 0;
+		}
+
+		skip_space_and_comments(data, size, &pos);
+		image->pixels = data + pos;
+		image->pixels_size = size - pos;
+		if (image->pixels_size != (size_t)image->width * image->height * image->channels) {
+			snprintf(err, err_cap, "unexpected PAM pixel payload size");
+			return 0;
+		}
+		return 1;
 	} else {
 		snprintf(err, err_cap, "unsupported input magic: %s", token);
 		return 0;
@@ -203,12 +308,13 @@ static int encode_image(const ParsedImage* image, uint8_t** encoded_out, size_t*
 	info.xsize = image->width;
 	info.ysize = image->height;
 	info.bits_per_sample = 8;
-	info.num_color_channels = image->channels;
-	info.num_extra_channels = 0;
-	info.alpha_bits = 0;
+	info.num_color_channels = image->num_color_channels;
+	info.num_extra_channels = image->num_extra_channels;
+	info.alpha_bits = image->num_extra_channels ? 8 : 0;
+	info.alpha_premultiplied = 0;
 
 	JxlColorEncoding color;
-	JxlColorEncodingSetToSRGB(&color, image->channels == 1 ? 1 : 0);
+	JxlColorEncodingSetToSRGB(&color, image->num_color_channels == 1 ? 1 : 0);
 
 	JxlPixelFormat format = {
 		image->channels,

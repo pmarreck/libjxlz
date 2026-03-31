@@ -16,6 +16,8 @@ pub const SimpleInterleavedU8Image = struct {
 	width: u32,
 	height: u32,
 	num_channels: u32,
+	num_extra_channels: u32 = 0,
+	alpha_associated: bool = false,
 	row_stride: usize,
 	pixels: []const u8,
 };
@@ -32,7 +34,13 @@ fn graySrgbColorEncoding() color_encoding_mod.ColorEncoding {
 
 fn validateSimpleImage(image: SimpleInterleavedU8Image) !void {
 	if (image.width == 0 or image.height == 0) return error.InvalidArgs;
-	if (image.num_channels != 1 and image.num_channels != 3) return error.Unsupported;
+	if (image.num_extra_channels > 1) return error.Unsupported;
+	if (image.num_channels < image.num_extra_channels) return error.InvalidArgs;
+	const num_color_channels = image.num_channels - image.num_extra_channels;
+	if (!((num_color_channels == 1 or num_color_channels == 3) and
+		(image.num_extra_channels == 0 or image.num_extra_channels == 1))) return error.Unsupported;
+	if (image.num_extra_channels == 1 and !(image.num_channels == 2 or image.num_channels == 4)) return error.Unsupported;
+	if (image.num_extra_channels == 0 and image.alpha_associated) return error.Unsupported;
 
 	const min_row_stride = @as(usize, image.width) * image.num_channels;
 	if (image.row_stride < min_row_stride) return error.InvalidArgs;
@@ -57,6 +65,15 @@ fn buildCodecMetadata(
 		.xyb_encoded = false,
 		.color_encoding = color_encoding,
 	};
+	if (image.num_extra_channels == 1) {
+		codec_meta.m.num_extra_channels = 1;
+		codec_meta.m.extra_channel_count = 1;
+		codec_meta.m.extra_channel_info[0] = .{
+			.type = .alpha,
+			.bit_depth = .{},
+			.alpha_associated = image.alpha_associated,
+		};
+	}
 	codec_meta.transform_data = .{};
 	return codec_meta;
 }
@@ -101,16 +118,20 @@ pub fn encodeSimpleInterleavedU8(
 	color_encoding: ?color_encoding_mod.ColorEncoding,
 ) ![]u8 {
 	try validateSimpleImage(image);
+	const num_color_channels = image.num_channels - image.num_extra_channels;
 
-	const effective_color_encoding = color_encoding orelse if (image.num_channels == 1)
+	const effective_color_encoding = color_encoding orelse if (num_color_channels == 1)
 		graySrgbColorEncoding()
 	else
 		color_encoding_mod.ColorEncoding{};
-	if (effective_color_encoding.channels() != image.num_channels) return error.Unsupported;
+	if (effective_color_encoding.channels() != num_color_channels) return error.Unsupported;
 	if (effective_color_encoding.want_icc) return error.Unsupported;
 
 	const codec_meta = buildCodecMetadata(image, effective_color_encoding);
-	const frame_header = buildSimpleFrameHeader();
+	var frame_header = buildSimpleFrameHeader();
+	for (0..image.num_extra_channels) |extra_index| {
+		frame_header.extra_channel_upsampling[extra_index] = 1;
+	}
 	const frame_dim = frame_header.toFrameDimensions(&codec_meta, false);
 
 	var source = try buildSourceImage(allocator, image);
@@ -248,6 +269,42 @@ test "encodeSimpleInterleavedU8 round-trips RGB through FrameDecoder" {
 		.height = 2,
 		.num_channels = 3,
 		.row_stride = 6,
+		.pixels = &pixels,
+	};
+	const encoded = try encodeSimpleInterleavedU8(testing.allocator, image, null);
+	defer testing.allocator.free(encoded);
+	try expectCodestreamRoundtrip(testing.allocator, encoded, image);
+}
+
+test "encodeSimpleInterleavedU8 round-trips grayscale plus alpha through FrameDecoder" {
+	const pixels = [_]u8{
+		5, 255, 10, 128, 15, 64,
+		20, 32, 25, 16, 30, 0,
+	};
+	const image = SimpleInterleavedU8Image{
+		.width = 3,
+		.height = 2,
+		.num_channels = 2,
+		.num_extra_channels = 1,
+		.row_stride = 6,
+		.pixels = &pixels,
+	};
+	const encoded = try encodeSimpleInterleavedU8(testing.allocator, image, null);
+	defer testing.allocator.free(encoded);
+	try expectCodestreamRoundtrip(testing.allocator, encoded, image);
+}
+
+test "encodeSimpleInterleavedU8 round-trips RGBA through FrameDecoder" {
+	const pixels = [_]u8{
+		0, 10, 20, 255, 30, 40, 50, 128,
+		60, 70, 80, 64, 90, 100, 110, 0,
+	};
+	const image = SimpleInterleavedU8Image{
+		.width = 2,
+		.height = 2,
+		.num_channels = 4,
+		.num_extra_channels = 1,
+		.row_stride = 8,
 		.pixels = &pixels,
 	};
 	const encoded = try encodeSimpleInterleavedU8(testing.allocator, image, null);
