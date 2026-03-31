@@ -217,8 +217,8 @@ fn isPlainExtraChannelType(extra_type: ExtraChannel) bool {
 
 /// Starts the write-side extra-channel surface with the decoder's all-default
 /// alpha channel, then grows into the explicit alpha-field form so codestream
-/// writers can cover alpha plus the plain shared-field extra-channel family
-/// before broader spot/CFA support exists.
+/// writers can cover alpha, plain shared-field extra channels, and the
+/// smallest conditional payload form (`spot_color`) before broader CFA support.
 pub fn writeExtraChannelInfo(extra: *const ExtraChannelInfo, writer: anytype) !void {
     if (isDefaultExtraChannelInfo(extra)) {
         try fc.writeAllDefault(true, writer);
@@ -234,6 +234,9 @@ pub fn writeExtraChannelInfo(extra: *const ExtraChannelInfo, writer: anytype) !v
     if (isPlainExtraChannelType(extra.type)) {
         if (extra.alpha_associated) return error.Unsupported;
         if (!std.mem.eql(f32, &extra.spot_color, &[_]f32{ 0, 0, 0, 0 })) return error.Unsupported;
+        if (extra.cfa_channel != 0) return error.Unsupported;
+    } else if (extra.type == .spot_color) {
+        if (extra.alpha_associated) return error.Unsupported;
         if (extra.cfa_channel != 0) return error.Unsupported;
     } else if (extra.type != .alpha) {
         return error.Unsupported;
@@ -255,6 +258,10 @@ pub fn writeExtraChannelInfo(extra: *const ExtraChannelInfo, writer: anytype) !v
 
     if (extra.type == .alpha) {
         try writer.write(1, @intFromBool(extra.alpha_associated));
+    } else if (extra.type == .spot_color) {
+        for (extra.spot_color) |component| {
+            try fc.F16Coder.write(component, writer);
+        }
     }
 }
 
@@ -729,6 +736,38 @@ test "writeImageMetadata round-trips a subsampled depth extra channel" {
 	try testing.expectEqual(ExtraChannel.depth, roundtrip.extra_channel_info[0].type);
 	try testing.expectEqual(@as(u32, 1), roundtrip.extra_channel_info[0].dim_shift);
 	try testing.expectEqualStrings("depth-half", roundtrip.extra_channel_info[0].name);
+}
+
+test "writeImageMetadata round-trips a spot-color extra channel" {
+	const allocator = testing.allocator;
+	const data = @embedFile("../testdata/lossless_4x4.jxl");
+	const extracted = try extractMetadataBits(data);
+
+	var metadata = extracted.metadata;
+	metadata.num_extra_channels = 1;
+	metadata.extra_channel_count = 1;
+	metadata.extra_channel_info[0] = .{
+		.type = .spot_color,
+		.name = "spot",
+		.name_len = "spot".len,
+		.spot_color = .{ 1.0, 0.5, 0.25, 0.75 },
+	};
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writeImageMetadata(&metadata, &writer);
+	try writer.zeroPadToByte();
+
+	var br = BitReader.init(writer.bytes());
+	const roundtrip = try ImageMetadata.readFromBitStream(&br);
+	try testing.expectEqual(@as(u32, 1), roundtrip.num_extra_channels);
+	try testing.expectEqual(@as(u32, 1), roundtrip.extra_channel_count);
+	try testing.expectEqual(ExtraChannel.spot_color, roundtrip.extra_channel_info[0].type);
+	try testing.expectEqualStrings("spot", roundtrip.extra_channel_info[0].name);
+	try testing.expectEqual(@as(f32, 1.0), roundtrip.extra_channel_info[0].spot_color[0]);
+	try testing.expectEqual(@as(f32, 0.5), roundtrip.extra_channel_info[0].spot_color[1]);
+	try testing.expectEqual(@as(f32, 0.25), roundtrip.extra_channel_info[0].spot_color[2]);
+	try testing.expectEqual(@as(f32, 0.75), roundtrip.extra_channel_info[0].spot_color[3]);
 }
 
 test "BitDepth default (8-bit uint)" {

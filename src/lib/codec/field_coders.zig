@@ -226,6 +226,16 @@ pub const F16Coder = struct {
         const bits32 = (sign << 31) | (biased_exp32 << 23) | mantissa32;
         return @bitCast(bits32);
     }
+
+	pub fn write(value: f32, writer: anytype) !void {
+		if (!std.math.isFinite(value)) return error.Unsupported;
+
+		const value16: f16 = @floatCast(value);
+		const bits16: u16 = @bitCast(value16);
+		if (((bits16 >> 10) & 0x1F) == 0x1F) return error.Unsupported;
+
+		try writer.write(16, bits16);
+	}
 };
 
 // ── Enum reader ──
@@ -415,6 +425,23 @@ test "F16Coder read NaN returns error" {
     var data = [_]u8{ 0x00, 0x7E, 0, 0, 0, 0, 0, 0 };
     var br = BitReader.init(&data);
     try testing.expectError(error.GenericError, F16Coder.read(&br));
+}
+
+test "F16Coder write round-trips finite values" {
+	var writer = BitWriter.init(testing.allocator);
+	defer writer.deinit();
+
+	try F16Coder.write(1.0, &writer);
+	try F16Coder.write(0.5, &writer);
+	try F16Coder.write(0.25, &writer);
+	try F16Coder.write(0.75, &writer);
+	try writer.zeroPadToByte();
+
+	var br = BitReader.init(writer.bytes());
+	try testing.expectEqual(@as(f32, 1.0), try F16Coder.read(&br));
+	try testing.expectEqual(@as(f32, 0.5), try F16Coder.read(&br));
+	try testing.expectEqual(@as(f32, 0.25), try F16Coder.read(&br));
+	try testing.expectEqual(@as(f32, 0.75), try F16Coder.read(&br));
 }
 
 test "readEnum values" {

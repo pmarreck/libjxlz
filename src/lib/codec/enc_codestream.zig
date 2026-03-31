@@ -1018,6 +1018,115 @@ test "writeCodestream round-trips a subsampled-depth codestream through header p
 	try testing.expectEqualSlices(i32, source.channels.items[3].data, image.channels.items[3].data);
 }
 
+test "writeCodestream round-trips a spot-color codestream through header parse and FrameDecoder" {
+	const allocator = testing.allocator;
+	const source_data = @embedFile("../testdata/lossless_4x4.jxl");
+	const prepared = try prepareFrame(source_data);
+
+	const parsed_frame_header = blk: {
+		var br = BitReader.init(prepared.frame_data);
+		break :blk try frame_header_mod.FrameHeader.readFromBitStream(&br, &prepared.codec_meta, false);
+	};
+
+	var codec_meta = prepared.codec_meta;
+	codec_meta.size = .{
+		.small = false,
+		.ysize_raw = 2,
+		.ratio = 0,
+		.xsize_raw = 3,
+	};
+	codec_meta.m.num_extra_channels = 1;
+	codec_meta.m.extra_channel_count = 1;
+	codec_meta.m.extra_channel_info[0] = .{
+		.type = .spot_color,
+		.name = "spot",
+		.name_len = "spot".len,
+		.spot_color = .{ 1.0, 0.5, 0.25, 0.75 },
+	};
+
+	var frame_header = parsed_frame_header;
+	frame_header.extra_channel_upsampling[0] = 1;
+	frame_header.extra_channel_blending_info[0] = .{};
+
+	var source = try modular_image.Image.create(allocator, 3, 2, 8, 4);
+	defer source.deinit();
+	const original = [_][4]i32{
+		.{ 3, 6, 9, 12 },
+		.{ 5, 8, 11, 14 },
+		.{ 7, 10, 13, 16 },
+		.{ 4, 5, 6, 7 },
+		.{ 6, 7, 8, 9 },
+		.{ 8, 9, 10, 11 },
+	};
+	var idx: usize = 0;
+	for (0..source.h) |y| {
+		for (0..source.w) |x| {
+			source.channels.items[0].row(y)[x] = original[idx][0];
+			source.channels.items[1].row(y)[x] = original[idx][1];
+			source.channels.items[2].row(y)[x] = original[idx][2];
+			source.channels.items[3].row(y)[x] = original[idx][3];
+			idx += 1;
+		}
+	}
+
+	var dc_global = BitWriter.init(allocator);
+	defer dc_global.deinit();
+	try dc_global.write(1, 1); // DequantMatrices all_default
+	try dc_global.write(1, 0); // no global tree
+	_ = try enc_encoding.writeSingleNodeLocalTreeGroupImage(
+		allocator,
+		&source,
+		.gradient,
+		&dc_global,
+	);
+	try dc_global.zeroPadToByte();
+
+	const sections = [_][]const u8{dc_global.bytes()};
+	var frame_writer = BitWriter.init(allocator);
+	defer frame_writer.deinit();
+	try enc_frame.writeFrame(&frame_header, &codec_meta, &sections, &frame_writer);
+	try frame_writer.zeroPadToByte();
+
+	var codestream = BitWriter.init(allocator);
+	defer codestream.deinit();
+	try writeCodestream(&codec_meta, frame_writer.bytes(), &codestream);
+	try codestream.zeroPadToByte();
+
+	var br = BitReader.init(codestream.bytes()[2..]);
+	const size = headers.SizeHeader.readFromBitStream(&br);
+	try testing.expectEqual(@as(usize, 3), size.xsize());
+	try testing.expectEqual(@as(usize, 2), size.ysize());
+	const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+	try testing.expectEqual(@as(u32, 1), metadata.num_extra_channels);
+	try testing.expectEqual(image_metadata.ExtraChannel.spot_color, metadata.extra_channel_info[0].type);
+	try testing.expectEqualStrings("spot", metadata.extra_channel_info[0].name);
+	try testing.expectEqual(@as(f32, 1.0), metadata.extra_channel_info[0].spot_color[0]);
+	try testing.expectEqual(@as(f32, 0.5), metadata.extra_channel_info[0].spot_color[1]);
+	try testing.expectEqual(@as(f32, 0.25), metadata.extra_channel_info[0].spot_color[2]);
+	try testing.expectEqual(@as(f32, 0.75), metadata.extra_channel_info[0].spot_color[3]);
+	const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+	try br.jumpToByteBoundary();
+
+	var parsed_meta = image_metadata.CodecMetadata{};
+	parsed_meta.m = metadata;
+	parsed_meta.size = size;
+	parsed_meta.transform_data = transform_data;
+
+	const frame_offset = br.totalBitsConsumed() / 8;
+	var frame_dec = dec_frame.FrameDecoder.init(allocator, &parsed_meta);
+	defer frame_dec.deinit();
+	try frame_dec.decodeFrame(codestream.bytes()[2 + frame_offset ..]);
+
+	const image = frame_dec.getDecodedImage();
+	try testing.expectEqual(@as(usize, 4), image.channels.items.len);
+	try testing.expectEqual(@as(usize, 3), image.w);
+	try testing.expectEqual(@as(usize, 2), image.h);
+
+	for (source.channels.items, image.channels.items) |want, got| {
+		try testing.expectEqualSlices(i32, want.data, got.data);
+	}
+}
+
 test "writeCodestream round-trips an RGB implicit-palette codestream through header parse and FrameDecoder" {
 	const allocator = testing.allocator;
 	const source_data = @embedFile("../testdata/lossless_4x4.jxl");
