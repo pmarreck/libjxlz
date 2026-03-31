@@ -5,9 +5,11 @@ const byte_order = @import("lib/base/byte_order.zig");
 const BitReader = @import("lib/base/bit_reader.zig").BitReader;
 const JxlError = @import("lib/base/status.zig").JxlError;
 const headers = @import("lib/codec/headers.zig");
+const color_encoding_mod = @import("lib/codec/color_encoding.zig");
 const image_metadata = @import("lib/codec/image_metadata.zig");
 const frame_header_mod = @import("lib/codec/frame_header.zig");
 const dec_frame = @import("lib/codec/dec_frame.zig");
+const enc_api = @import("lib/codec/enc_api.zig");
 const Image = @import("lib/modular/modular_image.zig").Image;
 
 pub const JXL_BOOL = c_int;
@@ -103,6 +105,64 @@ pub const JxlDecoderStatus = enum(c_int) {
 	JXL_DEC_FULL_IMAGE = 0x1000,
 };
 
+pub const JxlEncoderStatus = enum(c_int) {
+	JXL_ENC_SUCCESS = 0,
+	JXL_ENC_ERROR = 1,
+	JXL_ENC_NEED_MORE_OUTPUT = 2,
+};
+
+pub const JxlColorSpace = enum(c_int) {
+	JXL_COLOR_SPACE_RGB = 0,
+	JXL_COLOR_SPACE_GRAY = 1,
+	JXL_COLOR_SPACE_XYB = 2,
+	JXL_COLOR_SPACE_UNKNOWN = 3,
+};
+
+pub const JxlWhitePoint = enum(c_int) {
+	JXL_WHITE_POINT_D65 = 1,
+	JXL_WHITE_POINT_CUSTOM = 2,
+	JXL_WHITE_POINT_E = 10,
+	JXL_WHITE_POINT_DCI = 11,
+};
+
+pub const JxlPrimaries = enum(c_int) {
+	JXL_PRIMARIES_SRGB = 1,
+	JXL_PRIMARIES_CUSTOM = 2,
+	JXL_PRIMARIES_2100 = 9,
+	JXL_PRIMARIES_P3 = 11,
+};
+
+pub const JxlTransferFunction = enum(c_int) {
+	JXL_TRANSFER_FUNCTION_709 = 1,
+	JXL_TRANSFER_FUNCTION_UNKNOWN = 2,
+	JXL_TRANSFER_FUNCTION_LINEAR = 8,
+	JXL_TRANSFER_FUNCTION_SRGB = 13,
+	JXL_TRANSFER_FUNCTION_PQ = 16,
+	JXL_TRANSFER_FUNCTION_DCI = 17,
+	JXL_TRANSFER_FUNCTION_HLG = 18,
+	JXL_TRANSFER_FUNCTION_GAMMA = 65535,
+};
+
+pub const JxlRenderingIntent = enum(c_int) {
+	JXL_RENDERING_INTENT_PERCEPTUAL = 0,
+	JXL_RENDERING_INTENT_RELATIVE = 1,
+	JXL_RENDERING_INTENT_SATURATION = 2,
+	JXL_RENDERING_INTENT_ABSOLUTE = 3,
+};
+
+pub const JxlColorEncoding = extern struct {
+	color_space: JxlColorSpace,
+	white_point: JxlWhitePoint,
+	white_point_xy: [2]f64,
+	primaries: JxlPrimaries,
+	primaries_red_xy: [2]f64,
+	primaries_green_xy: [2]f64,
+	primaries_blue_xy: [2]f64,
+	transfer_function: JxlTransferFunction,
+	gamma: f64,
+	rendering_intent: JxlRenderingIntent,
+};
+
 pub const jpegxl_alloc_func = *const fn (?*anyopaque, usize) callconv(.c) ?*anyopaque;
 pub const jpegxl_free_func = *const fn (?*anyopaque, ?*anyopaque) callconv(.c) void;
 
@@ -118,6 +178,8 @@ pub const JxlParallelRunFunction = *const fn (?*anyopaque, u32, usize) callconv(
 pub const JxlParallelRunner = *const fn (?*anyopaque, ?*anyopaque, JxlParallelRunInit, JxlParallelRunFunction, u32, u32) callconv(.c) JxlParallelRetCode;
 
 pub const JxlDecoder = opaque {};
+pub const JxlEncoder = opaque {};
+pub const JxlEncoderFrameSettings = opaque {};
 
 const container_signature = [_]u8{ 0x00, 0x00, 0x00, 0x0C, 0x4A, 0x58, 0x4C, 0x20, 0x0D, 0x0A, 0x87, 0x0A };
 
@@ -159,8 +221,31 @@ const DecoderImpl = struct {
 	}
 };
 
+const EncoderImpl = struct {
+	memory_manager: ?JxlMemoryManager = null,
+	basic_info_set: bool = false,
+	color_encoding_set: bool = false,
+	added_frame: bool = false,
+	input_closed: bool = false,
+	started_processing: bool = false,
+	basic_info: JxlBasicInfo = std.mem.zeroes(JxlBasicInfo),
+	color_encoding: JxlColorEncoding = undefined,
+	encoded_bytes: []u8 = &.{},
+	output_offset: usize = 0,
+	frame_settings: std.ArrayListUnmanaged(*EncoderFrameSettingsImpl) = .{},
+	internal_color_encoding: ?color_encoding_mod.ColorEncoding = null,
+};
+
+const EncoderFrameSettingsImpl = struct {
+	owner: *EncoderImpl,
+};
+
 fn decoderVersion() u32 {
 	return 1000;
+}
+
+fn encoderVersion() u32 {
+	return (@as(u32, 0) << 24) | (@as(u32, 1) << 16) | (@as(u32, 0) << 8);
 }
 
 fn statusFromError(err: JxlError, input_closed: bool) JxlDecoderStatus {
@@ -197,6 +282,138 @@ fn freeDecoder(dec: *DecoderImpl) void {
 	std.heap.c_allocator.destroy(dec);
 }
 
+fn allocEncoder(mm: ?*const JxlMemoryManager) ?*EncoderImpl {
+	if (mm) |manager| {
+		if (manager.alloc != null and manager.free != null) {
+			const raw = manager.alloc.?(manager.@"opaque", @sizeOf(EncoderImpl)) orelse return null;
+			const enc: *EncoderImpl = @ptrCast(@alignCast(raw));
+			enc.* = .{ .memory_manager = manager.* };
+			return enc;
+		}
+		if ((manager.alloc == null) != (manager.free == null)) return null;
+	}
+
+	const enc = std.heap.c_allocator.create(EncoderImpl) catch return null;
+	enc.* = .{};
+	if (mm) |manager| enc.memory_manager = manager.*;
+	return enc;
+}
+
+fn freeEncoderState(enc: *EncoderImpl) void {
+	if (enc.encoded_bytes.len != 0) {
+		std.heap.c_allocator.free(enc.encoded_bytes);
+		enc.encoded_bytes = &.{};
+	}
+	for (enc.frame_settings.items) |settings| {
+		std.heap.c_allocator.destroy(settings);
+	}
+	enc.frame_settings.deinit(std.heap.c_allocator);
+	enc.frame_settings = .{};
+	enc.output_offset = 0;
+}
+
+fn freeEncoder(enc: *EncoderImpl) void {
+	freeEncoderState(enc);
+	if (enc.memory_manager) |manager| {
+		if (manager.alloc != null and manager.free != null) {
+			manager.free.?(manager.@"opaque", enc);
+			return;
+		}
+	}
+	std.heap.c_allocator.destroy(enc);
+}
+
+fn defaultWhitePointXY() [2]f64 {
+	return .{ 0.3127, 0.3290 };
+}
+
+fn defaultPrimariesRedXY() [2]f64 {
+	return .{ 0.639998686, 0.330010138 };
+}
+
+fn defaultPrimariesGreenXY() [2]f64 {
+	return .{ 0.300003784, 0.600003357 };
+}
+
+fn defaultPrimariesBlueXY() [2]f64 {
+	return .{ 0.150002046, 0.059997204 };
+}
+
+fn defaultJxlColorEncoding(is_gray: bool, linear: bool) JxlColorEncoding {
+	return .{
+		.color_space = if (is_gray) .JXL_COLOR_SPACE_GRAY else .JXL_COLOR_SPACE_RGB,
+		.white_point = .JXL_WHITE_POINT_D65,
+		.white_point_xy = defaultWhitePointXY(),
+		.primaries = .JXL_PRIMARIES_SRGB,
+		.primaries_red_xy = defaultPrimariesRedXY(),
+		.primaries_green_xy = defaultPrimariesGreenXY(),
+		.primaries_blue_xy = defaultPrimariesBlueXY(),
+		.transfer_function = if (linear) .JXL_TRANSFER_FUNCTION_LINEAR else .JXL_TRANSFER_FUNCTION_SRGB,
+		.gamma = 1.0,
+		.rendering_intent = .JXL_RENDERING_INTENT_RELATIVE,
+	};
+}
+
+fn defaultBasicInfo() JxlBasicInfo {
+	var info = std.mem.zeroes(JxlBasicInfo);
+	info.bits_per_sample = 8;
+	info.orientation = .JXL_ORIENT_IDENTITY;
+	info.num_color_channels = 3;
+	return info;
+}
+
+fn mapRenderingIntent(intent: JxlRenderingIntent) ?color_encoding_mod.RenderingIntent {
+	return switch (intent) {
+		.JXL_RENDERING_INTENT_PERCEPTUAL => .perceptual,
+		.JXL_RENDERING_INTENT_RELATIVE => .relative,
+		.JXL_RENDERING_INTENT_SATURATION => .saturation,
+		.JXL_RENDERING_INTENT_ABSOLUTE => .absolute,
+	};
+}
+
+/// Converts the public C color-encoding struct into the narrow non-ICC Zig
+/// color model used by the current one-shot modular encoder.
+fn toInternalColorEncoding(
+	color: *const JxlColorEncoding,
+	num_channels: u32,
+) !color_encoding_mod.ColorEncoding {
+	var internal = color_encoding_mod.ColorEncoding{};
+	internal.want_icc = false;
+	internal.rendering_intent = mapRenderingIntent(color.rendering_intent) orelse return error.Unsupported;
+
+	switch (color.color_space) {
+		.JXL_COLOR_SPACE_GRAY => {
+			if (num_channels != 1) return error.Unsupported;
+			internal.color_space = .gray;
+			internal.primaries = .srgb;
+		},
+		.JXL_COLOR_SPACE_RGB => {
+			if (num_channels != 3) return error.Unsupported;
+			internal.color_space = .rgb;
+			if (color.primaries != .JXL_PRIMARIES_SRGB) return error.Unsupported;
+			internal.primaries = .srgb;
+		},
+		else => return error.Unsupported,
+	}
+
+	if (color.white_point != .JXL_WHITE_POINT_D65) return error.Unsupported;
+	internal.white_point = .d65;
+
+	switch (color.transfer_function) {
+		.JXL_TRANSFER_FUNCTION_SRGB => internal.tf = .{
+			.have_gamma = false,
+			.transfer_function = .srgb,
+		},
+		.JXL_TRANSFER_FUNCTION_LINEAR => internal.tf = .{
+			.have_gamma = false,
+			.transfer_function = .linear,
+		},
+		else => return error.Unsupported,
+	}
+
+	return internal;
+}
+
 fn bytesPerChannel(data_type: JxlDataType) ?usize {
 	return switch (data_type) {
 		.JXL_TYPE_UINT8 => 1,
@@ -212,6 +429,26 @@ fn rowStrideBytes(width: usize, format: JxlPixelFormat) ?usize {
 	const row_bytes = width * format.num_channels * bytes_per_channel;
 	const row_align = if (format.@"align" <= 1) 1 else format.@"align";
 	return common.roundUpTo(row_bytes, row_align);
+}
+
+/// Validates the narrow one-shot encoder surface: 8-bit grayscale or RGB,
+/// no preview/animation/extras, and identity orientation.
+fn validateBasicInfoForSimpleEncode(info: *const JxlBasicInfo) !void {
+	if (info.xsize == 0 or info.ysize == 0) return error.InvalidArgs;
+	if (info.have_container != 0 or info.have_preview != 0 or info.have_animation != 0) return error.Unsupported;
+	if (info.orientation != .JXL_ORIENT_IDENTITY) return error.Unsupported;
+	if (info.bits_per_sample != 8 or info.exponent_bits_per_sample != 0) return error.Unsupported;
+	if (!(info.num_color_channels == 1 or info.num_color_channels == 3)) return error.Unsupported;
+	if (info.num_extra_channels != 0) return error.Unsupported;
+	if (info.alpha_bits != 0 or info.alpha_exponent_bits != 0 or info.alpha_premultiplied != 0) return error.Unsupported;
+}
+
+fn clearEncodedBytes(enc: *EncoderImpl) void {
+	if (enc.encoded_bytes.len != 0) {
+		std.heap.c_allocator.free(enc.encoded_bytes);
+		enc.encoded_bytes = &.{};
+	}
+	enc.output_offset = 0;
 }
 
 fn bitDepthMax(bits_per_sample: u32) u32 {
@@ -646,6 +883,148 @@ pub export fn JxlDecoderProcessInput(dec_ptr: ?*JxlDecoder) JxlDecoderStatus {
 	}
 
 	return .JXL_DEC_SUCCESS;
+}
+
+pub export fn JxlEncoderVersion() u32 {
+	return encoderVersion();
+}
+
+pub export fn JxlEncoderCreate(memory_manager: ?*const JxlMemoryManager) ?*JxlEncoder {
+	const enc = allocEncoder(memory_manager) orelse return null;
+	return @ptrCast(enc);
+}
+
+pub export fn JxlEncoderReset(enc_ptr: ?*JxlEncoder) void {
+	const enc = enc_ptr orelse return;
+	const impl: *EncoderImpl = @ptrCast(@alignCast(enc));
+	const mm = impl.memory_manager;
+	freeEncoderState(impl);
+	impl.* = .{};
+	impl.memory_manager = mm;
+}
+
+pub export fn JxlEncoderDestroy(enc_ptr: ?*JxlEncoder) void {
+	const enc = enc_ptr orelse return;
+	const impl: *EncoderImpl = @ptrCast(@alignCast(enc));
+	freeEncoder(impl);
+}
+
+pub export fn JxlEncoderFrameSettingsCreate(enc_ptr: ?*JxlEncoder, source_ptr: ?*const JxlEncoderFrameSettings) ?*JxlEncoderFrameSettings {
+	const enc = enc_ptr orelse return null;
+	const impl: *EncoderImpl = @ptrCast(@alignCast(enc));
+	if (source_ptr) |source| {
+		const source_impl: *const EncoderFrameSettingsImpl = @ptrCast(@alignCast(source));
+		if (source_impl.owner != impl) return null;
+	}
+
+	const settings = std.heap.c_allocator.create(EncoderFrameSettingsImpl) catch return null;
+	errdefer std.heap.c_allocator.destroy(settings);
+	settings.* = .{ .owner = impl };
+	impl.frame_settings.append(std.heap.c_allocator, settings) catch return null;
+	return @ptrCast(settings);
+}
+
+pub export fn JxlEncoderInitBasicInfo(info: ?*JxlBasicInfo) void {
+	const dst = info orelse return;
+	dst.* = defaultBasicInfo();
+}
+
+pub export fn JxlColorEncodingSetToSRGB(color_encoding: ?*JxlColorEncoding, is_gray: JXL_BOOL) void {
+	const color = color_encoding orelse return;
+	color.* = defaultJxlColorEncoding(is_gray != 0, false);
+}
+
+pub export fn JxlColorEncodingSetToLinearSRGB(color_encoding: ?*JxlColorEncoding, is_gray: JXL_BOOL) void {
+	const color = color_encoding orelse return;
+	color.* = defaultJxlColorEncoding(is_gray != 0, true);
+}
+
+pub export fn JxlEncoderSetBasicInfo(enc_ptr: ?*JxlEncoder, info: ?*const JxlBasicInfo) JxlEncoderStatus {
+	const enc = enc_ptr orelse return .JXL_ENC_ERROR;
+	const impl: *EncoderImpl = @ptrCast(@alignCast(enc));
+	const src = info orelse return .JXL_ENC_ERROR;
+	if (impl.started_processing or impl.added_frame) return .JXL_ENC_ERROR;
+	validateBasicInfoForSimpleEncode(src) catch return .JXL_ENC_ERROR;
+	impl.basic_info = src.*;
+	impl.basic_info_set = true;
+	return .JXL_ENC_SUCCESS;
+}
+
+pub export fn JxlEncoderSetColorEncoding(enc_ptr: ?*JxlEncoder, color_ptr: ?*const JxlColorEncoding) JxlEncoderStatus {
+	const enc = enc_ptr orelse return .JXL_ENC_ERROR;
+	const impl: *EncoderImpl = @ptrCast(@alignCast(enc));
+	const color = color_ptr orelse return .JXL_ENC_ERROR;
+	if (!impl.basic_info_set or impl.started_processing or impl.added_frame) return .JXL_ENC_ERROR;
+	const internal = toInternalColorEncoding(color, impl.basic_info.num_color_channels) catch return .JXL_ENC_ERROR;
+	impl.color_encoding = color.*;
+	impl.internal_color_encoding = internal;
+	impl.color_encoding_set = true;
+	return .JXL_ENC_SUCCESS;
+}
+
+pub export fn JxlEncoderAddImageFrame(
+	frame_settings_ptr: ?*const JxlEncoderFrameSettings,
+	format_ptr: ?*const JxlPixelFormat,
+	buffer: ?*const anyopaque,
+	size: usize,
+) JxlEncoderStatus {
+	const frame_settings = frame_settings_ptr orelse return .JXL_ENC_ERROR;
+	const settings_impl: *const EncoderFrameSettingsImpl = @ptrCast(@alignCast(frame_settings));
+	const impl = settings_impl.owner;
+	const format = format_ptr orelse return .JXL_ENC_ERROR;
+	const data = buffer orelse return .JXL_ENC_ERROR;
+
+	if (!impl.basic_info_set or !impl.color_encoding_set or impl.added_frame or impl.started_processing) return .JXL_ENC_ERROR;
+	if (impl.basic_info.num_extra_channels != 0) return .JXL_ENC_ERROR;
+	if (format.data_type != .JXL_TYPE_UINT8) return .JXL_ENC_ERROR;
+	if (format.num_channels != impl.basic_info.num_color_channels) return .JXL_ENC_ERROR;
+
+	const stride = rowStrideBytes(impl.basic_info.xsize, format.*) orelse return .JXL_ENC_ERROR;
+	const needed = stride * impl.basic_info.ysize;
+	if (size < needed) return .JXL_ENC_ERROR;
+
+	clearEncodedBytes(impl);
+	const pixels: [*]const u8 = @ptrCast(data);
+	impl.encoded_bytes = enc_api.encodeSimpleInterleavedU8(std.heap.c_allocator, .{
+		.width = impl.basic_info.xsize,
+		.height = impl.basic_info.ysize,
+		.num_channels = impl.basic_info.num_color_channels,
+		.row_stride = stride,
+		.pixels = pixels[0..size],
+	}, impl.internal_color_encoding) catch return .JXL_ENC_ERROR;
+	impl.output_offset = 0;
+	impl.added_frame = true;
+	return .JXL_ENC_SUCCESS;
+}
+
+pub export fn JxlEncoderCloseInput(enc_ptr: ?*JxlEncoder) void {
+	const enc = enc_ptr orelse return;
+	const impl: *EncoderImpl = @ptrCast(@alignCast(enc));
+	impl.input_closed = true;
+}
+
+pub export fn JxlEncoderProcessOutput(enc_ptr: ?*JxlEncoder, next_out_ptr: ?*[*]u8, avail_out_ptr: ?*usize) JxlEncoderStatus {
+	const enc = enc_ptr orelse return .JXL_ENC_ERROR;
+	const impl: *EncoderImpl = @ptrCast(@alignCast(enc));
+	const next_out = next_out_ptr orelse return .JXL_ENC_ERROR;
+	const avail_out = avail_out_ptr orelse return .JXL_ENC_ERROR;
+	impl.started_processing = true;
+
+	if (!impl.input_closed or !impl.added_frame) return .JXL_ENC_ERROR;
+	if (impl.output_offset >= impl.encoded_bytes.len) return .JXL_ENC_SUCCESS;
+	if (avail_out.* == 0) return .JXL_ENC_NEED_MORE_OUTPUT;
+
+	const remaining = impl.encoded_bytes.len - impl.output_offset;
+	const to_copy = @min(remaining, avail_out.*);
+	@memcpy(next_out.*[0..to_copy], impl.encoded_bytes[impl.output_offset .. impl.output_offset + to_copy]);
+	impl.output_offset += to_copy;
+	next_out.* += to_copy;
+	avail_out.* -= to_copy;
+
+	return if (impl.output_offset >= impl.encoded_bytes.len)
+		.JXL_ENC_SUCCESS
+	else
+		.JXL_ENC_NEED_MORE_OUTPUT;
 }
 
 test "JxlSignatureCheck identifies codestream and container" {

@@ -7,6 +7,7 @@ TARGET="x86_64-windows-gnu"
 BUILD_LOG="${TMPDIR}/libjxlz_windows_build.log"
 CAPI_LOG="${TMPDIR}/libjxlz_windows_capi.log"
 DJXLZ_LOG="${TMPDIR}/libjxlz_windows_djxlz.log"
+CJXLZ_LOG="${TMPDIR}/libjxlz_windows_cjxlz.log"
 LIB_TEST_LOG="${TMPDIR}/libjxlz_windows_lib_test.log"
 ENCODE_PREP_TEST_LOG="${TMPDIR}/libjxlz_windows_encode_prep_test.log"
 ENCODE_PREP_BUILD_LOG="${TMPDIR}/libjxlz_windows_encode_prep_build.log"
@@ -25,6 +26,11 @@ fi
 
 if ! zig build djxlz -Dtarget="${TARGET}" -Doptimize=ReleaseFast >"${DJXLZ_LOG}" 2>&1; then
 	cat "${DJXLZ_LOG}"
+	exit 1
+fi
+
+if ! zig build cjxlz -Dtarget="${TARGET}" -Doptimize=ReleaseFast >"${CJXLZ_LOG}" 2>&1; then
+	cat "${CJXLZ_LOG}"
 	exit 1
 fi
 

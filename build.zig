@@ -69,6 +69,31 @@ pub fn build(b: *std.Build) void {
 	const djxlz_step = b.step("djxlz", "Build the C CLI that dogfoods the C FFI");
 	djxlz_step.dependOn(&install_djxlz.step);
 
+	const cjxlz = b.addExecutable(.{
+		.name = "cjxlz",
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("src/cli/cjxlz_root.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	cjxlz.addIncludePath(b.path("include"));
+	cjxlz.addIncludePath(b.path("lib/include"));
+	cjxlz.addCSourceFile(.{
+		.file = b.path("src/cli/cjxlz.c"),
+		.flags = &.{"-std=c11"},
+	});
+	cjxlz.linkLibrary(capi_lib);
+	cjxlz.linkLibC();
+	if (optimize == .Debug) {
+		cjxlz.root_module.addCMacro("JXLZ_DEBUG_BUILD", "1");
+	}
+
+	const install_cjxlz = b.addInstallArtifact(cjxlz, .{});
+	b.getInstallStep().dependOn(&install_cjxlz.step);
+	const cjxlz_step = b.step("cjxlz", "Build the C encoder CLI that dogfoods the C FFI");
+	cjxlz_step.dependOn(&install_cjxlz.step);
+
 	const encode_prep_bench = b.addExecutable(.{
 		.name = "bench_modular_encode_prep",
 		.root_module = b.createModule(.{
