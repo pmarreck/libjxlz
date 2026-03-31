@@ -16,6 +16,17 @@ typedef struct {
 	size_t pixels_size;
 } ParsedImage;
 
+#define MAX_EXTRA_INPUTS 16
+
+typedef struct {
+	JxlExtraChannelType type;
+	const char* type_name;
+	const char* path;
+	uint8_t* file_data;
+	size_t file_size;
+	ParsedImage image;
+} ParsedExtraInput;
+
 static const char* platform_name(void) {
 #if defined(__APPLE__)
 	return "macos";
@@ -43,11 +54,14 @@ static void print_help(FILE* out) {
 		"Usage: cjxlz [options] INPUT OUTPUT\n"
 		"Encode raw binary PNM/PAM into JPEG XL using the public C FFI only.\n\n"
 		"Options:\n"
-		"  -h, --help   Show this help\n"
-		"  --about      Show version, platform, and architecture\n\n"
+		"  -h, --help                Show this help\n"
+		"  --about                   Show version, platform, and architecture\n"
+		"  --extra TYPE PATH         Add a full-size grayscale sidecar extra channel\n"
+		"                            (TYPE: selection_mask, depth, black, thermal, optional)\n\n"
 		"Formats:\n"
 		"  INPUT must be raw binary P5/P6 with MAXVAL 255, or narrow P7 PAM with\n"
-		"  TUPLTYPE GRAYSCALE, RGB, GRAYSCALE_ALPHA, or RGB_ALPHA and MAXVAL 255\n\n"
+		"  TUPLTYPE GRAYSCALE, RGB, GRAYSCALE_ALPHA, or RGB_ALPHA and MAXVAL 255\n"
+		"  --extra PATH must be a raw binary P5 grayscale image with matching dimensions\n\n"
 		"Paths:\n"
 		"  INPUT accepts '-' or '@stdin'\n"
 		"  OUTPUT accepts '-' or '@stdout' or '@stderr'\n");
@@ -156,6 +170,35 @@ static int parse_u32_token(const char* token, uint32_t* value) {
 	if (!end || *end != '\0' || parsed > 0xffffffffUL) return 0;
 	*value = (uint32_t)parsed;
 	return 1;
+}
+
+static int parse_extra_type(const char* text, JxlExtraChannelType* type_out, const char** canonical_name_out) {
+	if (strcmp(text, "selection_mask") == 0 || strcmp(text, "selection-mask") == 0) {
+		*type_out = JXL_CHANNEL_SELECTION_MASK;
+		*canonical_name_out = "selection_mask";
+		return 1;
+	}
+	if (strcmp(text, "depth") == 0) {
+		*type_out = JXL_CHANNEL_DEPTH;
+		*canonical_name_out = "depth";
+		return 1;
+	}
+	if (strcmp(text, "black") == 0) {
+		*type_out = JXL_CHANNEL_BLACK;
+		*canonical_name_out = "black";
+		return 1;
+	}
+	if (strcmp(text, "thermal") == 0) {
+		*type_out = JXL_CHANNEL_THERMAL;
+		*canonical_name_out = "thermal";
+		return 1;
+	}
+	if (strcmp(text, "optional") == 0) {
+		*type_out = JXL_CHANNEL_OPTIONAL;
+		*canonical_name_out = "optional";
+		return 1;
+	}
+	return 0;
 }
 
 static int parse_pnm(const uint8_t* data, size_t size, ParsedImage* image, char* err, size_t err_cap) {
@@ -302,14 +345,48 @@ static int parse_pnm(const uint8_t* data, size_t size, ParsedImage* image, char*
 	return 1;
 }
 
-static int encode_image(const ParsedImage* image, uint8_t** encoded_out, size_t* encoded_size_out, char* err, size_t err_cap) {
+static int parse_extra_input(ParsedExtraInput* extra, uint32_t width, uint32_t height, char* err, size_t err_cap) {
+	if (strcmp(extra->path, "-") == 0 || strcmp(extra->path, "@stdin") == 0) {
+		snprintf(err, err_cap, "--extra paths cannot use stdin");
+		return 0;
+	}
+	extra->file_data = read_path(extra->path, &extra->file_size);
+	if (!extra->file_data) {
+		snprintf(err, err_cap, "failed to read extra input: %s", extra->path);
+		return 0;
+	}
+	if (!parse_pnm(extra->file_data, extra->file_size, &extra->image, err, err_cap)) {
+		return 0;
+	}
+	if (
+		extra->image.width != width ||
+		extra->image.height != height ||
+		extra->image.channels != 1 ||
+		extra->image.num_color_channels != 1 ||
+		extra->image.num_extra_channels != 0
+	) {
+		snprintf(err, err_cap, "--extra input must be a matching full-size P5 image");
+		return 0;
+	}
+	return 1;
+}
+
+static int encode_image(
+	const ParsedImage* image,
+	const ParsedExtraInput* extras,
+	size_t extra_count,
+	uint8_t** encoded_out,
+	size_t* encoded_size_out,
+	char* err,
+	size_t err_cap
+) {
 	JxlBasicInfo info;
 	JxlEncoderInitBasicInfo(&info);
 	info.xsize = image->width;
 	info.ysize = image->height;
 	info.bits_per_sample = 8;
 	info.num_color_channels = image->num_color_channels;
-	info.num_extra_channels = image->num_extra_channels;
+	info.num_extra_channels = image->num_extra_channels + (uint32_t)extra_count;
 	info.alpha_bits = image->num_extra_channels ? 8 : 0;
 	info.alpha_premultiplied = 0;
 
@@ -345,10 +422,47 @@ static int encode_image(const ParsedImage* image, uint8_t** encoded_out, size_t*
 		JxlEncoderDestroy(enc);
 		return 0;
 	}
+	for (size_t i = 0; i < extra_count; ++i) {
+		JxlExtraChannelInfo extra_info;
+		JxlEncoderInitExtraChannelInfo(extras[i].type, &extra_info);
+		if (JxlEncoderSetExtraChannelInfo(enc, image->num_extra_channels + i, &extra_info) != JXL_ENC_SUCCESS) {
+			snprintf(err, err_cap, "JxlEncoderSetExtraChannelInfo failed");
+			JxlEncoderDestroy(enc);
+			return 0;
+		}
+		if (JxlEncoderSetExtraChannelName(enc, image->num_extra_channels + i, extras[i].type_name, strlen(extras[i].type_name)) != JXL_ENC_SUCCESS) {
+			snprintf(err, err_cap, "JxlEncoderSetExtraChannelName failed");
+			JxlEncoderDestroy(enc);
+			return 0;
+		}
+	}
 	if (JxlEncoderAddImageFrame(settings, &format, image->pixels, image->pixels_size) != JXL_ENC_SUCCESS) {
 		snprintf(err, err_cap, "JxlEncoderAddImageFrame failed");
 		JxlEncoderDestroy(enc);
 		return 0;
+	}
+	if (extra_count != 0) {
+		JxlPixelFormat extra_format = {
+			1,
+			JXL_TYPE_UINT8,
+			JXL_NATIVE_ENDIAN,
+			0,
+		};
+		for (size_t i = 0; i < extra_count; ++i) {
+			if (
+				JxlEncoderSetExtraChannelBuffer(
+					settings,
+					&extra_format,
+					extras[i].image.pixels,
+					extras[i].image.pixels_size,
+					image->num_extra_channels + (uint32_t)i
+				) != JXL_ENC_SUCCESS
+			) {
+				snprintf(err, err_cap, "JxlEncoderSetExtraChannelBuffer failed");
+				JxlEncoderDestroy(enc);
+				return 0;
+			}
+		}
 	}
 	JxlEncoderCloseInput(enc);
 
@@ -389,6 +503,9 @@ int cjxlz_main(int argc, char** argv) {
 
 	const char* input_path = NULL;
 	const char* output_path = NULL;
+	ParsedExtraInput extras[MAX_EXTRA_INPUTS];
+	memset(extras, 0, sizeof(extras));
+	size_t extra_count = 0;
 
 	for (int i = 1; i < argc; ++i) {
 		if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -398,6 +515,24 @@ int cjxlz_main(int argc, char** argv) {
 		if (strcmp(argv[i], "--about") == 0) {
 			printf("cjxlz %u %s %s\n", JxlEncoderVersion(), platform_name(), arch_name());
 			return 0;
+		}
+		if (strcmp(argv[i], "--extra") == 0) {
+			if (i + 2 >= argc) {
+				fprintf(stderr, "--extra requires TYPE and PATH\n");
+				return 2;
+			}
+			if (extra_count >= MAX_EXTRA_INPUTS) {
+				fprintf(stderr, "too many --extra arguments\n");
+				return 2;
+			}
+			if (!parse_extra_type(argv[i + 1], &extras[extra_count].type, &extras[extra_count].type_name)) {
+				fprintf(stderr, "unsupported extra type: %s\n", argv[i + 1]);
+				return 2;
+			}
+			extras[extra_count].path = argv[i + 2];
+			extra_count += 1;
+			i += 2;
+			continue;
 		}
 		if (argv[i][0] == '-' && argv[i][1] != '\0' && strcmp(argv[i], "-") != 0) {
 			fprintf(stderr, "unknown option: %s\n", argv[i]);
@@ -432,13 +567,24 @@ int cjxlz_main(int argc, char** argv) {
 		return 1;
 	}
 
+	for (size_t i = 0; i < extra_count; ++i) {
+		if (!parse_extra_input(&extras[i], image.width, image.height, err, sizeof(err))) {
+			fprintf(stderr, "%s\n", err[0] ? err : "extra parse failed");
+			for (size_t j = 0; j < extra_count; ++j) free(extras[j].file_data);
+			free(input);
+			return 1;
+		}
+	}
+
 	uint8_t* encoded = NULL;
 	size_t encoded_size = 0;
-	if (!encode_image(&image, &encoded, &encoded_size, err, sizeof(err))) {
+	if (!encode_image(&image, extras, extra_count, &encoded, &encoded_size, err, sizeof(err))) {
 		fprintf(stderr, "%s\n", err[0] ? err : "encode failed");
+		for (size_t i = 0; i < extra_count; ++i) free(extras[i].file_data);
 		free(input);
 		return 1;
 	}
+	for (size_t i = 0; i < extra_count; ++i) free(extras[i].file_data);
 	free(input);
 
 	FILE* out = open_output(output_path);
