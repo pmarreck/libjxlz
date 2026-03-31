@@ -1740,3 +1740,104 @@ test "JxlEncoder encodes interleaved alpha plus a sidecar extra channel" {
 	try testing.expectEqualSlices(i32, &.{ 255, 128, 64, 0 }, image.channels.items[3].data);
 	try testing.expectEqualSlices(i32, &.{ 0, 255, 255, 0 }, image.channels.items[4].data);
 }
+
+test "JxlEncoder encodes a spot-color extra channel buffer" {
+	const testing = std.testing;
+	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlEncoderDestroy(enc);
+
+	var info: JxlBasicInfo = undefined;
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 2;
+	info.ysize = 2;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 3;
+	info.num_extra_channels = 1;
+
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetBasicInfo(enc, &info));
+
+	var color = std.mem.zeroes(JxlColorEncoding);
+	JxlColorEncodingSetToSRGB(&color, 0);
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetColorEncoding(enc, &color));
+
+	var spot = std.mem.zeroes(JxlExtraChannelInfo);
+	JxlEncoderInitExtraChannelInfo(.JXL_CHANNEL_SPOT_COLOR, &spot);
+	spot.spot_color = .{ 0.25, 0.5, 0.75, 1.0 };
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetExtraChannelInfo(enc, 0, &spot));
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetExtraChannelName(enc, 0, "spot".ptr, 4));
+
+	const settings = JxlEncoderFrameSettingsCreate(enc, null) orelse return error.OutOfMemory;
+
+	const rgb_pixels = [_]u8{
+		0, 10, 20, 30, 40, 50,
+		60, 70, 80, 90, 100, 110,
+	};
+	const rgb_format = JxlPixelFormat{
+		.num_channels = 3,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderAddImageFrame(settings, &rgb_format, &rgb_pixels, rgb_pixels.len),
+	);
+
+	const spot_pixels = [_]u8{
+		10, 20,
+		30, 40,
+	};
+	const spot_format = JxlPixelFormat{
+		.num_channels = 1,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderSetExtraChannelBuffer(settings, &spot_format, &spot_pixels, spot_pixels.len, 0),
+	);
+
+	JxlEncoderCloseInput(enc);
+
+	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	defer encoded.deinit(testing.allocator);
+	while (true) {
+		var chunk: [32]u8 = undefined;
+		var next_out = chunk[0..].ptr;
+		var avail_out: usize = chunk.len;
+		const status = JxlEncoderProcessOutput(enc, &next_out, &avail_out);
+		const produced = chunk.len - avail_out;
+		try encoded.appendSlice(testing.allocator, chunk[0..produced]);
+		if (status == .JXL_ENC_SUCCESS) break;
+		try testing.expectEqual(JxlEncoderStatus.JXL_ENC_NEED_MORE_OUTPUT, status);
+	}
+
+	var br = BitReader.init(encoded.items[2..]);
+	const size = headers.SizeHeader.readFromBitStream(&br);
+	const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+	const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+	try br.jumpToByteBoundary();
+
+	try testing.expectEqual(@as(u32, 1), metadata.num_extra_channels);
+	try testing.expectEqual(image_metadata.ExtraChannel.spot_color, metadata.extra_channel_info[0].type);
+	try testing.expectEqualStrings("spot", metadata.extra_channel_info[0].name);
+	try testing.expectApproxEqAbs(@as(f32, 0.25), metadata.extra_channel_info[0].spot_color[0], 0.001);
+	try testing.expectApproxEqAbs(@as(f32, 0.5), metadata.extra_channel_info[0].spot_color[1], 0.001);
+	try testing.expectApproxEqAbs(@as(f32, 0.75), metadata.extra_channel_info[0].spot_color[2], 0.001);
+	try testing.expectApproxEqAbs(@as(f32, 1.0), metadata.extra_channel_info[0].spot_color[3], 0.001);
+
+	var codec_meta = image_metadata.CodecMetadata{};
+	codec_meta.size = size;
+	codec_meta.m = metadata;
+	codec_meta.transform_data = transform_data;
+
+	const frame_offset = br.totalBitsConsumed() / 8;
+	var frame_dec = dec_frame.FrameDecoder.init(testing.allocator, &codec_meta);
+	defer frame_dec.deinit();
+	try frame_dec.decodeFrame(encoded.items[2 + frame_offset ..]);
+
+	const image = frame_dec.getDecodedImage();
+	try testing.expectEqual(@as(usize, 4), image.channels.items.len);
+	try testing.expectEqualSlices(i32, &.{ 10, 20, 30, 40 }, image.channels.items[3].data);
+}

@@ -22,6 +22,7 @@ typedef struct {
 	JxlExtraChannelType type;
 	const char* type_name;
 	const char* path;
+	JxlExtraChannelInfo info;
 	uint8_t* file_data;
 	size_t file_size;
 	ParsedImage image;
@@ -57,7 +58,9 @@ static void print_help(FILE* out) {
 		"  -h, --help                Show this help\n"
 		"  --about                   Show version, platform, and architecture\n"
 		"  --extra TYPE PATH         Add a full-size grayscale sidecar extra channel\n"
-		"                            (TYPE: selection_mask, depth, black, thermal, optional)\n\n"
+		"                            TYPE may be one of:\n"
+		"                              selection_mask, depth, black, thermal, optional\n"
+		"                              spot_color:R,G,B,S\n\n"
 		"Formats:\n"
 		"  INPUT must be raw binary P5/P6 with MAXVAL 255, or narrow P7 PAM with\n"
 		"  TUPLTYPE GRAYSCALE, RGB, GRAYSCALE_ALPHA, or RGB_ALPHA and MAXVAL 255\n"
@@ -172,30 +175,82 @@ static int parse_u32_token(const char* token, uint32_t* value) {
 	return 1;
 }
 
-static int parse_extra_type(const char* text, JxlExtraChannelType* type_out, const char** canonical_name_out) {
+static int parse_f32_token(const char* token, float* value) {
+	char* end = NULL;
+	float parsed = strtof(token, &end);
+	if (!end || *end != '\0') return 0;
+	*value = parsed;
+	return 1;
+}
+
+static int parse_spot_color(const char* args, JxlExtraChannelInfo* info) {
+	char buffer[128];
+	size_t len = strlen(args);
+	if (len == 0 || len >= sizeof(buffer)) return 0;
+	memcpy(buffer, args, len + 1);
+
+	char* save = NULL;
+	char* part = strtok_r(buffer, ",", &save);
+	for (int i = 0; i < 4; ++i) {
+		if (!part || !parse_f32_token(part, &info->spot_color[i])) return 0;
+		part = strtok_r(NULL, ",", &save);
+	}
+	return part == NULL;
+}
+
+static int parse_extra_spec(ParsedExtraInput* extra, const char* text) {
+	memset(&extra->info, 0, sizeof(extra->info));
+
+	const char* sep = strchr(text, ':');
+	size_t type_len = sep ? (size_t)(sep - text) : strlen(text);
+	char type_name[64];
+	if (type_len == 0 || type_len >= sizeof(type_name)) return 0;
+	memcpy(type_name, text, type_len);
+	type_name[type_len] = '\0';
+
+	const char* args = sep ? sep + 1 : NULL;
+
 	if (strcmp(text, "selection_mask") == 0 || strcmp(text, "selection-mask") == 0) {
-		*type_out = JXL_CHANNEL_SELECTION_MASK;
-		*canonical_name_out = "selection_mask";
+		extra->type = JXL_CHANNEL_SELECTION_MASK;
+		extra->type_name = "selection_mask";
+		JxlEncoderInitExtraChannelInfo(extra->type, &extra->info);
 		return 1;
 	}
-	if (strcmp(text, "depth") == 0) {
-		*type_out = JXL_CHANNEL_DEPTH;
-		*canonical_name_out = "depth";
+	if (strcmp(type_name, "depth") == 0 && !args) {
+		extra->type = JXL_CHANNEL_DEPTH;
+		extra->type_name = "depth";
+		JxlEncoderInitExtraChannelInfo(extra->type, &extra->info);
 		return 1;
 	}
-	if (strcmp(text, "black") == 0) {
-		*type_out = JXL_CHANNEL_BLACK;
-		*canonical_name_out = "black";
+	if (strcmp(type_name, "black") == 0 && !args) {
+		extra->type = JXL_CHANNEL_BLACK;
+		extra->type_name = "black";
+		JxlEncoderInitExtraChannelInfo(extra->type, &extra->info);
 		return 1;
 	}
-	if (strcmp(text, "thermal") == 0) {
-		*type_out = JXL_CHANNEL_THERMAL;
-		*canonical_name_out = "thermal";
+	if (strcmp(type_name, "thermal") == 0 && !args) {
+		extra->type = JXL_CHANNEL_THERMAL;
+		extra->type_name = "thermal";
+		JxlEncoderInitExtraChannelInfo(extra->type, &extra->info);
 		return 1;
 	}
-	if (strcmp(text, "optional") == 0) {
-		*type_out = JXL_CHANNEL_OPTIONAL;
-		*canonical_name_out = "optional";
+	if (strcmp(type_name, "optional") == 0 && !args) {
+		extra->type = JXL_CHANNEL_OPTIONAL;
+		extra->type_name = "optional";
+		JxlEncoderInitExtraChannelInfo(extra->type, &extra->info);
+		return 1;
+	}
+	if ((strcmp(type_name, "selection_mask") == 0 || strcmp(type_name, "selection-mask") == 0) && !args) {
+		extra->type = JXL_CHANNEL_SELECTION_MASK;
+		extra->type_name = "selection_mask";
+		JxlEncoderInitExtraChannelInfo(extra->type, &extra->info);
+		return 1;
+	}
+	if (strcmp(type_name, "spot_color") == 0 && args) {
+		extra->type = JXL_CHANNEL_SPOT_COLOR;
+		extra->type_name = "spot_color";
+		JxlEncoderInitExtraChannelInfo(extra->type, &extra->info);
+		if (!parse_spot_color(args, &extra->info)) return 0;
 		return 1;
 	}
 	return 0;
@@ -423,9 +478,7 @@ static int encode_image(
 		return 0;
 	}
 	for (size_t i = 0; i < extra_count; ++i) {
-		JxlExtraChannelInfo extra_info;
-		JxlEncoderInitExtraChannelInfo(extras[i].type, &extra_info);
-		if (JxlEncoderSetExtraChannelInfo(enc, image->num_extra_channels + i, &extra_info) != JXL_ENC_SUCCESS) {
+		if (JxlEncoderSetExtraChannelInfo(enc, image->num_extra_channels + i, &extras[i].info) != JXL_ENC_SUCCESS) {
 			snprintf(err, err_cap, "JxlEncoderSetExtraChannelInfo failed");
 			JxlEncoderDestroy(enc);
 			return 0;
@@ -525,7 +578,7 @@ int cjxlz_main(int argc, char** argv) {
 				fprintf(stderr, "too many --extra arguments\n");
 				return 2;
 			}
-			if (!parse_extra_type(argv[i + 1], &extras[extra_count].type, &extras[extra_count].type_name)) {
+			if (!parse_extra_spec(&extras[extra_count], argv[i + 1])) {
 				fprintf(stderr, "unsupported extra type: %s\n", argv[i + 1]);
 				return 2;
 			}
