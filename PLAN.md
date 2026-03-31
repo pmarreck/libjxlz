@@ -1,8 +1,8 @@
 # libjxlz Plan
 
-## Current Checkpoint (2026-03-30)
+## Current Checkpoint (2026-03-31)
 - [x] Decoder status: public-C-API decode remains modestly ahead of upstream `libjxl` on the checked harnesses (`full_corpus` and the real `600x300` multi-group RGB case), with the current wins generally in the `~1.07x` to `~1.10x` range depending on the accepted run
-- [x] Encoder status: the narrow lossless modular encoder is now real end-to-end for static grayscale and RGB images, including multi-group codestream roundtrips, a narrow default-alpha extra-channel path, and the current modular transform slices (`RCT`, `squeeze`, explicit/delta/implicit/auto-delta palette paths)
+- [x] Encoder status: the narrow lossless modular encoder is now real end-to-end for static grayscale and RGB images, including multi-group codestream roundtrips, narrow default/associated-alpha extra-channel paths, and the current modular transform slices (`RCT`, `squeeze`, explicit/delta/implicit/auto-delta palette paths)
 - [ ] Nearest parity gaps: iterative histogram refinement / re-seeding, broader upstream `enc_palette.cc` heuristics, more-general modular/frame encoding, encode-side public C FFI + `cjxlz`, then lossy / VarDCT and broader conformance coverage
 - [ ] Near-term direction: keep porting upstream lossless modular encode structure in narrow tested slices, prefer real roundtrip coverage first, and only keep performance changes that survive `./bm`
 
@@ -167,6 +167,8 @@
 - [x] Continue palette-construction parity toward upstream `enc_palette.cc`: keep bucket population as the primary auto-delta signal, but break ties by rounded-delta magnitude so equally dense buckets no longer fall back to first-seen order; proved with a new grayscale counterexample while keeping the existing RGB auto-delta regression green — 2026-03-30 ~1:10 AM EDT
 - [ ] Continue palette-construction parity toward upstream `enc_palette.cc`: move beyond count-first bucket ranking by incorporating real residual-distance weighting into auto-delta discovery, closer to upstream `FindFrequentColorDeltas`
 - [x] Widen the native codestream writer beyond RGB-only metadata: add the smallest write-side extra-channel slice by supporting one default 8-bit alpha `ExtraChannelInfo`, prove it with both metadata-level roundtrip coverage and a full `3x2` RGBA codestream/frame roundtrip through `FrameDecoder`, and keep it with a fresh accepted `./bm` run (`full_corpus` `0.069937172s` vs upstream `0.077249651s`, `large_multigroup_rgb` `1.0704175835s` vs `1.188056177s`, narrow encode `0.00934890625s`) — 2026-03-30 ~5:45 PM EDT
+- [x] Broaden the narrow write-side extra-channel surface from all-default alpha to explicit associated alpha: emit the non-default alpha `ExtraChannelInfo` form, prove it with both metadata roundtrip coverage and a full `3x2` RGBA codestream/frame roundtrip through `FrameDecoder`, and keep it with a clean accepted `./bm` rerun (`full_corpus` `0.06962615112500001s` vs upstream `0.07556896349999999s`, `large_multigroup_rgb` `1.0637188333749998s` vs `1.157124427s`, narrow encode `0.009225265750000001s`) — 2026-03-31 ~8:25 AM EDT
+- [x] Repair the local native build/test/benchmark entrypoints on macOS by routing `./build`, `./test`, and `./bm` through flake-backed package/check outputs instead of native `zig build`, wiring `build.zig` install artifacts into Zig's default install step, and retargeting CLI smoke scripts at flake-built artifacts so the full suite is green again on this host — 2026-03-31 ~8:35 AM EDT
 - [ ] Fast lossless encoder
 - [ ] C FFI encode API
 - [ ] cjxlz CLI

@@ -2,16 +2,17 @@
 set -u
 
 ERRORS=0
+SYSTEM="$(nix eval --impure --raw --expr builtins.currentSystem)"
 
 echo "=== Zig unit tests ==="
-if ! nix develop -c zig build test -Doptimize=Debug 2>&1; then
+if ! nix build ".#checks.${SYSTEM}.test" 2>&1; then
 	ERRORS=$((ERRORS + 1))
 fi
 
 if [ -d tests/cli ]; then
 	echo "=== CLI tests ==="
 	for t in tests/cli/*.sh; do
-		if ! bash "$t"; then
+		if ! nix develop -c bash "$t"; then
 			ERRORS=$((ERRORS + 1))
 		fi
 	done

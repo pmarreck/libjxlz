@@ -22,6 +22,7 @@ pub fn build(b: *std.Build) void {
 	lib.linkLibC();
 
 	const install_lib = b.addInstallArtifact(lib, .{});
+	b.getInstallStep().dependOn(&install_lib.step);
 
 	const capi_lib = b.addLibrary(.{
 		.name = "jxlz_capi",
@@ -35,6 +36,7 @@ pub fn build(b: *std.Build) void {
 	capi_lib.linkLibC();
 
 	const install_capi = b.addInstallArtifact(capi_lib, .{});
+	b.getInstallStep().dependOn(&install_capi.step);
 
 	const lib_step = b.step("lib", "Build only the static library");
 	lib_step.dependOn(&install_lib.step);
@@ -63,8 +65,35 @@ pub fn build(b: *std.Build) void {
 	}
 
 	const install_djxlz = b.addInstallArtifact(djxlz, .{});
+	b.getInstallStep().dependOn(&install_djxlz.step);
 	const djxlz_step = b.step("djxlz", "Build the C CLI that dogfoods the C FFI");
 	djxlz_step.dependOn(&install_djxlz.step);
+
+	const encode_prep_bench = b.addExecutable(.{
+		.name = "bench_modular_encode_prep",
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("bench_modular_encode_prep.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	const install_encode_prep_bench = b.addInstallArtifact(encode_prep_bench, .{});
+	b.getInstallStep().dependOn(&install_encode_prep_bench.step);
+	const encode_prep_bench_step = b.step("encode-prep-bench", "Build the modular encode prep benchmark");
+	encode_prep_bench_step.dependOn(&install_encode_prep_bench.step);
+
+	const encode_codestream_bench = b.addExecutable(.{
+		.name = "bench_modular_encode_codestream",
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("bench_modular_encode_codestream.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	const install_encode_codestream_bench = b.addInstallArtifact(encode_codestream_bench, .{});
+	b.getInstallStep().dependOn(&install_encode_codestream_bench.step);
+	const encode_codestream_bench_step = b.step("encode-codestream-bench", "Build the modular encode codestream benchmark");
+	encode_codestream_bench_step.dependOn(&install_encode_codestream_bench.step);
 
 	const unit_tests = b.addTest(.{
 		.root_module = b.createModule(.{

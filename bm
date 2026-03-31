@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -u
 
+if [ "${1-}" = "--inside-nix" ]; then
+	shift
+elif [ -z "${IN_NIX_SHELL-}" ]; then
+	exec nix develop -c bash "$0" --inside-nix "$@"
+fi
+
+SYSTEM="$(nix eval --impure --raw --expr builtins.currentSystem)"
 RUNS=8
 WARMUP=2
 FULL_REPEAT=4
@@ -19,11 +26,15 @@ OUR_COMPILE_LOG="${TMP_BM_DIR}/compile_ours.log"
 REF_COMPILE_LOG="${TMP_BM_DIR}/compile_ref.log"
 ENCODE_COMPILE_LOG="${TMP_BM_DIR}/compile_encode.log"
 REF_BUILD_DIR="build-cpp-bm"
+PACKAGE_OUT=""
 
 mkdir -p "${TMP_BM_DIR}"
 
 compile_ours() {
-	zig build capi -Doptimize=ReleaseFast >/dev/null
+	if ! PACKAGE_OUT="$(nix build --no-link --print-out-paths ".#packages.${SYSTEM}.default" 2>"${OUR_COMPILE_LOG}")"; then
+		cat "${OUR_COMPILE_LOG}"
+		exit 1
+	fi
 	if ! clang \
 		-std=c11 \
 		-O3 \
@@ -31,7 +42,7 @@ compile_ours() {
 		-Iinclude \
 		-Ilib/include \
 		tests/benchmark/decode_public_api.c \
-		zig-out/lib/libjxlz_capi.a \
+		"${PACKAGE_OUT}/lib/libjxlz_capi.a" \
 		-o "${OUR_BIN}" >"${OUR_COMPILE_LOG}" 2>&1; then
 		cat "${OUR_COMPILE_LOG}"
 		exit 1
@@ -70,7 +81,9 @@ compile_ref() {
 }
 
 compile_encode_codestream() {
-	if ! zig build-exe bench_modular_encode_codestream.zig -O ReleaseFast -femit-bin="${ENCODE_BIN}" >"${ENCODE_COMPILE_LOG}" 2>&1; then
+	ENCODE_BIN="${PACKAGE_OUT}/bin/bench_modular_encode_codestream"
+	if [ ! -x "${ENCODE_BIN}" ]; then
+		echo "encode benchmark binary not found at ${ENCODE_BIN}" >"${ENCODE_COMPILE_LOG}"
 		cat "${ENCODE_COMPILE_LOG}"
 		exit 1
 	fi

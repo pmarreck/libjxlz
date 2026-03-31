@@ -12,10 +12,7 @@
           };
           pname = "libjxlz";
           version = "0.1.0";
-        in
-        with pkgs;
-        {
-          packages.default = stdenv.mkDerivation {
+          mkZigPackage = optimize: with pkgs; stdenv.mkDerivation {
             inherit pname version;
             src = ./.;
             nativeBuildInputs = [ zig ]
@@ -28,11 +25,22 @@
             buildPhase = ''
               export HOME=$TMPDIR
               export XDG_CACHE_HOME=$TMPDIR/cache
-              mkdir -p $out
+              rm -rf zig-out
+              mkdir -p zig-out
               ${lib.optionalString stdenv.isDarwin "unset NIX_CFLAGS_COMPILE NIX_LDFLAGS"}
-              zig build install -Doptimize=ReleaseFast --prefix $out
+              zig build install -Doptimize=${optimize} --prefix zig-out
             '';
-            dontInstall = true;
+            installPhase = ''
+              mkdir -p $out
+              cp -R zig-out/. $out/
+            '';
+          };
+        in
+        with pkgs;
+        {
+          packages = {
+            default = mkZigPackage "ReleaseFast";
+            debug = mkZigPackage "Debug";
           };
 
           checks = {

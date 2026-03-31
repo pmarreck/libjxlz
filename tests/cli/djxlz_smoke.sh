@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 set -u
 
+SYSTEM="$(nix eval --impure --raw --expr builtins.currentSystem)"
 BUILD_LOG="${TMPDIR}/djxlz_build.log"
 RUN_STDOUT="${TMPDIR}/djxlz_stdout.bin"
 RUN_STDERR="${TMPDIR}/djxlz_stderr.log"
 ABOUT_STDOUT="${TMPDIR}/djxlz_about_stdout.txt"
 ABOUT_STDERR="${TMPDIR}/djxlz_about_stderr.txt"
 
-if ! zig build djxlz -Doptimize=ReleaseFast >"${BUILD_LOG}" 2>&1; then
+if ! PACKAGE_OUT="$(nix build --no-link --print-out-paths ".#packages.${SYSTEM}.default" 2>"${BUILD_LOG}")"; then
 	cat "${BUILD_LOG}"
 	exit 1
 fi
 
-if ! zig-out/bin/djxlz --about >"${ABOUT_STDOUT}" 2>"${ABOUT_STDERR}"; then
+if ! "${PACKAGE_OUT}/bin/djxlz" --about >"${ABOUT_STDOUT}" 2>"${ABOUT_STDERR}"; then
 	cat "${ABOUT_STDERR}"
 	exit 1
 fi
@@ -23,7 +24,7 @@ if ! grep -Eq '^djxlz [0-9]+ (macos|linux|windows) (aarch64|x86_64)$' "${ABOUT_S
 	exit 1
 fi
 
-if ! zig-out/bin/djxlz src/lib/testdata/lossless_4x4.jxl - --output_format ppm >"${RUN_STDOUT}" 2>"${RUN_STDERR}"; then
+if ! "${PACKAGE_OUT}/bin/djxlz" src/lib/testdata/lossless_4x4.jxl - --output_format ppm >"${RUN_STDOUT}" 2>"${RUN_STDERR}"; then
 	cat "${RUN_STDERR}"
 	exit 1
 fi
