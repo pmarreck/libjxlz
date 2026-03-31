@@ -489,11 +489,11 @@ fn validateBasicInfoForSimpleEncode(info: *const JxlBasicInfo) !void {
 		if (info.alpha_bits != 0 or info.alpha_exponent_bits != 0 or info.alpha_premultiplied != 0) return error.Unsupported;
 		return;
 	}
-	if (info.num_extra_channels != 1) return error.Unsupported;
 	if (info.alpha_bits == 0) {
 		if (info.alpha_exponent_bits != 0 or info.alpha_premultiplied != 0) return error.Unsupported;
 		return;
 	}
+	if (info.num_extra_channels != 1) return error.Unsupported;
 	if (info.alpha_bits != 8 or info.alpha_exponent_bits != 0) return error.Unsupported;
 	if (!(info.alpha_premultiplied == 0 or info.alpha_premultiplied == 1)) return error.Unsupported;
 }
@@ -560,7 +560,7 @@ fn validateExtraChannelInfoForSimpleEncode(
 	info: *const JxlExtraChannelInfo,
 ) !void {
 	const extra_type = extraChannelTypeToInternal(info.type) orelse return error.Unsupported;
-	if (basic_info.num_extra_channels != 1) return error.Unsupported;
+	if (basic_info.num_extra_channels == 0) return error.Unsupported;
 	if (basic_info.alpha_bits != 0) return error.Unsupported;
 	if (extra_type == .alpha) return error.Unsupported;
 	if (info.bits_per_sample != 8 or info.exponent_bits_per_sample != 0) return error.Unsupported;
@@ -1498,4 +1498,116 @@ test "JxlEncoder encodes a selection-mask extra channel buffer" {
 	const image = frame_dec.getDecodedImage();
 	try testing.expectEqual(@as(usize, 4), image.channels.items.len);
 	try testing.expectEqualSlices(i32, &.{ 0, 255, 255, 0 }, image.channels.items[3].data);
+}
+
+test "JxlEncoder encodes multiple non-alpha extra channel buffers" {
+	const testing = std.testing;
+	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlEncoderDestroy(enc);
+
+	var info: JxlBasicInfo = undefined;
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 2;
+	info.ysize = 2;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 3;
+	info.num_extra_channels = 2;
+
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetBasicInfo(enc, &info));
+
+	var color = std.mem.zeroes(JxlColorEncoding);
+	JxlColorEncodingSetToSRGB(&color, 0);
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetColorEncoding(enc, &color));
+
+	var selection_mask = std.mem.zeroes(JxlExtraChannelInfo);
+	JxlEncoderInitExtraChannelInfo(.JXL_CHANNEL_SELECTION_MASK, &selection_mask);
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetExtraChannelInfo(enc, 0, &selection_mask));
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetExtraChannelName(enc, 0, "mask".ptr, 4));
+
+	var thermal = std.mem.zeroes(JxlExtraChannelInfo);
+	JxlEncoderInitExtraChannelInfo(.JXL_CHANNEL_THERMAL, &thermal);
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetExtraChannelInfo(enc, 1, &thermal));
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetExtraChannelName(enc, 1, "heat".ptr, 4));
+
+	const settings = JxlEncoderFrameSettingsCreate(enc, null) orelse return error.OutOfMemory;
+
+	const rgb_pixels = [_]u8{
+		0, 10, 20, 30, 40, 50,
+		60, 70, 80, 90, 100, 110,
+	};
+	const rgb_format = JxlPixelFormat{
+		.num_channels = 3,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderAddImageFrame(settings, &rgb_format, &rgb_pixels, rgb_pixels.len),
+	);
+
+	const mask_pixels = [_]u8{
+		0, 255,
+		255, 0,
+	};
+	const heat_pixels = [_]u8{
+		1, 2,
+		3, 4,
+	};
+	const extra_format = JxlPixelFormat{
+		.num_channels = 1,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderSetExtraChannelBuffer(settings, &extra_format, &mask_pixels, mask_pixels.len, 0),
+	);
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderSetExtraChannelBuffer(settings, &extra_format, &heat_pixels, heat_pixels.len, 1),
+	);
+
+	JxlEncoderCloseInput(enc);
+
+	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	defer encoded.deinit(testing.allocator);
+	while (true) {
+		var chunk: [32]u8 = undefined;
+		var next_out = chunk[0..].ptr;
+		var avail_out: usize = chunk.len;
+		const status = JxlEncoderProcessOutput(enc, &next_out, &avail_out);
+		const produced = chunk.len - avail_out;
+		try encoded.appendSlice(testing.allocator, chunk[0..produced]);
+		if (status == .JXL_ENC_SUCCESS) break;
+		try testing.expectEqual(JxlEncoderStatus.JXL_ENC_NEED_MORE_OUTPUT, status);
+	}
+
+	var br = BitReader.init(encoded.items[2..]);
+	const size = headers.SizeHeader.readFromBitStream(&br);
+	const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+	const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+	try br.jumpToByteBoundary();
+
+	try testing.expectEqual(@as(u32, 2), metadata.num_extra_channels);
+	try testing.expectEqual(image_metadata.ExtraChannel.selection_mask, metadata.extra_channel_info[0].type);
+	try testing.expectEqualStrings("mask", metadata.extra_channel_info[0].name);
+	try testing.expectEqual(image_metadata.ExtraChannel.thermal, metadata.extra_channel_info[1].type);
+	try testing.expectEqualStrings("heat", metadata.extra_channel_info[1].name);
+
+	var codec_meta = image_metadata.CodecMetadata{};
+	codec_meta.size = size;
+	codec_meta.m = metadata;
+	codec_meta.transform_data = transform_data;
+
+	const frame_offset = br.totalBitsConsumed() / 8;
+	var frame_dec = dec_frame.FrameDecoder.init(testing.allocator, &codec_meta);
+	defer frame_dec.deinit();
+	try frame_dec.decodeFrame(encoded.items[2 + frame_offset ..]);
+
+	const image = frame_dec.getDecodedImage();
+	try testing.expectEqual(@as(usize, 5), image.channels.items.len);
+	try testing.expectEqualSlices(i32, &.{ 0, 255, 255, 0 }, image.channels.items[3].data);
+	try testing.expectEqualSlices(i32, &.{ 1, 2, 3, 4 }, image.channels.items[4].data);
 }

@@ -385,6 +385,8 @@ pub const ImageMetadata = struct {
             m.extra_channel_count = m.num_extra_channels;
             for (0..m.num_extra_channels) |i| {
                 m.extra_channel_info[i] = try ExtraChannelInfo.readFromBitStream(br);
+                m.extra_channel_info[i].name =
+                    m.extra_channel_info[i].name_buf[0..m.extra_channel_info[i].name_len];
             }
         }
 
@@ -803,6 +805,40 @@ test "writeImageMetadata round-trips a CFA extra channel" {
 	try testing.expectEqual(ExtraChannel.cfa, roundtrip.extra_channel_info[0].type);
 	try testing.expectEqualStrings("cfa", roundtrip.extra_channel_info[0].name);
 	try testing.expectEqual(@as(u32, 2), roundtrip.extra_channel_info[0].cfa_channel);
+}
+
+test "writeImageMetadata preserves multiple extra-channel names and order" {
+	const allocator = testing.allocator;
+	const data = @embedFile("../testdata/lossless_4x4.jxl");
+	const extracted = try extractMetadataBits(data);
+
+	var metadata = extracted.metadata;
+	metadata.num_extra_channels = 2;
+	metadata.extra_channel_count = 2;
+	metadata.extra_channel_info[0] = .{
+		.type = .selection_mask,
+		.name = "mask",
+		.name_len = "mask".len,
+	};
+	metadata.extra_channel_info[1] = .{
+		.type = .thermal,
+		.name = "heat",
+		.name_len = "heat".len,
+	};
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writeImageMetadata(&metadata, &writer);
+	try writer.zeroPadToByte();
+
+	var br = BitReader.init(writer.bytes());
+	const roundtrip = try ImageMetadata.readFromBitStream(&br);
+	try testing.expectEqual(@as(u32, 2), roundtrip.num_extra_channels);
+	try testing.expectEqual(@as(u32, 2), roundtrip.extra_channel_count);
+	try testing.expectEqual(ExtraChannel.selection_mask, roundtrip.extra_channel_info[0].type);
+	try testing.expectEqualStrings("mask", roundtrip.extra_channel_info[0].name);
+	try testing.expectEqual(ExtraChannel.thermal, roundtrip.extra_channel_info[1].type);
+	try testing.expectEqualStrings("heat", roundtrip.extra_channel_info[1].name);
 }
 
 test "BitDepth default (8-bit uint)" {

@@ -35,14 +35,10 @@ fn graySrgbColorEncoding() color_encoding_mod.ColorEncoding {
 
 fn validateSimpleImage(image: SimpleInterleavedU8Image) !void {
 	if (image.width == 0 or image.height == 0) return error.InvalidArgs;
-	if (image.num_extra_channels > 1) return error.Unsupported;
 	if (image.num_channels < image.num_extra_channels) return error.InvalidArgs;
 	const num_color_channels = image.num_channels - image.num_extra_channels;
-	if (!((num_color_channels == 1 or num_color_channels == 3) and
-		(image.num_extra_channels == 0 or image.num_extra_channels == 1))) return error.Unsupported;
-	if (image.num_extra_channels == 1 and !(image.num_channels == 2 or image.num_channels == 4)) return error.Unsupported;
+	if (!(num_color_channels == 1 or num_color_channels == 3)) return error.Unsupported;
 	if (image.num_extra_channels == 0 and image.alpha_associated) return error.Unsupported;
-	if (image.num_extra_channels > 1 and image.extra_channel_info.len != image.num_extra_channels) return error.InvalidArgs;
 	if (image.extra_channel_info.len != 0 and image.extra_channel_info.len != image.num_extra_channels) return error.InvalidArgs;
 
 	const min_row_stride = @as(usize, image.width) * image.num_channels;
