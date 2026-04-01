@@ -427,9 +427,9 @@ pub const ImageMetadata = struct {
     }
 };
 
-/// Emits the currently-supported codestream metadata surface: tone-mapping-only
-/// extra fields, alpha/plain/spot/CFA extras, non-XYB grayscale/RGB color
-/// encodings, and no extensions.
+/// Emits the currently-supported codestream metadata surface: orientation,
+/// intrinsic-size, and tone-mapping extra fields, alpha/plain/spot/CFA extras,
+/// non-XYB grayscale/RGB color encodings, and no extensions.
 pub fn writeImageMetadata(metadata: *const ImageMetadata, writer: anytype) !void {
     if (metadata.extensions != 0) return error.Unsupported;
 
@@ -439,15 +439,22 @@ pub fn writeImageMetadata(metadata: *const ImageMetadata, writer: anytype) !void
         metadata.have_animation or
         metadata.have_intrinsic_size or
         !tone_mapping_default;
-    if (metadata.orientation != 1 or metadata.have_preview or metadata.have_animation or metadata.have_intrinsic_size) {
+    if (metadata.have_preview or metadata.have_animation) {
+		return error.Unsupported;
+	}
+    if (metadata.orientation < 1 or metadata.orientation > 8) return error.Unsupported;
+    if (metadata.have_intrinsic_size and (metadata.intrinsic_size.xsize() == 0 or metadata.intrinsic_size.ysize() == 0)) {
 		return error.Unsupported;
 	}
 
     try fc.writeAllDefault(false, writer);
     try writer.write(1, @intFromBool(extra_fields));
     if (extra_fields) {
-		try writer.write(3, 0); // orientation = 1
-		try writer.write(1, 0); // have_intrinsic_size = false
+		try writer.write(3, metadata.orientation - 1);
+		try writer.write(1, @intFromBool(metadata.have_intrinsic_size));
+		if (metadata.have_intrinsic_size) {
+			try headers.writeSizeHeader(&metadata.intrinsic_size, writer);
+		}
 		try writer.write(1, 0); // have_preview = false
 		try writer.write(1, 0); // have_animation = false
 	}
@@ -892,6 +899,34 @@ test "writeImageMetadata round-trips non-default tone mapping" {
 	try testing.expectEqual(@as(f32, 1.5), roundtrip.tone_mapping.min_nits);
 	try testing.expect(roundtrip.tone_mapping.relative_to_max_display);
 	try testing.expectEqual(@as(f32, 0.25), roundtrip.tone_mapping.linear_below);
+}
+
+test "writeImageMetadata round-trips non-default orientation and intrinsic size" {
+	const allocator = testing.allocator;
+	const data = @embedFile("../testdata/lossless_4x4.jxl");
+	const extracted = try extractMetadataBits(data);
+
+	var metadata = extracted.metadata;
+	metadata.orientation = 6;
+	metadata.have_intrinsic_size = true;
+	metadata.intrinsic_size = .{
+		.small = false,
+		.ysize_raw = 7,
+		.ratio = 0,
+		.xsize_raw = 9,
+	};
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writeImageMetadata(&metadata, &writer);
+	try writer.zeroPadToByte();
+
+	var br = BitReader.init(writer.bytes());
+	const roundtrip = try ImageMetadata.readFromBitStream(&br);
+	try testing.expectEqual(@as(u32, 6), roundtrip.orientation);
+	try testing.expect(roundtrip.have_intrinsic_size);
+	try testing.expectEqual(@as(usize, 9), roundtrip.intrinsic_size.xsize());
+	try testing.expectEqual(@as(usize, 7), roundtrip.intrinsic_size.ysize());
 }
 
 test "BitDepth default (8-bit uint)" {

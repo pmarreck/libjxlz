@@ -87,11 +87,14 @@ int main(int argc, char** argv) {
 	}
 
 	printf(
-		"%.6g %.6g %u %.6g\n",
+		"%.6g %.6g %u %.6g %d %u %u\n",
 		info.intensity_target,
 		info.min_nits,
 		info.relative_to_max_display,
-		info.linear_below
+		info.linear_below,
+		(int)info.orientation,
+		info.intrinsic_xsize,
+		info.intrinsic_ysize
 	);
 
 	JxlDecoderDestroy(dec);

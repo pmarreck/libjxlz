@@ -19,6 +19,9 @@ pub const SimpleInterleavedU8Image = struct {
 	num_channels: u32,
 	num_extra_channels: u32 = 0,
 	alpha_associated: bool = false,
+	orientation: u32 = 1,
+	intrinsic_width: u32 = 0,
+	intrinsic_height: u32 = 0,
 	tone_mapping: image_metadata.ToneMapping = .{},
 	extra_channel_info: []const image_metadata.ExtraChannelInfo = &.{},
 	row_stride: usize,
@@ -41,6 +44,9 @@ pub const SimplePackedU8Image = struct {
 	alpha_pixels: []const u8 = &.{},
 	alpha_associated: bool = false,
 	alpha_info: ?image_metadata.ExtraChannelInfo = null,
+	orientation: u32 = 1,
+	intrinsic_width: u32 = 0,
+	intrinsic_height: u32 = 0,
 	tone_mapping: image_metadata.ToneMapping = .{},
 	extra_planes: []const SimpleExtraPlaneU8 = &.{},
 };
@@ -50,6 +56,11 @@ fn validateToneMapping(tone_mapping: image_metadata.ToneMapping) !void {
 	if (tone_mapping.min_nits < 0.0 or tone_mapping.min_nits > tone_mapping.intensity_target) return error.InvalidArgs;
 	if (tone_mapping.linear_below < 0.0) return error.InvalidArgs;
 	if (tone_mapping.relative_to_max_display and tone_mapping.linear_below > 1.0) return error.InvalidArgs;
+}
+
+fn validateOrientationAndIntrinsic(orientation: u32, intrinsic_width: u32, intrinsic_height: u32) !void {
+	if (orientation < 1 or orientation > 8) return error.InvalidArgs;
+	if ((intrinsic_width == 0) != (intrinsic_height == 0)) return error.InvalidArgs;
 }
 
 fn graySrgbColorEncoding() color_encoding_mod.ColorEncoding {
@@ -69,6 +80,7 @@ fn validateSimpleImage(image: SimpleInterleavedU8Image) !void {
 	if (!(num_color_channels == 1 or num_color_channels == 3)) return error.Unsupported;
 	if (image.num_extra_channels == 0 and image.alpha_associated) return error.Unsupported;
 	if (image.extra_channel_info.len != 0 and image.extra_channel_info.len != image.num_extra_channels) return error.InvalidArgs;
+	try validateOrientationAndIntrinsic(image.orientation, image.intrinsic_width, image.intrinsic_height);
 	try validateToneMapping(image.tone_mapping);
 
 	const min_row_stride = @as(usize, image.width) * image.num_channels;
@@ -86,6 +98,7 @@ fn validateSimplePackedImage(image: SimplePackedU8Image) !void {
 	if (!(image.num_color_channels == 1 or image.num_color_channels == 3)) return error.Unsupported;
 	if (image.alpha_pixels.len == 0 and image.alpha_associated) return error.Unsupported;
 	if (image.alpha_pixels.len == 0 and image.alpha_info != null) return error.InvalidArgs;
+	try validateOrientationAndIntrinsic(image.orientation, image.intrinsic_width, image.intrinsic_height);
 	try validateToneMapping(image.tone_mapping);
 
 	const min_color_row_stride = @as(usize, image.width) * image.num_color_channels;
@@ -118,6 +131,9 @@ fn buildCodecMetadata(
 	height: u32,
 	num_extra_channels: u32,
 	alpha_associated: bool,
+	orientation: u32,
+	intrinsic_width: u32,
+	intrinsic_height: u32,
 	tone_mapping: image_metadata.ToneMapping,
 	extra_channel_info: []const image_metadata.ExtraChannelInfo,
 	color_encoding: color_encoding_mod.ColorEncoding,
@@ -133,9 +149,19 @@ fn buildCodecMetadata(
 		.bit_depth = .{},
 		.modular_16_bit_buffer_sufficient = true,
 		.xyb_encoded = false,
+		.orientation = orientation,
 		.tone_mapping = tone_mapping,
 		.color_encoding = color_encoding,
 	};
+	if (intrinsic_width != 0) {
+		codec_meta.m.have_intrinsic_size = true;
+		codec_meta.m.intrinsic_size = .{
+			.small = false,
+			.ysize_raw = intrinsic_height,
+			.ratio = 0,
+			.xsize_raw = intrinsic_width,
+		};
+	}
 	if (num_extra_channels != 0) {
 		codec_meta.m.num_extra_channels = num_extra_channels;
 		codec_meta.m.extra_channel_count = num_extra_channels;
@@ -363,6 +389,9 @@ pub fn encodeSimplePackedU8(
 		image.height,
 		num_extra_channels,
 		image.alpha_associated,
+		image.orientation,
+		image.intrinsic_width,
+		image.intrinsic_height,
 		image.tone_mapping,
 		extra_info_slice,
 		effective_color_encoding,
@@ -398,6 +427,9 @@ pub fn encodeSimpleInterleavedU8(
 		image.height,
 		image.num_extra_channels,
 		image.alpha_associated,
+		image.orientation,
+		image.intrinsic_width,
+		image.intrinsic_height,
 		image.tone_mapping,
 		image.extra_channel_info,
 		effective_color_encoding,

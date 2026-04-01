@@ -482,12 +482,13 @@ fn rowStrideBytes(width: usize, format: JxlPixelFormat) ?usize {
 }
 
 /// Validates the narrow one-shot encoder surface: 8-bit grayscale/RGB with an
-/// optional 8-bit alpha plus full-size uint8 sidecar extras, no preview/animation,
-/// identity orientation, and tone-mapping values that obey the decoder's own bounds.
+/// optional 8-bit alpha plus full-size/subsampled uint8 sidecar extras, no preview/animation,
+/// plus simple orientation/intrinsic-size and tone-mapping metadata.
 fn validateBasicInfoForSimpleEncode(info: *const JxlBasicInfo) !void {
 	if (info.xsize == 0 or info.ysize == 0) return error.InvalidArgs;
 	if (info.have_container != 0 or info.have_preview != 0 or info.have_animation != 0) return error.Unsupported;
-	if (info.orientation != .JXL_ORIENT_IDENTITY) return error.Unsupported;
+	if (@intFromEnum(info.orientation) < 1 or @intFromEnum(info.orientation) > 8) return error.InvalidArgs;
+	if ((info.intrinsic_xsize == 0) != (info.intrinsic_ysize == 0)) return error.InvalidArgs;
 	if (info.bits_per_sample != 8 or info.exponent_bits_per_sample != 0) return error.Unsupported;
 	if (!(info.intensity_target > 0.0)) return error.InvalidArgs;
 	if (info.min_nits < 0.0 or info.min_nits > info.intensity_target) return error.InvalidArgs;
@@ -784,6 +785,9 @@ fn finalizeSimpleEncode(impl: *EncoderImpl) !void {
 			try toInternalExtraChannelInfo(&impl.pending_extra_channels[0])
 		else
 			null,
+		.orientation = @intCast(@intFromEnum(impl.basic_info.orientation)),
+		.intrinsic_width = impl.basic_info.intrinsic_xsize,
+		.intrinsic_height = impl.basic_info.intrinsic_ysize,
 		.tone_mapping = .{
 			.intensity_target = impl.basic_info.intensity_target,
 			.min_nits = impl.basic_info.min_nits,

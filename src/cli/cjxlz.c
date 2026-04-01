@@ -64,6 +64,8 @@ static void print_help(FILE* out) {
 		"  --min-nits NITS           Set tone-mapping min_nits\n"
 		"  --relative-to-max-display Mark tone mapping as relative_to_max_display\n"
 		"  --linear-below VALUE      Set tone-mapping linear_below\n"
+		"  --orientation N           Set orientation 1..8\n"
+		"  --intrinsic-size WxH      Set intrinsic pixel size metadata\n"
 		"  --extra TYPE PATH         Add a grayscale sidecar extra channel\n"
 		"                            TYPE may be one of:\n"
 		"                              alpha\n"
@@ -225,6 +227,26 @@ static int parse_dim_shift(const char* args, JxlExtraChannelInfo* info) {
 	uint32_t shift = 0;
 	if (!args || !parse_u32_token(args, &shift) || shift > 3) return 0;
 	info->dim_shift = shift;
+	return 1;
+}
+
+static int parse_intrinsic_size(const char* text, uint32_t* width, uint32_t* height) {
+	const char* sep = strchr(text, 'x');
+	if (!sep) sep = strchr(text, 'X');
+	if (!sep) return 0;
+
+	size_t width_len = (size_t)(sep - text);
+	const char* height_text = sep + 1;
+	if (width_len == 0 || *height_text == '\0') return 0;
+
+	char width_buf[32];
+	if (width_len + 1 > sizeof(width_buf)) return 0;
+	memcpy(width_buf, text, width_len);
+	width_buf[width_len] = '\0';
+
+	if (!parse_u32_token(width_buf, width)) return 0;
+	if (!parse_u32_token(height_text, height)) return 0;
+	if (*width == 0 || *height == 0) return 0;
 	return 1;
 }
 
@@ -499,6 +521,9 @@ static int encode_image(
 	float min_nits,
 	int relative_to_max_display,
 	float linear_below,
+	int orientation,
+	uint32_t intrinsic_width,
+	uint32_t intrinsic_height,
 	uint8_t** encoded_out,
 	size_t* encoded_size_out,
 	char* err,
@@ -534,6 +559,9 @@ static int encode_image(
 	info.min_nits = min_nits;
 	info.relative_to_max_display = relative_to_max_display ? 1 : 0;
 	info.linear_below = linear_below;
+	info.orientation = (JxlOrientation)orientation;
+	info.intrinsic_xsize = intrinsic_width;
+	info.intrinsic_ysize = intrinsic_height;
 	if (info.alpha_bits == 0 && alpha_premultiplied) {
 		snprintf(err, err_cap, "--premultiplied-alpha requires an alpha channel");
 		return 0;
@@ -700,6 +728,9 @@ int cjxlz_main(int argc, char** argv) {
 	float min_nits = 0.0f;
 	int relative_to_max_display = 0;
 	float linear_below = 0.0f;
+	int orientation = 1;
+	uint32_t intrinsic_width = 0;
+	uint32_t intrinsic_height = 0;
 	ParsedExtraInput extras[MAX_EXTRA_INPUTS];
 	memset(extras, 0, sizeof(extras));
 	size_t extra_count = 0;
@@ -749,6 +780,24 @@ int cjxlz_main(int argc, char** argv) {
 		if (strcmp(argv[i], "--linear-below") == 0) {
 			if (i + 1 >= argc || !parse_f32_token(argv[i + 1], &linear_below)) {
 				fprintf(stderr, "--linear-below requires VALUE\n");
+				return 2;
+			}
+			i += 1;
+			continue;
+		}
+		if (strcmp(argv[i], "--orientation") == 0) {
+			uint32_t parsed = 0;
+			if (i + 1 >= argc || !parse_u32_token(argv[i + 1], &parsed) || parsed < 1 || parsed > 8) {
+				fprintf(stderr, "--orientation requires a value in 1..8\n");
+				return 2;
+			}
+			orientation = (int)parsed;
+			i += 1;
+			continue;
+		}
+		if (strcmp(argv[i], "--intrinsic-size") == 0) {
+			if (i + 1 >= argc || !parse_intrinsic_size(argv[i + 1], &intrinsic_width, &intrinsic_height)) {
+				fprintf(stderr, "--intrinsic-size requires WxH with positive dimensions\n");
 				return 2;
 			}
 			i += 1;
@@ -826,6 +875,9 @@ int cjxlz_main(int argc, char** argv) {
 		min_nits,
 		relative_to_max_display,
 		linear_below,
+		orientation,
+		intrinsic_width,
+		intrinsic_height,
 		&encoded,
 		&encoded_size,
 		err,

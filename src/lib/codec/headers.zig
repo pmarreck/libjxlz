@@ -96,6 +96,38 @@ pub const SizeHeader = struct {
     }
 };
 
+/// Writes the compact image-dimension encoding used by both the codestream
+/// header and metadata `intrinsic_size`, preserving the small/non-small and aspect-ratio forms.
+pub fn writeSizeHeader(size: *const SizeHeader, writer: anytype) !void {
+	try writer.write(1, @intFromBool(size.small));
+	if (size.small) {
+		try writer.write(5, size.ysize_div8_minus_1);
+	} else {
+		const enc = fc.U32Enc.init(
+			fc.bitsOffset(9, 1),
+			fc.bitsOffset(13, 1),
+			fc.bitsOffset(18, 1),
+			fc.bitsOffset(30, 1),
+		);
+		try fc.U32Coder.write(enc, size.ysize_raw, writer);
+	}
+
+	try writer.write(3, size.ratio);
+	if (size.ratio == 0) {
+		if (size.small) {
+			try writer.write(5, size.xsize_div8_minus_1);
+		} else {
+			const enc = fc.U32Enc.init(
+				fc.bitsOffset(9, 1),
+				fc.bitsOffset(13, 1),
+				fc.bitsOffset(18, 1),
+				fc.bitsOffset(30, 1),
+			);
+			try fc.U32Coder.write(enc, size.xsize_raw, writer);
+		}
+	}
+}
+
 // ── PreviewHeader ──
 
 pub const PreviewHeader = struct {

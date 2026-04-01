@@ -121,7 +121,7 @@ pub const U32Coder = struct {
                 extra_value = candidate;
             }
 
-            const total_bits = 2 + extra_bits;
+            const total_bits = @as(usize, 2) + extra_bits;
             if (!found or total_bits < best_total_bits) {
                 found = true;
                 best_selector = selector;
@@ -357,6 +357,25 @@ test "U32Coder write round-trips direct and ranged values" {
     }
     try br.jumpToByteBoundary();
     try br.close();
+}
+
+test "U32Coder write handles 30-bit bitsOffset selectors" {
+	const enc = U32Enc.init(bitsOffset(9, 1), bitsOffset(13, 1), bitsOffset(18, 1), bitsOffset(30, 1));
+	const values = [_]u32{ 7, 9, 1024, 1_000_000 };
+
+	var writer = BitWriter.init(testing.allocator);
+	defer writer.deinit();
+	for (values) |value| {
+		try U32Coder.write(enc, value, &writer);
+	}
+	try writer.zeroPadToByte();
+
+	var br = BitReader.init(writer.bytes());
+	for (values) |value| {
+		try testing.expectEqual(value, U32Coder.read(enc, &br));
+	}
+	try br.jumpToByteBoundary();
+	try br.close();
 }
 
 test "U64Coder read zero" {
