@@ -191,18 +191,23 @@ static int parse_f32_token(const char* token, float* value) {
 }
 
 static int parse_spot_color(const char* args, JxlExtraChannelInfo* info) {
-	char buffer[128];
-	size_t len = strlen(args);
-	if (len == 0 || len >= sizeof(buffer)) return 0;
-	memcpy(buffer, args, len + 1);
-
-	char* save = NULL;
-	char* part = strtok_r(buffer, ",", &save);
+	const char* part = args;
 	for (int i = 0; i < 4; ++i) {
-		if (!part || !parse_f32_token(part, &info->spot_color[i])) return 0;
-		part = strtok_r(NULL, ",", &save);
+		const char* comma = strchr(part, ',');
+		size_t len = comma ? (size_t)(comma - part) : strlen(part);
+		char token[32];
+		if (len == 0 || len + 1 > sizeof(token)) return 0;
+		memcpy(token, part, len);
+		token[len] = '\0';
+		if (!parse_f32_token(token, &info->spot_color[i])) return 0;
+		if (i < 3) {
+			if (!comma) return 0;
+			part = comma + 1;
+		} else {
+			if (comma) return 0;
+		}
 	}
-	return part == NULL;
+	return 1;
 }
 
 static int parse_cfa_channel(const char* args, JxlExtraChannelInfo* info) {
