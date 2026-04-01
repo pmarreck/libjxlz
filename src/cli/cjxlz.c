@@ -68,7 +68,7 @@ static void print_help(FILE* out) {
 		"  --intrinsic-size WxH      Set intrinsic pixel size metadata\n"
 		"  --extra TYPE PATH         Add a grayscale sidecar extra channel\n"
 		"                            TYPE may be one of:\n"
-		"                              alpha\n"
+		"                              alpha[:SHIFT]\n"
 		"                              selection_mask[:SHIFT], depth[:SHIFT], black[:SHIFT]\n"
 		"                              thermal[:SHIFT], optional[:SHIFT]\n"
 		"                              spot_color:R,G,B,S\n"
@@ -262,10 +262,11 @@ static int parse_extra_spec(ParsedExtraInput* extra, const char* text) {
 
 	const char* args = sep ? sep + 1 : NULL;
 
-	if (strcmp(text, "alpha") == 0) {
+	if (strcmp(type_name, "alpha") == 0) {
 		extra->type = JXL_CHANNEL_ALPHA;
 		extra->type_name = "alpha";
 		JxlEncoderInitExtraChannelInfo(extra->type, &extra->info);
+		if (args && !parse_dim_shift(args, &extra->info)) return 0;
 		return 1;
 	}
 	if (strcmp(text, "selection_mask") == 0 || strcmp(text, "selection-mask") == 0) {
@@ -536,10 +537,6 @@ static int encode_image(
 			snprintf(err, err_cap, "sidecar alpha is not supported when the main image already carries alpha");
 			return 0;
 		}
-		if (extras[i].info.dim_shift != 0) {
-			snprintf(err, err_cap, "sidecar alpha does not support subsampling");
-			return 0;
-		}
 		if (staged_alpha_seen) {
 			snprintf(err, err_cap, "only one sidecar alpha input is supported");
 			return 0;
@@ -632,7 +629,11 @@ static int encode_image(
 				extra_index = 1 + non_alpha_before;
 			}
 		}
-		if (extras[i].type != JXL_CHANNEL_ALPHA && JxlEncoderSetExtraChannelInfo(enc, extra_index, &extras[i].info) != JXL_ENC_SUCCESS) {
+		JxlExtraChannelInfo extra_info = extras[i].info;
+		if (extras[i].type == JXL_CHANNEL_ALPHA) {
+			extra_info.alpha_premultiplied = info.alpha_premultiplied;
+		}
+		if (JxlEncoderSetExtraChannelInfo(enc, extra_index, &extra_info) != JXL_ENC_SUCCESS) {
 			snprintf(err, err_cap, "JxlEncoderSetExtraChannelInfo failed");
 			JxlEncoderDestroy(enc);
 			return 0;

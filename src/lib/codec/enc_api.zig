@@ -106,13 +106,16 @@ fn validateSimplePackedImage(image: SimplePackedU8Image) !void {
 	if (image.color_pixels.len < image.color_row_stride * @as(usize, image.height)) return error.InvalidArgs;
 
 	if (image.alpha_pixels.len != 0) {
-		if (image.alpha_row_stride < @as(usize, image.width)) return error.InvalidArgs;
-		if (image.alpha_pixels.len < image.alpha_row_stride * @as(usize, image.height)) return error.InvalidArgs;
+		const alpha_dim_shift = if (image.alpha_info) |alpha_info| alpha_info.dim_shift else 0;
+		const alpha_width = subsampledSize(image.width, alpha_dim_shift);
+		const alpha_height = subsampledSize(image.height, alpha_dim_shift);
+		if (image.alpha_row_stride < alpha_width) return error.InvalidArgs;
+		if (image.alpha_pixels.len < image.alpha_row_stride * alpha_height) return error.InvalidArgs;
 		if (image.alpha_info) |alpha_info| {
 			if (alpha_info.type != .alpha) return error.InvalidArgs;
 			if (alpha_info.bit_depth.floating_point_sample) return error.Unsupported;
 			if (alpha_info.bit_depth.bits_per_sample != 8 or alpha_info.bit_depth.exponent_bits_per_sample != 0) return error.Unsupported;
-			if (alpha_info.dim_shift != 0) return error.Unsupported;
+			if (alpha_info.dim_shift > 3) return error.Unsupported;
 			if (alpha_info.alpha_associated != image.alpha_associated) return error.InvalidArgs;
 		}
 	}
@@ -224,7 +227,19 @@ fn buildPackedSourceImage(allocator: std.mem.Allocator, image: SimplePackedU8Ima
 		try source.channels.append(allocator, try modular_image.Channel.create(allocator, image.width, image.height, 0, 0));
 	}
 	if (image.alpha_pixels.len != 0) {
-		try source.channels.append(allocator, try modular_image.Channel.create(allocator, image.width, image.height, 0, 0));
+		const alpha_dim_shift = if (image.alpha_info) |alpha_info| alpha_info.dim_shift else 0;
+		const alpha_width = subsampledSize(image.width, alpha_dim_shift);
+		const alpha_height = subsampledSize(image.height, alpha_dim_shift);
+		try source.channels.append(
+			allocator,
+			try modular_image.Channel.create(
+				allocator,
+				alpha_width,
+				alpha_height,
+				@intCast(alpha_dim_shift),
+				@intCast(alpha_dim_shift),
+			),
+		);
 	}
 	for (image.extra_planes) |extra| {
 		const plane_width = subsampledSize(image.width, extra.info.dim_shift);
@@ -253,9 +268,9 @@ fn buildPackedSourceImage(allocator: std.mem.Allocator, image: SimplePackedU8Ima
 
 	if (image.alpha_pixels.len != 0) {
 		const alpha_channel: usize = @intCast(image.num_color_channels);
-		for (0..image.height) |y| {
+		for (0..source.channels.items[alpha_channel].h) |y| {
 			const row = image.alpha_pixels[y * image.alpha_row_stride .. y * image.alpha_row_stride + image.alpha_row_stride];
-			for (0..image.width) |x| {
+			for (0..source.channels.items[alpha_channel].w) |x| {
 				source.channels.items[alpha_channel].row(y)[x] = row[x];
 			}
 		}
