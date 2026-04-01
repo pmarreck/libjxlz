@@ -309,6 +309,21 @@ fn isDefaultToneMapping(tone_mapping: *const ToneMapping) bool {
         tone_mapping.linear_below == 0.0;
 }
 
+/// Encodes the narrow tone-mapping metadata slice needed by the current writer:
+/// either the all-default sentinel or the four finite HDR metadata scalars.
+fn writeToneMapping(tone_mapping: *const ToneMapping, writer: anytype) !void {
+	if (isDefaultToneMapping(tone_mapping)) {
+		try fc.writeAllDefault(true, writer);
+		return;
+	}
+
+	try fc.writeAllDefault(false, writer);
+	try fc.F16Coder.write(tone_mapping.intensity_target, writer);
+	try fc.F16Coder.write(tone_mapping.min_nits, writer);
+	try writer.write(1, @intFromBool(tone_mapping.relative_to_max_display));
+	try fc.F16Coder.write(tone_mapping.linear_below, writer);
+}
+
 // ── ImageMetadata ──
 
 pub const ImageMetadata = struct {
@@ -412,8 +427,9 @@ pub const ImageMetadata = struct {
     }
 };
 
-/// Emits the currently-supported codestream metadata surface: no extra fields,
-/// alpha extra channels, non-XYB grayscale/RGB color encodings, and no extensions.
+/// Emits the currently-supported codestream metadata surface: tone-mapping-only
+/// extra fields, alpha/plain/spot/CFA extras, non-XYB grayscale/RGB color
+/// encodings, and no extensions.
 pub fn writeImageMetadata(metadata: *const ImageMetadata, writer: anytype) !void {
     if (metadata.extensions != 0) return error.Unsupported;
 
@@ -423,10 +439,18 @@ pub fn writeImageMetadata(metadata: *const ImageMetadata, writer: anytype) !void
         metadata.have_animation or
         metadata.have_intrinsic_size or
         !tone_mapping_default;
-    if (extra_fields) return error.Unsupported;
+    if (metadata.orientation != 1 or metadata.have_preview or metadata.have_animation or metadata.have_intrinsic_size) {
+		return error.Unsupported;
+	}
 
     try fc.writeAllDefault(false, writer);
-    try writer.write(1, 0); // extra_fields = false
+    try writer.write(1, @intFromBool(extra_fields));
+    if (extra_fields) {
+		try writer.write(3, 0); // orientation = 1
+		try writer.write(1, 0); // have_intrinsic_size = false
+		try writer.write(1, 0); // have_preview = false
+		try writer.write(1, 0); // have_animation = false
+	}
     try writeBitDepth(&metadata.bit_depth, writer);
     try writer.write(1, @intFromBool(metadata.modular_16_bit_buffer_sufficient));
 
@@ -439,6 +463,9 @@ pub fn writeImageMetadata(metadata: *const ImageMetadata, writer: anytype) !void
 
     try writer.write(1, @intFromBool(metadata.xyb_encoded));
     try color_encoding_mod.writeColorEncoding(&metadata.color_encoding, writer);
+    if (extra_fields) {
+		try writeToneMapping(&metadata.tone_mapping, writer);
+	}
     try fc.writeExtensions(0, writer);
 }
 
@@ -839,6 +866,32 @@ test "writeImageMetadata preserves multiple extra-channel names and order" {
 	try testing.expectEqualStrings("mask", roundtrip.extra_channel_info[0].name);
 	try testing.expectEqual(ExtraChannel.thermal, roundtrip.extra_channel_info[1].type);
 	try testing.expectEqualStrings("heat", roundtrip.extra_channel_info[1].name);
+}
+
+test "writeImageMetadata round-trips non-default tone mapping" {
+	const allocator = testing.allocator;
+	const data = @embedFile("../testdata/lossless_4x4.jxl");
+	const extracted = try extractMetadataBits(data);
+
+	var metadata = extracted.metadata;
+	metadata.tone_mapping = .{
+		.intensity_target = 203.0,
+		.min_nits = 1.5,
+		.relative_to_max_display = true,
+		.linear_below = 0.25,
+	};
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writeImageMetadata(&metadata, &writer);
+	try writer.zeroPadToByte();
+
+	var br = BitReader.init(writer.bytes());
+	const roundtrip = try ImageMetadata.readFromBitStream(&br);
+	try testing.expectEqual(@as(f32, 203.0), roundtrip.tone_mapping.intensity_target);
+	try testing.expectEqual(@as(f32, 1.5), roundtrip.tone_mapping.min_nits);
+	try testing.expect(roundtrip.tone_mapping.relative_to_max_display);
+	try testing.expectEqual(@as(f32, 0.25), roundtrip.tone_mapping.linear_below);
 }
 
 test "BitDepth default (8-bit uint)" {

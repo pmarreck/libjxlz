@@ -403,6 +403,10 @@ fn defaultJxlColorEncoding(is_gray: bool, linear: bool) JxlColorEncoding {
 fn defaultBasicInfo() JxlBasicInfo {
 	var info = std.mem.zeroes(JxlBasicInfo);
 	info.bits_per_sample = 8;
+	info.intensity_target = 255.0;
+	info.min_nits = 0.0;
+	info.relative_to_max_display = 0;
+	info.linear_below = 0.0;
 	info.orientation = .JXL_ORIENT_IDENTITY;
 	info.num_color_channels = 3;
 	return info;
@@ -479,12 +483,17 @@ fn rowStrideBytes(width: usize, format: JxlPixelFormat) ?usize {
 
 /// Validates the narrow one-shot encoder surface: 8-bit grayscale/RGB with an
 /// optional 8-bit alpha plus full-size uint8 sidecar extras, no preview/animation,
-/// and identity orientation.
+/// identity orientation, and tone-mapping values that obey the decoder's own bounds.
 fn validateBasicInfoForSimpleEncode(info: *const JxlBasicInfo) !void {
 	if (info.xsize == 0 or info.ysize == 0) return error.InvalidArgs;
 	if (info.have_container != 0 or info.have_preview != 0 or info.have_animation != 0) return error.Unsupported;
 	if (info.orientation != .JXL_ORIENT_IDENTITY) return error.Unsupported;
 	if (info.bits_per_sample != 8 or info.exponent_bits_per_sample != 0) return error.Unsupported;
+	if (!(info.intensity_target > 0.0)) return error.InvalidArgs;
+	if (info.min_nits < 0.0 or info.min_nits > info.intensity_target) return error.InvalidArgs;
+	if (!(info.relative_to_max_display == 0 or info.relative_to_max_display == 1)) return error.InvalidArgs;
+	if (info.linear_below < 0.0) return error.InvalidArgs;
+	if (info.relative_to_max_display != 0 and info.linear_below > 1.0) return error.InvalidArgs;
 	if (!(info.num_color_channels == 1 or info.num_color_channels == 3)) return error.Unsupported;
 	if (info.num_extra_channels == 0) {
 		if (info.alpha_bits != 0 or info.alpha_exponent_bits != 0 or info.alpha_premultiplied != 0) return error.Unsupported;
@@ -775,6 +784,12 @@ fn finalizeSimpleEncode(impl: *EncoderImpl) !void {
 			try toInternalExtraChannelInfo(&impl.pending_extra_channels[0])
 		else
 			null,
+		.tone_mapping = .{
+			.intensity_target = impl.basic_info.intensity_target,
+			.min_nits = impl.basic_info.min_nits,
+			.relative_to_max_display = impl.basic_info.relative_to_max_display != 0,
+			.linear_below = impl.basic_info.linear_below,
+		},
 		.extra_planes = prepared.extra_planes,
 	}, impl.internal_color_encoding);
 	impl.output_offset = 0;

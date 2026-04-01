@@ -19,6 +19,7 @@ pub const SimpleInterleavedU8Image = struct {
 	num_channels: u32,
 	num_extra_channels: u32 = 0,
 	alpha_associated: bool = false,
+	tone_mapping: image_metadata.ToneMapping = .{},
 	extra_channel_info: []const image_metadata.ExtraChannelInfo = &.{},
 	row_stride: usize,
 	pixels: []const u8,
@@ -40,8 +41,16 @@ pub const SimplePackedU8Image = struct {
 	alpha_pixels: []const u8 = &.{},
 	alpha_associated: bool = false,
 	alpha_info: ?image_metadata.ExtraChannelInfo = null,
+	tone_mapping: image_metadata.ToneMapping = .{},
 	extra_planes: []const SimpleExtraPlaneU8 = &.{},
 };
+
+fn validateToneMapping(tone_mapping: image_metadata.ToneMapping) !void {
+	if (!(tone_mapping.intensity_target > 0.0)) return error.InvalidArgs;
+	if (tone_mapping.min_nits < 0.0 or tone_mapping.min_nits > tone_mapping.intensity_target) return error.InvalidArgs;
+	if (tone_mapping.linear_below < 0.0) return error.InvalidArgs;
+	if (tone_mapping.relative_to_max_display and tone_mapping.linear_below > 1.0) return error.InvalidArgs;
+}
 
 fn graySrgbColorEncoding() color_encoding_mod.ColorEncoding {
 	return .{
@@ -60,6 +69,7 @@ fn validateSimpleImage(image: SimpleInterleavedU8Image) !void {
 	if (!(num_color_channels == 1 or num_color_channels == 3)) return error.Unsupported;
 	if (image.num_extra_channels == 0 and image.alpha_associated) return error.Unsupported;
 	if (image.extra_channel_info.len != 0 and image.extra_channel_info.len != image.num_extra_channels) return error.InvalidArgs;
+	try validateToneMapping(image.tone_mapping);
 
 	const min_row_stride = @as(usize, image.width) * image.num_channels;
 	if (image.row_stride < min_row_stride) return error.InvalidArgs;
@@ -76,6 +86,7 @@ fn validateSimplePackedImage(image: SimplePackedU8Image) !void {
 	if (!(image.num_color_channels == 1 or image.num_color_channels == 3)) return error.Unsupported;
 	if (image.alpha_pixels.len == 0 and image.alpha_associated) return error.Unsupported;
 	if (image.alpha_pixels.len == 0 and image.alpha_info != null) return error.InvalidArgs;
+	try validateToneMapping(image.tone_mapping);
 
 	const min_color_row_stride = @as(usize, image.width) * image.num_color_channels;
 	if (image.color_row_stride < min_color_row_stride) return error.InvalidArgs;
@@ -107,6 +118,7 @@ fn buildCodecMetadata(
 	height: u32,
 	num_extra_channels: u32,
 	alpha_associated: bool,
+	tone_mapping: image_metadata.ToneMapping,
 	extra_channel_info: []const image_metadata.ExtraChannelInfo,
 	color_encoding: color_encoding_mod.ColorEncoding,
 ) image_metadata.CodecMetadata {
@@ -121,6 +133,7 @@ fn buildCodecMetadata(
 		.bit_depth = .{},
 		.modular_16_bit_buffer_sufficient = true,
 		.xyb_encoded = false,
+		.tone_mapping = tone_mapping,
 		.color_encoding = color_encoding,
 	};
 	if (num_extra_channels != 0) {
@@ -350,6 +363,7 @@ pub fn encodeSimplePackedU8(
 		image.height,
 		num_extra_channels,
 		image.alpha_associated,
+		image.tone_mapping,
 		extra_info_slice,
 		effective_color_encoding,
 	);
@@ -384,6 +398,7 @@ pub fn encodeSimpleInterleavedU8(
 		image.height,
 		image.num_extra_channels,
 		image.alpha_associated,
+		image.tone_mapping,
 		image.extra_channel_info,
 		effective_color_encoding,
 	);

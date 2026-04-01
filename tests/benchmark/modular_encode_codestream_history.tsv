@@ -48,3 +48,5 @@ timestamp_est	scenario	repeat	our_mean_s
 2026-04-01 12:33:59 PM EST	modular_encode_codestream_rgb_multigroup	1	0.00921229175
 2026-04-01 12:43:02 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009396557500000001
 2026-04-01 01:12:58 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009413281250000002
+2026-04-01 01:35:38 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009440265625
+2026-04-01 01:41:35 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009285838625

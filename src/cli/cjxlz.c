@@ -60,6 +60,10 @@ static void print_help(FILE* out) {
 		"  --premultiplied-alpha     Mark the alpha channel as premultiplied/associated\n"
 		"  --associated-alpha        Alias for --premultiplied-alpha\n"
 		"  --alpha-name NAME         Set the alpha extra-channel name\n"
+		"  --intensity-target NITS   Set tone-mapping intensity_target\n"
+		"  --min-nits NITS           Set tone-mapping min_nits\n"
+		"  --relative-to-max-display Mark tone mapping as relative_to_max_display\n"
+		"  --linear-below VALUE      Set tone-mapping linear_below\n"
 		"  --extra TYPE PATH         Add a grayscale sidecar extra channel\n"
 		"                            TYPE may be one of:\n"
 		"                              alpha\n"
@@ -491,6 +495,10 @@ static int encode_image(
 	size_t extra_count,
 	int alpha_premultiplied,
 	const char* alpha_name,
+	float intensity_target,
+	float min_nits,
+	int relative_to_max_display,
+	float linear_below,
 	uint8_t** encoded_out,
 	size_t* encoded_size_out,
 	char* err,
@@ -522,6 +530,10 @@ static int encode_image(
 	info.num_color_channels = image->num_color_channels;
 	info.num_extra_channels = image->num_extra_channels + (uint32_t)extra_count;
 	info.alpha_bits = (image->num_extra_channels != 0 || staged_alpha_seen) ? 8 : 0;
+	info.intensity_target = intensity_target;
+	info.min_nits = min_nits;
+	info.relative_to_max_display = relative_to_max_display ? 1 : 0;
+	info.linear_below = linear_below;
 	if (info.alpha_bits == 0 && alpha_premultiplied) {
 		snprintf(err, err_cap, "--premultiplied-alpha requires an alpha channel");
 		return 0;
@@ -684,6 +696,10 @@ int cjxlz_main(int argc, char** argv) {
 	const char* output_path = NULL;
 	int alpha_premultiplied = 0;
 	const char* alpha_name = NULL;
+	float intensity_target = 255.0f;
+	float min_nits = 0.0f;
+	int relative_to_max_display = 0;
+	float linear_below = 0.0f;
 	ParsedExtraInput extras[MAX_EXTRA_INPUTS];
 	memset(extras, 0, sizeof(extras));
 	size_t extra_count = 0;
@@ -707,6 +723,34 @@ int cjxlz_main(int argc, char** argv) {
 				return 2;
 			}
 			alpha_name = argv[i + 1];
+			i += 1;
+			continue;
+		}
+		if (strcmp(argv[i], "--intensity-target") == 0) {
+			if (i + 1 >= argc || !parse_f32_token(argv[i + 1], &intensity_target)) {
+				fprintf(stderr, "--intensity-target requires NITS\n");
+				return 2;
+			}
+			i += 1;
+			continue;
+		}
+		if (strcmp(argv[i], "--min-nits") == 0) {
+			if (i + 1 >= argc || !parse_f32_token(argv[i + 1], &min_nits)) {
+				fprintf(stderr, "--min-nits requires NITS\n");
+				return 2;
+			}
+			i += 1;
+			continue;
+		}
+		if (strcmp(argv[i], "--relative-to-max-display") == 0) {
+			relative_to_max_display = 1;
+			continue;
+		}
+		if (strcmp(argv[i], "--linear-below") == 0) {
+			if (i + 1 >= argc || !parse_f32_token(argv[i + 1], &linear_below)) {
+				fprintf(stderr, "--linear-below requires VALUE\n");
+				return 2;
+			}
 			i += 1;
 			continue;
 		}
@@ -772,7 +816,21 @@ int cjxlz_main(int argc, char** argv) {
 
 	uint8_t* encoded = NULL;
 	size_t encoded_size = 0;
-	if (!encode_image(&image, extras, extra_count, alpha_premultiplied, alpha_name, &encoded, &encoded_size, err, sizeof(err))) {
+	if (!encode_image(
+		&image,
+		extras,
+		extra_count,
+		alpha_premultiplied,
+		alpha_name,
+		intensity_target,
+		min_nits,
+		relative_to_max_display,
+		linear_below,
+		&encoded,
+		&encoded_size,
+		err,
+		sizeof(err)
+	)) {
 		fprintf(stderr, "%s\n", err[0] ? err : "encode failed");
 		for (size_t i = 0; i < extra_count; ++i) free(extras[i].file_data);
 		free(input);
