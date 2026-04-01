@@ -59,6 +59,7 @@ static void print_help(FILE* out) {
 		"  --about                   Show version, platform, and architecture\n"
 		"  --premultiplied-alpha     Mark the alpha channel as premultiplied/associated\n"
 		"  --associated-alpha        Alias for --premultiplied-alpha\n"
+		"  --alpha-name NAME         Set the alpha extra-channel name\n"
 		"  --extra TYPE PATH         Add a grayscale sidecar extra channel\n"
 		"                            TYPE may be one of:\n"
 		"                              alpha\n"
@@ -484,6 +485,7 @@ static int encode_image(
 	const ParsedExtraInput* extras,
 	size_t extra_count,
 	int alpha_premultiplied,
+	const char* alpha_name,
 	uint8_t** encoded_out,
 	size_t* encoded_size_out,
 	char* err,
@@ -519,6 +521,10 @@ static int encode_image(
 		snprintf(err, err_cap, "--premultiplied-alpha requires an alpha channel");
 		return 0;
 	}
+	if (info.alpha_bits == 0 && alpha_name) {
+		snprintf(err, err_cap, "--alpha-name requires an alpha channel");
+		return 0;
+	}
 	info.alpha_premultiplied = alpha_premultiplied ? 1 : 0;
 
 	JxlColorEncoding color;
@@ -552,6 +558,21 @@ static int encode_image(
 		snprintf(err, err_cap, "JxlEncoderSetColorEncoding failed");
 		JxlEncoderDestroy(enc);
 		return 0;
+	}
+	if (alpha_name) {
+		JxlExtraChannelInfo alpha;
+		JxlEncoderInitExtraChannelInfo(JXL_CHANNEL_ALPHA, &alpha);
+		alpha.alpha_premultiplied = info.alpha_premultiplied;
+		if (JxlEncoderSetExtraChannelInfo(enc, 0, &alpha) != JXL_ENC_SUCCESS) {
+			snprintf(err, err_cap, "JxlEncoderSetExtraChannelInfo failed");
+			JxlEncoderDestroy(enc);
+			return 0;
+		}
+		if (JxlEncoderSetExtraChannelName(enc, 0, alpha_name, strlen(alpha_name)) != JXL_ENC_SUCCESS) {
+			snprintf(err, err_cap, "JxlEncoderSetExtraChannelName failed");
+			JxlEncoderDestroy(enc);
+			return 0;
+		}
 	}
 	for (size_t i = 0; i < extra_count; ++i) {
 		uint32_t extra_index = image->num_extra_channels + (uint32_t)i;
@@ -657,6 +678,7 @@ int cjxlz_main(int argc, char** argv) {
 	const char* input_path = NULL;
 	const char* output_path = NULL;
 	int alpha_premultiplied = 0;
+	const char* alpha_name = NULL;
 	ParsedExtraInput extras[MAX_EXTRA_INPUTS];
 	memset(extras, 0, sizeof(extras));
 	size_t extra_count = 0;
@@ -672,6 +694,15 @@ int cjxlz_main(int argc, char** argv) {
 		}
 		if (strcmp(argv[i], "--premultiplied-alpha") == 0 || strcmp(argv[i], "--associated-alpha") == 0) {
 			alpha_premultiplied = 1;
+			continue;
+		}
+		if (strcmp(argv[i], "--alpha-name") == 0) {
+			if (i + 1 >= argc) {
+				fprintf(stderr, "--alpha-name requires NAME\n");
+				return 2;
+			}
+			alpha_name = argv[i + 1];
+			i += 1;
 			continue;
 		}
 		if (strcmp(argv[i], "--extra") == 0) {
@@ -736,7 +767,7 @@ int cjxlz_main(int argc, char** argv) {
 
 	uint8_t* encoded = NULL;
 	size_t encoded_size = 0;
-	if (!encode_image(&image, extras, extra_count, alpha_premultiplied, &encoded, &encoded_size, err, sizeof(err))) {
+	if (!encode_image(&image, extras, extra_count, alpha_premultiplied, alpha_name, &encoded, &encoded_size, err, sizeof(err))) {
 		fprintf(stderr, "%s\n", err[0] ? err : "encode failed");
 		for (size_t i = 0; i < extra_count; ++i) free(extras[i].file_data);
 		free(input);

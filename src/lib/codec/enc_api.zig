@@ -39,6 +39,7 @@ pub const SimplePackedU8Image = struct {
 	alpha_row_stride: usize = 0,
 	alpha_pixels: []const u8 = &.{},
 	alpha_associated: bool = false,
+	alpha_info: ?image_metadata.ExtraChannelInfo = null,
 	extra_planes: []const SimpleExtraPlaneU8 = &.{},
 };
 
@@ -74,6 +75,7 @@ fn validateSimplePackedImage(image: SimplePackedU8Image) !void {
 	if (image.width == 0 or image.height == 0) return error.InvalidArgs;
 	if (!(image.num_color_channels == 1 or image.num_color_channels == 3)) return error.Unsupported;
 	if (image.alpha_pixels.len == 0 and image.alpha_associated) return error.Unsupported;
+	if (image.alpha_pixels.len == 0 and image.alpha_info != null) return error.InvalidArgs;
 
 	const min_color_row_stride = @as(usize, image.width) * image.num_color_channels;
 	if (image.color_row_stride < min_color_row_stride) return error.InvalidArgs;
@@ -82,6 +84,13 @@ fn validateSimplePackedImage(image: SimplePackedU8Image) !void {
 	if (image.alpha_pixels.len != 0) {
 		if (image.alpha_row_stride < @as(usize, image.width)) return error.InvalidArgs;
 		if (image.alpha_pixels.len < image.alpha_row_stride * @as(usize, image.height)) return error.InvalidArgs;
+		if (image.alpha_info) |alpha_info| {
+			if (alpha_info.type != .alpha) return error.InvalidArgs;
+			if (alpha_info.bit_depth.floating_point_sample) return error.Unsupported;
+			if (alpha_info.bit_depth.bits_per_sample != 8 or alpha_info.bit_depth.exponent_bits_per_sample != 0) return error.Unsupported;
+			if (alpha_info.dim_shift != 0) return error.Unsupported;
+			if (alpha_info.alpha_associated != image.alpha_associated) return error.InvalidArgs;
+		}
 	}
 
 	for (image.extra_planes) |extra| {
@@ -316,7 +325,7 @@ pub fn encodeSimplePackedU8(
 	var extra_info_storage: [256]image_metadata.ExtraChannelInfo = undefined;
 	var extra_info_len: usize = 0;
 	if (image.alpha_pixels.len != 0) {
-		extra_info_storage[extra_info_len] = .{
+		extra_info_storage[extra_info_len] = image.alpha_info orelse .{
 			.type = .alpha,
 			.bit_depth = .{},
 			.alpha_associated = image.alpha_associated,

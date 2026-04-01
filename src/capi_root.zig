@@ -600,7 +600,16 @@ fn validateExtraChannelInfoForSimpleEncode(
 ) !void {
 	const extra_type = extraChannelTypeToInternal(info.type) orelse return error.Unsupported;
 	if (basic_info.num_extra_channels == 0) return error.Unsupported;
-	if (basic_info.alpha_bits != 0 and index == 0) return error.Unsupported;
+	if (basic_info.alpha_bits != 0 and index == 0) {
+		if (extra_type != .alpha) return error.Unsupported;
+		if (info.bits_per_sample != basic_info.alpha_bits or info.exponent_bits_per_sample != basic_info.alpha_exponent_bits) return error.Unsupported;
+		if (info.dim_shift != 0) return error.Unsupported;
+		if (info.name_length > 1071) return error.Unsupported;
+		if (info.alpha_premultiplied != basic_info.alpha_premultiplied) return error.Unsupported;
+		if (!std.mem.eql(f32, &info.spot_color, &[_]f32{ 0, 0, 0, 0 })) return error.Unsupported;
+		if (info.cfa_channel != 0) return error.Unsupported;
+		return;
+	}
 	if (extra_type == .alpha) return error.Unsupported;
 	if (info.bits_per_sample != 8 or info.exponent_bits_per_sample != 0) return error.Unsupported;
 	if (info.dim_shift > 3) return error.Unsupported;
@@ -762,6 +771,10 @@ fn finalizeSimpleEncode(impl: *EncoderImpl) !void {
 		.alpha_row_stride = prepared.alpha_row_stride,
 		.alpha_pixels = prepared.alpha_pixels,
 		.alpha_associated = impl.basic_info.alpha_premultiplied != 0,
+		.alpha_info = if (impl.basic_info.alpha_bits != 0 and impl.pending_extra_channels[0].info_set)
+			try toInternalExtraChannelInfo(&impl.pending_extra_channels[0])
+		else
+			null,
 		.extra_planes = prepared.extra_planes,
 	}, impl.internal_color_encoding);
 	impl.output_offset = 0;
@@ -1395,7 +1408,7 @@ pub export fn JxlEncoderSetExtraChannelBuffer(
 
 	var extra_format = format.*;
 	extra_format.num_channels = 1;
-	const dim_shift = if (is_staged_alpha) 0 else pending.info.dim_shift;
+	const dim_shift = if (is_staged_alpha and !pending.info_set) 0 else pending.info.dim_shift;
 	const plane_width: u32 = @intCast(subsampledSize(impl.basic_info.xsize, dim_shift));
 	const plane_height: usize = subsampledSize(impl.basic_info.ysize, dim_shift);
 	const stride = rowStrideBytes(plane_width, extra_format) orelse return .JXL_ENC_ERROR;
@@ -2003,6 +2016,119 @@ test "JxlEncoder encodes a staged alpha buffer" {
 	const image = frame_dec.getDecodedImage();
 	try testing.expectEqual(@as(usize, 4), image.channels.items.len);
 	try testing.expectEqualSlices(i32, &.{ 255, 128, 64, 0 }, image.channels.items[3].data);
+}
+
+test "JxlEncoder encodes a staged alpha buffer with explicit alpha metadata" {
+	const testing = std.testing;
+	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlEncoderDestroy(enc);
+
+	var info: JxlBasicInfo = undefined;
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 2;
+	info.ysize = 2;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 3;
+	info.num_extra_channels = 1;
+	info.alpha_bits = 8;
+	info.alpha_premultiplied = 1;
+
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetBasicInfo(enc, &info));
+
+	var color = std.mem.zeroes(JxlColorEncoding);
+	JxlColorEncodingSetToSRGB(&color, 0);
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetColorEncoding(enc, &color));
+
+	var alpha = std.mem.zeroes(JxlExtraChannelInfo);
+	JxlEncoderInitExtraChannelInfo(.JXL_CHANNEL_ALPHA, &alpha);
+	alpha.alpha_premultiplied = 1;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetExtraChannelInfo(enc, 0, &alpha));
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderSetExtraChannelName(enc, 0, "alpha-plane".ptr, "alpha-plane".len),
+	);
+
+	const settings = JxlEncoderFrameSettingsCreate(enc, null) orelse return error.OutOfMemory;
+
+	const rgb_pixels = [_]u8{
+		0, 10, 20, 30, 40, 50,
+		60, 70, 80, 90, 100, 110,
+	};
+	const rgb_format = JxlPixelFormat{
+		.num_channels = 3,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderAddImageFrame(settings, &rgb_format, &rgb_pixels, rgb_pixels.len),
+	);
+
+	const alpha_pixels = [_]u8{
+		255, 128,
+		64, 0,
+	};
+	const alpha_format = JxlPixelFormat{
+		.num_channels = 1,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderSetExtraChannelBuffer(settings, &alpha_format, &alpha_pixels, alpha_pixels.len, 0),
+	);
+
+	JxlEncoderCloseInput(enc);
+
+	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	defer encoded.deinit(testing.allocator);
+	while (true) {
+		var chunk: [32]u8 = undefined;
+		var next_out = chunk[0..].ptr;
+		var avail_out: usize = chunk.len;
+		const status = JxlEncoderProcessOutput(enc, &next_out, &avail_out);
+		const produced = chunk.len - avail_out;
+		try encoded.appendSlice(testing.allocator, chunk[0..produced]);
+		if (status == .JXL_ENC_SUCCESS) break;
+		try testing.expectEqual(JxlEncoderStatus.JXL_ENC_NEED_MORE_OUTPUT, status);
+	}
+
+	var br = BitReader.init(encoded.items[2..]);
+	_ = headers.SizeHeader.readFromBitStream(&br);
+	const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+
+	try testing.expectEqual(@as(u32, 1), metadata.num_extra_channels);
+	try testing.expectEqual(image_metadata.ExtraChannel.alpha, metadata.extra_channel_info[0].type);
+	try testing.expect(metadata.extra_channel_info[0].alpha_associated);
+	try testing.expectEqualStrings("alpha-plane", metadata.extra_channel_info[0].name);
+}
+
+test "JxlEncoder rejects alpha metadata that disagrees with basic info" {
+	const testing = std.testing;
+	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlEncoderDestroy(enc);
+
+	var info: JxlBasicInfo = undefined;
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 1;
+	info.ysize = 1;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 3;
+	info.num_extra_channels = 1;
+	info.alpha_bits = 8;
+
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetBasicInfo(enc, &info));
+
+	var color = std.mem.zeroes(JxlColorEncoding);
+	JxlColorEncodingSetToSRGB(&color, 0);
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetColorEncoding(enc, &color));
+
+	var alpha = std.mem.zeroes(JxlExtraChannelInfo);
+	JxlEncoderInitExtraChannelInfo(.JXL_CHANNEL_ALPHA, &alpha);
+	alpha.alpha_premultiplied = 1;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_ERROR, JxlEncoderSetExtraChannelInfo(enc, 0, &alpha));
 }
 
 test "JxlEncoder rejects ambiguous interleaved and staged alpha" {
