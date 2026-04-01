@@ -65,6 +65,8 @@ static void print_help(FILE* out) {
 		"  --premultiplied-alpha     Mark the alpha channel as premultiplied/associated\n"
 		"  --associated-alpha        Alias for --premultiplied-alpha\n"
 		"  --linear-srgb             Use linear sRGB/gray instead of nonlinear sRGB\n"
+		"  --rendering-intent NAME   Set rendering intent: perceptual, relative,\n"
+		"                            saturation, or absolute\n"
 		"  --alpha-name NAME         Set the alpha extra-channel name\n"
 		"  --intensity-target NITS   Set tone-mapping intensity_target\n"
 		"  --min-nits NITS           Set tone-mapping min_nits\n"
@@ -262,6 +264,27 @@ static int parse_intrinsic_size(const char* text, uint32_t* width, uint32_t* hei
 	if (!parse_u32_token(height_text, height)) return 0;
 	if (*width == 0 || *height == 0) return 0;
 	return 1;
+}
+
+static int parse_rendering_intent(const char* text, JxlRenderingIntent* intent) {
+	if (!text || !intent) return 0;
+	if (strcmp(text, "perceptual") == 0) {
+		*intent = JXL_RENDERING_INTENT_PERCEPTUAL;
+		return 1;
+	}
+	if (strcmp(text, "relative") == 0) {
+		*intent = JXL_RENDERING_INTENT_RELATIVE;
+		return 1;
+	}
+	if (strcmp(text, "saturation") == 0) {
+		*intent = JXL_RENDERING_INTENT_SATURATION;
+		return 1;
+	}
+	if (strcmp(text, "absolute") == 0) {
+		*intent = JXL_RENDERING_INTENT_ABSOLUTE;
+		return 1;
+	}
+	return 0;
 }
 
 static int parse_extra_spec(ParsedExtraInput* extra, const char* text) {
@@ -610,6 +633,7 @@ static int encode_image(
 	size_t extra_count,
 	int alpha_premultiplied,
 	int linear_srgb,
+	JxlRenderingIntent rendering_intent,
 	const char* alpha_name,
 	float intensity_target,
 	float min_nits,
@@ -668,6 +692,7 @@ static int encode_image(
 	} else {
 		JxlColorEncodingSetToSRGB(&color, image->num_color_channels == 1 ? 1 : 0);
 	}
+	color.rendering_intent = rendering_intent;
 
 	JxlPixelFormat format = {
 		image->channels,
@@ -822,6 +847,7 @@ int cjxlz_main(int argc, char** argv) {
 	const char* output_path = NULL;
 	int alpha_premultiplied = 0;
 	int linear_srgb = 0;
+	JxlRenderingIntent rendering_intent = JXL_RENDERING_INTENT_RELATIVE;
 	const char* alpha_name = NULL;
 	float intensity_target = 255.0f;
 	float min_nits = 0.0f;
@@ -849,6 +875,14 @@ int cjxlz_main(int argc, char** argv) {
 		}
 		if (strcmp(argv[i], "--linear-srgb") == 0) {
 			linear_srgb = 1;
+			continue;
+		}
+		if (strcmp(argv[i], "--rendering-intent") == 0) {
+			if (i + 1 >= argc || !parse_rendering_intent(argv[i + 1], &rendering_intent)) {
+				fprintf(stderr, "--rendering-intent requires one of: perceptual, relative, saturation, absolute\n");
+				return 2;
+			}
+			i += 1;
 			continue;
 		}
 		if (strcmp(argv[i], "--alpha-name") == 0) {
@@ -978,6 +1012,7 @@ int cjxlz_main(int argc, char** argv) {
 		extra_count,
 		alpha_premultiplied,
 		linear_srgb,
+		rendering_intent,
 		alpha_name,
 		intensity_target,
 		min_nits,
