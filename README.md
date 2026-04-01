@@ -12,35 +12,37 @@ CLI tooling.
 It is a derived rewrite, not a clean-room implementation. Upstream lineage,
 copyright split, and attribution notes are summarized in [`NOTICE`](NOTICE).
 
-Current status is decoder-first:
+Current status is lossless-modular first:
 - pure Zig lossless/modular decode core
 - first `libjxl`-shaped decoder C API slice
 - `djxlz`, a C CLI that talks only through that C API
+- first narrow `libjxl`-shaped encoder C API slice
+- `cjxlz`, a C CLI that talks only through that C API
 - CI coverage for Linux `x86_64`/`aarch64`, macOS `aarch64`, and Windows
   `x86_64` cross-compilation
 - checked-in public-API benchmark harness against upstream `libjxl`
-- first encoder-side modular prepass benchmark/profiling scaffold
+- checked-in narrow encode benchmark harness for the current lossless modular path
 
 Recent optimization and documentation work in this repo was produced by Peter
 Marreck with Codex (`gpt-5.4-xhigh`, per session attribution request).
 
 ## Current Wins
 
-As of March 7, 2026, the checked-in public C API benchmark (`./bm`) shows a real
+As of April 1, 2026, the checked-in public C API benchmark (`./bm`) shows a real
 decode lead over upstream `libjxl` on this Apple Silicon development machine:
 
-- full committed corpus: `73.1 ms` vs `77.7 ms` (`~1.06x` faster)
-- large modular multigroup fixture: `1.085 s` vs `1.173 s` (`~1.08x` faster)
+- full committed corpus: `70.8 ms` vs `77.0 ms` (`~1.09x` faster)
+- large modular multigroup fixture: `1.081 s` vs `1.175 s` (`~1.09x` faster)
 
 The benchmark harness is in
 [`tests/benchmark/decode_public_api.c`](tests/benchmark/decode_public_api.c),
 and the history log is in
 [`tests/benchmark/public_api_decode_history.tsv`](tests/benchmark/public_api_decode_history.tsv).
 
-The first encoder-side benchmark scaffold is in
-[`bench_modular_encode_prep.zig`](bench_modular_encode_prep.zig), with history
-logged in
-[`tests/benchmark/modular_encode_prep_history.tsv`](tests/benchmark/modular_encode_prep_history.tsv).
+The current narrow encode benchmark is in
+[`bench_modular_encode_codestream.zig`](bench_modular_encode_codestream.zig),
+with history logged in
+[`tests/benchmark/modular_encode_codestream_history.tsv`](tests/benchmark/modular_encode_codestream_history.tsv).
 
 An upstream-facing summary of the kept optimizations, including which ones are
 portable back to C/C++ and where Zig helped or hurt, is in
@@ -56,14 +58,25 @@ portable back to C/C++ and where Zig helped or hurt, is in
   `JxlDecoderImageOutBufferSize`, `JxlDecoderSetImageOutBuffer`, and
   `JxlDecoderProcessInput`.
 - Ships `djxlz`, a C CLI that uses only that public C API.
+- Exposes a narrow encoder-focused `libjxl`-shaped C ABI including:
+  `JxlEncoderCreate`, `JxlEncoderReset`, `JxlEncoderDestroy`,
+  `JxlEncoderFrameSettingsCreate`, `JxlEncoderSetBasicInfo`,
+  `JxlEncoderSetColorEncoding`, `JxlEncoderAddImageFrame`,
+  `JxlEncoderSetExtraChannelInfo`, `JxlEncoderSetExtraChannelName`,
+  `JxlEncoderSetExtraChannelBuffer`, `JxlEncoderCloseInput`, and
+  `JxlEncoderProcessOutput`.
+- Ships `cjxlz`, a C CLI that uses only that public C API and currently accepts
+  native-build PNG input plus raw `P5`/`P6`/`P7` PNM/PAM.
 - Runs strict correctness and benchmark checks via `./test` and `./bm`.
-- Exposes a first encoder profiling scaffold for modular predictor selection and
-  residual tokenization, with `--print-profile` support for predictor-hit mixes.
+- Encodes a real narrow lossless modular static-image path for grayscale/RGB,
+  alpha, and selected extra-channel metadata/forms.
 
 ## Current Limitations
 
 - This is not yet a full drop-in replacement for upstream `libjxl`.
-- Encoding is not implemented yet; there is no `cjxlz` yet.
+- Encoding is still a narrow lossless modular subset, not full `cjxl` parity.
+- There is no lossy/VarDCT encoder path yet.
+- There is no JPEG recompression/transcode path yet.
 - The decoder is currently single-threaded.
 - `JxlDecoderSetParallelRunner` is present for API-shape compatibility, but it
   is currently a no-op in `src/capi_root.zig`.
@@ -100,6 +113,7 @@ To build the current C CLI explicitly:
 
 ```bash
 nix develop -c zig build djxlz -Doptimize=ReleaseFast
+nix develop -c zig build cjxlz -Doptimize=ReleaseFast
 ```
 
 ## CLI Usage
@@ -112,6 +126,16 @@ zig-out/bin/djxlz input.jxl output.ppm
 
 `djxlz` currently focuses on decode, basic output formatting, and exercising the
 public C FFI. It is not yet intended to mirror every upstream `djxl` feature.
+
+Encode a simple image with the current dogfooding C CLI:
+
+```bash
+zig-out/bin/cjxlz input.png output.jxl
+```
+
+`cjxlz` currently focuses on the narrow lossless modular public-API path. It
+accepts native-build PNG input plus raw `P5`/`P6`/narrow `P7` PNM/PAM and is
+not yet intended to mirror every upstream `cjxl` feature.
 
 ## Additional Documentation
 

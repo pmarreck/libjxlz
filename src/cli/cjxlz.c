@@ -6,6 +6,10 @@
 
 #include <jxl/encode.h>
 
+#ifdef JXLZ_HAVE_PNG_INPUT
+#include <png.h>
+#endif
+
 typedef struct {
 	uint32_t width;
 	uint32_t height;
@@ -14,6 +18,7 @@ typedef struct {
 	uint32_t num_extra_channels;
 	const uint8_t* pixels;
 	size_t pixels_size;
+	uint8_t* owned_pixels;
 } ParsedImage;
 
 #define MAX_EXTRA_INPUTS 16
@@ -53,7 +58,7 @@ static const char* arch_name(void) {
 static void print_help(FILE* out) {
 	fprintf(out,
 		"Usage: cjxlz [options] INPUT OUTPUT\n"
-		"Encode raw binary PNM/PAM into JPEG XL using the public C FFI only.\n\n"
+		"Encode simple image inputs into JPEG XL using the public C FFI only.\n\n"
 		"Options:\n"
 		"  -h, --help                Show this help\n"
 		"  --about                   Show version, platform, and architecture\n"
@@ -74,9 +79,17 @@ static void print_help(FILE* out) {
 		"                              spot_color:R,G,B,S\n"
 		"                              cfa:N\n\n"
 		"Formats:\n"
-		"  INPUT must be raw binary P5/P6 with MAXVAL 255, or narrow P7 PAM with\n"
+		"  INPUT may be "
+#ifdef JXLZ_HAVE_PNG_INPUT
+		"PNG, "
+#endif
+		"raw binary P5/P6 with MAXVAL 255, or narrow P7 PAM with\n"
 		"  TUPLTYPE GRAYSCALE, RGB, GRAYSCALE_ALPHA, or RGB_ALPHA and MAXVAL 255\n"
-		"  --extra PATH must be a raw binary P5 grayscale image with matching dimensions\n"
+		"  --extra PATH must be a "
+#ifdef JXLZ_HAVE_PNG_INPUT
+		"PNG or "
+#endif
+		"raw binary P5 grayscale image with matching dimensions\n"
 		"  after optional SHIFT subsampling (for example depth:1 expects ceil(W/2)xceil(H/2))\n\n"
 		"Paths:\n"
 		"  INPUT accepts '-' or '@stdin'\n"
@@ -477,6 +490,80 @@ static int parse_pnm(const uint8_t* data, size_t size, ParsedImage* image, char*
 	return 1;
 }
 
+static int has_png_signature(const uint8_t* data, size_t size) {
+	static const uint8_t signature[8] = { 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n' };
+	return size >= sizeof(signature) && memcmp(data, signature, sizeof(signature)) == 0;
+}
+
+#ifdef JXLZ_HAVE_PNG_INPUT
+static int parse_png(const uint8_t* data, size_t size, ParsedImage* image, char* err, size_t err_cap) {
+	png_image png_image_state;
+	memset(image, 0, sizeof(*image));
+	memset(&png_image_state, 0, sizeof(png_image_state));
+	png_image_state.version = PNG_IMAGE_VERSION;
+
+	if (!png_image_begin_read_from_memory(&png_image_state, data, size)) {
+		snprintf(err, err_cap, "png header read failed: %s", png_image_state.message);
+		png_image_free(&png_image_state);
+		return 0;
+	}
+
+	if (png_image_state.width == 0 || png_image_state.height == 0) {
+		snprintf(err, err_cap, "png dimensions must be positive");
+		png_image_free(&png_image_state);
+		return 0;
+	}
+
+	const int is_color = (png_image_state.format & PNG_FORMAT_FLAG_COLOR) != 0;
+	const int has_alpha = (png_image_state.format & PNG_FORMAT_FLAG_ALPHA) != 0;
+	png_image_state.format = is_color ? (has_alpha ? PNG_FORMAT_RGBA : PNG_FORMAT_RGB) : (has_alpha ? PNG_FORMAT_GA : PNG_FORMAT_GRAY);
+
+	const size_t pixels_size = PNG_IMAGE_SIZE(png_image_state);
+	uint8_t* pixels = (uint8_t*)malloc(pixels_size);
+	if (!pixels) {
+		snprintf(err, err_cap, "png pixel allocation failed");
+		png_image_free(&png_image_state);
+		return 0;
+	}
+
+	if (!png_image_finish_read(&png_image_state, NULL, pixels, 0, NULL)) {
+		snprintf(err, err_cap, "png decode failed: %s", png_image_state.message);
+		free(pixels);
+		png_image_free(&png_image_state);
+		return 0;
+	}
+
+	image->width = png_image_state.width;
+	image->height = png_image_state.height;
+	image->channels = is_color ? (has_alpha ? 4 : 3) : (has_alpha ? 2 : 1);
+	image->num_color_channels = is_color ? 3 : 1;
+	image->num_extra_channels = has_alpha ? 1 : 0;
+	image->pixels = pixels;
+	image->pixels_size = pixels_size;
+	image->owned_pixels = pixels;
+	png_image_free(&png_image_state);
+	return 1;
+}
+#endif
+
+static int parse_input_image(const uint8_t* data, size_t size, ParsedImage* image, char* err, size_t err_cap) {
+	if (has_png_signature(data, size)) {
+#ifdef JXLZ_HAVE_PNG_INPUT
+		return parse_png(data, size, image, err, err_cap);
+#else
+		snprintf(err, err_cap, "png input is not supported in this build");
+		return 0;
+#endif
+	}
+	return parse_pnm(data, size, image, err, err_cap);
+}
+
+static void free_parsed_image(ParsedImage* image) {
+	if (!image) return;
+	free(image->owned_pixels);
+	memset(image, 0, sizeof(*image));
+}
+
 static int parse_extra_input(ParsedExtraInput* extra, uint32_t width, uint32_t height, char* err, size_t err_cap) {
 	if (strcmp(extra->path, "-") == 0 || strcmp(extra->path, "@stdin") == 0) {
 		snprintf(err, err_cap, "--extra paths cannot use stdin");
@@ -487,7 +574,7 @@ static int parse_extra_input(ParsedExtraInput* extra, uint32_t width, uint32_t h
 		snprintf(err, err_cap, "failed to read extra input: %s", extra->path);
 		return 0;
 	}
-	if (!parse_pnm(extra->file_data, extra->file_size, &extra->image, err, err_cap)) {
+	if (!parse_input_image(extra->file_data, extra->file_size, &extra->image, err, err_cap)) {
 		return 0;
 	}
 	const uint32_t expected_width = subsampled_size(width, extra->info.dim_shift);
@@ -502,7 +589,11 @@ static int parse_extra_input(ParsedExtraInput* extra, uint32_t width, uint32_t h
 		snprintf(
 			err,
 			err_cap,
-			"--extra input must be a matching P5 image for dim_shift=%u (%ux%u expected)",
+			"--extra input must be a matching grayscale "
+#ifdef JXLZ_HAVE_PNG_INPUT
+			"PNG or "
+#endif
+			"P5 image for dim_shift=%u (%ux%u expected)",
 			extra->info.dim_shift,
 			expected_width,
 			expected_height
@@ -849,7 +940,7 @@ int cjxlz_main(int argc, char** argv) {
 	char err[256];
 	err[0] = '\0';
 	ParsedImage image;
-	if (!parse_pnm(input, input_size, &image, err, sizeof(err))) {
+	if (!parse_input_image(input, input_size, &image, err, sizeof(err))) {
 		fprintf(stderr, "%s\n", err[0] ? err : "parse failed");
 		free(input);
 		return 1;
@@ -858,7 +949,11 @@ int cjxlz_main(int argc, char** argv) {
 	for (size_t i = 0; i < extra_count; ++i) {
 		if (!parse_extra_input(&extras[i], image.width, image.height, err, sizeof(err))) {
 			fprintf(stderr, "%s\n", err[0] ? err : "extra parse failed");
-			for (size_t j = 0; j < extra_count; ++j) free(extras[j].file_data);
+			for (size_t j = 0; j < extra_count; ++j) {
+				free_parsed_image(&extras[j].image);
+				free(extras[j].file_data);
+			}
+			free_parsed_image(&image);
 			free(input);
 			return 1;
 		}
@@ -885,11 +980,19 @@ int cjxlz_main(int argc, char** argv) {
 		sizeof(err)
 	)) {
 		fprintf(stderr, "%s\n", err[0] ? err : "encode failed");
-		for (size_t i = 0; i < extra_count; ++i) free(extras[i].file_data);
+		for (size_t i = 0; i < extra_count; ++i) {
+			free_parsed_image(&extras[i].image);
+			free(extras[i].file_data);
+		}
+		free_parsed_image(&image);
 		free(input);
 		return 1;
 	}
-	for (size_t i = 0; i < extra_count; ++i) free(extras[i].file_data);
+	for (size_t i = 0; i < extra_count; ++i) {
+		free_parsed_image(&extras[i].image);
+		free(extras[i].file_data);
+	}
+	free_parsed_image(&image);
 	free(input);
 
 	FILE* out = open_output(output_path);

@@ -7,6 +7,7 @@ pub fn build(b: *std.Build) void {
 		"optimize",
 		"Optimization mode (default: ReleaseFast)",
 	) orelse .ReleaseFast;
+	const png_input = b.option(bool, "png_input", "Enable PNG input support in cjxlz (default: true)") orelse true;
 
 	const root_module = b.createModule(.{
 		.root_source_file = b.path("src/root.zig"),
@@ -85,6 +86,13 @@ pub fn build(b: *std.Build) void {
 	});
 	cjxlz.linkLibrary(capi_lib);
 	cjxlz.linkLibC();
+	if (png_input) {
+		cjxlz.root_module.addCMacro("JXLZ_HAVE_PNG_INPUT", "1");
+		cjxlz.linkSystemLibrary2("libpng", .{ .use_pkg_config = .force });
+	}
+	if (target.result.os.tag != .windows and png_input) {
+		cjxlz.linkSystemLibrary("m");
+	}
 	if (optimize == .Debug) {
 		cjxlz.root_module.addCMacro("JXLZ_DEBUG_BUILD", "1");
 	}
