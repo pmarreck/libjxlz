@@ -675,6 +675,8 @@ fn prepareSimplePackedInput(allocator: std.mem.Allocator, impl: *const EncoderIm
 	const height: usize = @intCast(impl.basic_info.ysize);
 	const num_color_channels: usize = @intCast(impl.basic_info.num_color_channels);
 	const has_alpha = impl.basic_info.alpha_bits != 0;
+	const has_staged_alpha = has_alpha and impl.pending_extra_channels[0].buffer_set;
+	const has_interleaved_alpha = has_alpha and impl.image_format.num_channels == num_color_channels + 1;
 	const image_stride = rowStrideBytes(width, impl.image_format) orelse return error.GenericError;
 	const color_row_stride = width * num_color_channels;
 	const color_pixels = try allocator.alloc(u8, color_row_stride * height);
@@ -683,6 +685,7 @@ fn prepareSimplePackedInput(allocator: std.mem.Allocator, impl: *const EncoderIm
 	const alpha_row_stride = width;
 	var alpha_pixels: []u8 = &.{};
 	if (has_alpha) {
+		if (has_staged_alpha == has_interleaved_alpha) return error.InvalidArgs;
 		alpha_pixels = try allocator.alloc(u8, alpha_row_stride * height);
 	}
 	errdefer if (alpha_pixels.len != 0) allocator.free(alpha_pixels);
@@ -711,14 +714,21 @@ fn prepareSimplePackedInput(allocator: std.mem.Allocator, impl: *const EncoderIm
 		if (has_alpha) {
 			const alpha_row_start = y * alpha_row_stride;
 			const alpha_row = alpha_pixels[alpha_row_start .. alpha_row_start + alpha_row_stride];
-			for (0..width) |x| {
-				const src_pixel = x * (num_color_channels + 1);
-				const dst_pixel = x * num_color_channels;
-				@memcpy(
-					color_row[dst_pixel .. dst_pixel + num_color_channels],
-					src_row[src_pixel .. src_pixel + num_color_channels],
-				);
-				alpha_row[x] = src_row[src_pixel + num_color_channels];
+			if (has_interleaved_alpha) {
+				for (0..width) |x| {
+					const src_pixel = x * (num_color_channels + 1);
+					const dst_pixel = x * num_color_channels;
+					@memcpy(
+						color_row[dst_pixel .. dst_pixel + num_color_channels],
+						src_row[src_pixel .. src_pixel + num_color_channels],
+					);
+					alpha_row[x] = src_row[src_pixel + num_color_channels];
+				}
+			} else {
+				@memcpy(color_row, src_row[0..color_row_stride]);
+				const staged_alpha = &impl.pending_extra_channels[0];
+				const alpha_src_start = y * staged_alpha.row_stride;
+				@memcpy(alpha_row, staged_alpha.buffer[alpha_src_start .. alpha_src_start + alpha_row_stride]);
 			}
 		} else {
 			@memcpy(color_row, src_row[0..color_row_stride]);
@@ -1347,11 +1357,9 @@ pub export fn JxlEncoderAddImageFrame(
 	if (!impl.basic_info_set or !impl.color_encoding_set or impl.added_frame or impl.started_processing) return .JXL_ENC_ERROR;
 	if (format.data_type != .JXL_TYPE_UINT8) return .JXL_ENC_ERROR;
 
-	const expected_channels = if (impl.basic_info.alpha_bits != 0)
-		impl.basic_info.num_color_channels + 1
-	else
-		impl.basic_info.num_color_channels;
-	if (format.num_channels != expected_channels) return .JXL_ENC_ERROR;
+	const min_channels = impl.basic_info.num_color_channels;
+	const max_channels = min_channels + @as(u32, @intFromBool(impl.basic_info.alpha_bits != 0));
+	if (format.num_channels < min_channels or format.num_channels > max_channels) return .JXL_ENC_ERROR;
 
 	const stride = rowStrideBytes(impl.basic_info.xsize, format.*) orelse return .JXL_ENC_ERROR;
 	const needed = stride * impl.basic_info.ysize;
@@ -1379,16 +1387,17 @@ pub export fn JxlEncoderSetExtraChannelBuffer(
 	const data = buffer orelse return .JXL_ENC_ERROR;
 	if (!impl.basic_info_set or !impl.color_encoding_set or !impl.added_frame or impl.started_processing) return .JXL_ENC_ERROR;
 	if (index >= impl.basic_info.num_extra_channels) return .JXL_ENC_ERROR;
-	if (impl.basic_info.alpha_bits != 0 and index == 0) return .JXL_ENC_ERROR;
 
 	const pending = &impl.pending_extra_channels[index];
-	if (!pending.info_set) return .JXL_ENC_ERROR;
+	const is_staged_alpha = impl.basic_info.alpha_bits != 0 and index == 0;
+	if (!is_staged_alpha and !pending.info_set) return .JXL_ENC_ERROR;
 	if (format.data_type != .JXL_TYPE_UINT8) return .JXL_ENC_ERROR;
 
 	var extra_format = format.*;
 	extra_format.num_channels = 1;
-	const plane_width: u32 = @intCast(subsampledSize(impl.basic_info.xsize, pending.info.dim_shift));
-	const plane_height: usize = subsampledSize(impl.basic_info.ysize, pending.info.dim_shift);
+	const dim_shift = if (is_staged_alpha) 0 else pending.info.dim_shift;
+	const plane_width: u32 = @intCast(subsampledSize(impl.basic_info.xsize, dim_shift));
+	const plane_height: usize = subsampledSize(impl.basic_info.ysize, dim_shift);
 	const stride = rowStrideBytes(plane_width, extra_format) orelse return .JXL_ENC_ERROR;
 	const needed = stride * plane_height;
 	if (size < needed) return .JXL_ENC_ERROR;
@@ -1862,6 +1871,198 @@ test "prepareSimplePackedInput splits RGBA plus sidecar extra into encoder plane
 	try testing.expectEqual(@as(usize, 1), prepared.extra_planes.len);
 	try testing.expectEqual(image_metadata.ExtraChannel.selection_mask, prepared.extra_planes[0].info.type);
 	try testing.expectEqualSlices(u8, &[_]u8{ 0, 255, 255, 0 }, prepared.extra_planes[0].pixels);
+}
+
+test "prepareSimplePackedInput splits RGB plus staged alpha into encoder planes" {
+	const testing = std.testing;
+
+	var impl = EncoderImpl{};
+	defer clearPendingEncodeBuffers(&impl);
+
+	impl.basic_info = std.mem.zeroes(JxlBasicInfo);
+	impl.basic_info.xsize = 2;
+	impl.basic_info.ysize = 2;
+	impl.basic_info.bits_per_sample = 8;
+	impl.basic_info.num_color_channels = 3;
+	impl.basic_info.num_extra_channels = 1;
+	impl.basic_info.alpha_bits = 8;
+	impl.image_format = .{
+		.num_channels = 3,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+
+	impl.image_bytes = try std.heap.c_allocator.dupe(u8, &[_]u8{
+		0, 10, 20, 30, 40, 50,
+		60, 70, 80, 90, 100, 110,
+	});
+	impl.pending_extra_channels[0].buffer = try std.heap.c_allocator.dupe(u8, &[_]u8{ 255, 128, 64, 0 });
+	impl.pending_extra_channels[0].row_stride = 2;
+	impl.pending_extra_channels[0].buffer_set = true;
+
+	var prepared = try prepareSimplePackedInput(std.heap.c_allocator, &impl);
+	defer prepared.deinit(std.heap.c_allocator);
+
+	try testing.expectEqual(@as(usize, 6), prepared.color_row_stride);
+	try testing.expectEqualSlices(u8, &[_]u8{
+		0, 10, 20, 30, 40, 50,
+		60, 70, 80, 90, 100, 110,
+	}, prepared.color_pixels);
+	try testing.expectEqual(@as(usize, 2), prepared.alpha_row_stride);
+	try testing.expectEqualSlices(u8, &[_]u8{ 255, 128, 64, 0 }, prepared.alpha_pixels);
+	try testing.expectEqual(@as(usize, 0), prepared.extra_planes.len);
+}
+
+test "JxlEncoder encodes a staged alpha buffer" {
+	const testing = std.testing;
+	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlEncoderDestroy(enc);
+
+	var info: JxlBasicInfo = undefined;
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 2;
+	info.ysize = 2;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 3;
+	info.num_extra_channels = 1;
+	info.alpha_bits = 8;
+
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetBasicInfo(enc, &info));
+
+	var color = std.mem.zeroes(JxlColorEncoding);
+	JxlColorEncodingSetToSRGB(&color, 0);
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetColorEncoding(enc, &color));
+
+	const settings = JxlEncoderFrameSettingsCreate(enc, null) orelse return error.OutOfMemory;
+
+	const rgb_pixels = [_]u8{
+		0, 10, 20, 30, 40, 50,
+		60, 70, 80, 90, 100, 110,
+	};
+	const rgb_format = JxlPixelFormat{
+		.num_channels = 3,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderAddImageFrame(settings, &rgb_format, &rgb_pixels, rgb_pixels.len),
+	);
+
+	const alpha_pixels = [_]u8{
+		255, 128,
+		64, 0,
+	};
+	const alpha_format = JxlPixelFormat{
+		.num_channels = 1,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderSetExtraChannelBuffer(settings, &alpha_format, &alpha_pixels, alpha_pixels.len, 0),
+	);
+
+	JxlEncoderCloseInput(enc);
+
+	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	defer encoded.deinit(testing.allocator);
+	while (true) {
+		var chunk: [32]u8 = undefined;
+		var next_out = chunk[0..].ptr;
+		var avail_out: usize = chunk.len;
+		const status = JxlEncoderProcessOutput(enc, &next_out, &avail_out);
+		const produced = chunk.len - avail_out;
+		try encoded.appendSlice(testing.allocator, chunk[0..produced]);
+		if (status == .JXL_ENC_SUCCESS) break;
+		try testing.expectEqual(JxlEncoderStatus.JXL_ENC_NEED_MORE_OUTPUT, status);
+	}
+
+	var br = BitReader.init(encoded.items[2..]);
+	const size = headers.SizeHeader.readFromBitStream(&br);
+	const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+	const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+	try br.jumpToByteBoundary();
+
+	try testing.expectEqual(@as(u32, 1), metadata.num_extra_channels);
+	try testing.expectEqual(image_metadata.ExtraChannel.alpha, metadata.extra_channel_info[0].type);
+
+	var codec_meta = image_metadata.CodecMetadata{};
+	codec_meta.size = size;
+	codec_meta.m = metadata;
+	codec_meta.transform_data = transform_data;
+
+	const frame_offset = br.totalBitsConsumed() / 8;
+	var frame_dec = dec_frame.FrameDecoder.init(testing.allocator, &codec_meta);
+	defer frame_dec.deinit();
+	try frame_dec.decodeFrame(encoded.items[2 + frame_offset ..]);
+
+	const image = frame_dec.getDecodedImage();
+	try testing.expectEqual(@as(usize, 4), image.channels.items.len);
+	try testing.expectEqualSlices(i32, &.{ 255, 128, 64, 0 }, image.channels.items[3].data);
+}
+
+test "JxlEncoder rejects ambiguous interleaved and staged alpha" {
+	const testing = std.testing;
+	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlEncoderDestroy(enc);
+
+	var info: JxlBasicInfo = undefined;
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 2;
+	info.ysize = 2;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 3;
+	info.num_extra_channels = 1;
+	info.alpha_bits = 8;
+
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetBasicInfo(enc, &info));
+
+	var color = std.mem.zeroes(JxlColorEncoding);
+	JxlColorEncodingSetToSRGB(&color, 0);
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetColorEncoding(enc, &color));
+
+	const settings = JxlEncoderFrameSettingsCreate(enc, null) orelse return error.OutOfMemory;
+
+	const rgba_pixels = [_]u8{
+		0, 10, 20, 255, 30, 40, 50, 128,
+		60, 70, 80, 64, 90, 100, 110, 0,
+	};
+	const rgba_format = JxlPixelFormat{
+		.num_channels = 4,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderAddImageFrame(settings, &rgba_format, &rgba_pixels, rgba_pixels.len),
+	);
+
+	const alpha_pixels = [_]u8{
+		255, 128,
+		64, 0,
+	};
+	const alpha_format = JxlPixelFormat{
+		.num_channels = 1,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderSetExtraChannelBuffer(settings, &alpha_format, &alpha_pixels, alpha_pixels.len, 0),
+	);
+
+	JxlEncoderCloseInput(enc);
+
+	var chunk: [32]u8 = undefined;
+	var next_out = chunk[0..].ptr;
+	var avail_out: usize = chunk.len;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_ERROR, JxlEncoderProcessOutput(enc, &next_out, &avail_out));
 }
 
 test "JxlEncoder encodes a spot-color extra channel buffer" {

@@ -59,6 +59,7 @@ static void print_help(FILE* out) {
 		"  --about                   Show version, platform, and architecture\n"
 		"  --extra TYPE PATH         Add a grayscale sidecar extra channel\n"
 		"                            TYPE may be one of:\n"
+		"                              alpha\n"
 		"                              selection_mask[:SHIFT], depth[:SHIFT], black[:SHIFT]\n"
 		"                              thermal[:SHIFT], optional[:SHIFT]\n"
 		"                              spot_color:R,G,B,S\n"
@@ -227,6 +228,12 @@ static int parse_extra_spec(ParsedExtraInput* extra, const char* text) {
 
 	const char* args = sep ? sep + 1 : NULL;
 
+	if (strcmp(text, "alpha") == 0) {
+		extra->type = JXL_CHANNEL_ALPHA;
+		extra->type_name = "alpha";
+		JxlEncoderInitExtraChannelInfo(extra->type, &extra->info);
+		return 1;
+	}
 	if (strcmp(text, "selection_mask") == 0 || strcmp(text, "selection-mask") == 0) {
 		extra->type = JXL_CHANNEL_SELECTION_MASK;
 		extra->type_name = "selection_mask";
@@ -479,6 +486,24 @@ static int encode_image(
 	char* err,
 	size_t err_cap
 ) {
+	int staged_alpha_seen = 0;
+	for (size_t i = 0; i < extra_count; ++i) {
+		if (extras[i].type != JXL_CHANNEL_ALPHA) continue;
+		if (image->num_extra_channels != 0) {
+			snprintf(err, err_cap, "sidecar alpha is not supported when the main image already carries alpha");
+			return 0;
+		}
+		if (extras[i].info.dim_shift != 0) {
+			snprintf(err, err_cap, "sidecar alpha does not support subsampling");
+			return 0;
+		}
+		if (staged_alpha_seen) {
+			snprintf(err, err_cap, "only one sidecar alpha input is supported");
+			return 0;
+		}
+		staged_alpha_seen = 1;
+	}
+
 	JxlBasicInfo info;
 	JxlEncoderInitBasicInfo(&info);
 	info.xsize = image->width;
@@ -486,7 +511,7 @@ static int encode_image(
 	info.bits_per_sample = 8;
 	info.num_color_channels = image->num_color_channels;
 	info.num_extra_channels = image->num_extra_channels + (uint32_t)extra_count;
-	info.alpha_bits = image->num_extra_channels ? 8 : 0;
+	info.alpha_bits = (image->num_extra_channels != 0 || staged_alpha_seen) ? 8 : 0;
 	info.alpha_premultiplied = 0;
 
 	JxlColorEncoding color;
@@ -522,12 +547,24 @@ static int encode_image(
 		return 0;
 	}
 	for (size_t i = 0; i < extra_count; ++i) {
-		if (JxlEncoderSetExtraChannelInfo(enc, image->num_extra_channels + i, &extras[i].info) != JXL_ENC_SUCCESS) {
+		uint32_t extra_index = image->num_extra_channels + (uint32_t)i;
+		if (staged_alpha_seen && image->num_extra_channels == 0) {
+			if (extras[i].type == JXL_CHANNEL_ALPHA) {
+				extra_index = 0;
+			} else {
+				uint32_t non_alpha_before = 0;
+				for (size_t j = 0; j < i; ++j) {
+					if (extras[j].type != JXL_CHANNEL_ALPHA) ++non_alpha_before;
+				}
+				extra_index = 1 + non_alpha_before;
+			}
+		}
+		if (extras[i].type != JXL_CHANNEL_ALPHA && JxlEncoderSetExtraChannelInfo(enc, extra_index, &extras[i].info) != JXL_ENC_SUCCESS) {
 			snprintf(err, err_cap, "JxlEncoderSetExtraChannelInfo failed");
 			JxlEncoderDestroy(enc);
 			return 0;
 		}
-		if (JxlEncoderSetExtraChannelName(enc, image->num_extra_channels + i, extras[i].type_name, strlen(extras[i].type_name)) != JXL_ENC_SUCCESS) {
+		if (extras[i].type != JXL_CHANNEL_ALPHA && JxlEncoderSetExtraChannelName(enc, extra_index, extras[i].type_name, strlen(extras[i].type_name)) != JXL_ENC_SUCCESS) {
 			snprintf(err, err_cap, "JxlEncoderSetExtraChannelName failed");
 			JxlEncoderDestroy(enc);
 			return 0;
@@ -546,13 +583,25 @@ static int encode_image(
 			0,
 		};
 		for (size_t i = 0; i < extra_count; ++i) {
+			uint32_t extra_index = image->num_extra_channels + (uint32_t)i;
+			if (staged_alpha_seen && image->num_extra_channels == 0) {
+				if (extras[i].type == JXL_CHANNEL_ALPHA) {
+					extra_index = 0;
+				} else {
+					uint32_t non_alpha_before = 0;
+					for (size_t j = 0; j < i; ++j) {
+						if (extras[j].type != JXL_CHANNEL_ALPHA) ++non_alpha_before;
+					}
+					extra_index = 1 + non_alpha_before;
+				}
+			}
 			if (
 				JxlEncoderSetExtraChannelBuffer(
 					settings,
 					&extra_format,
 					extras[i].image.pixels,
 					extras[i].image.pixels_size,
-					image->num_extra_channels + (uint32_t)i
+					extra_index
 				) != JXL_ENC_SUCCESS
 			) {
 				snprintf(err, err_cap, "JxlEncoderSetExtraChannelBuffer failed");
