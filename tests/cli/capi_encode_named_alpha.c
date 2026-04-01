@@ -133,6 +133,8 @@ int main(void) {
 
 	JxlBasicInfo decoded_info;
 	memset(&decoded_info, 0, sizeof(decoded_info));
+	JxlExtraChannelInfo decoded_alpha;
+	memset(&decoded_alpha, 0, sizeof(decoded_alpha));
 	uint8_t* decoded_pixels = NULL;
 	size_t decoded_size = 0;
 	for (;;) {
@@ -140,6 +142,13 @@ int main(void) {
 		if (status == JXL_DEC_BASIC_INFO) {
 			if (JxlDecoderGetBasicInfo(dec, &decoded_info) != JXL_DEC_SUCCESS) {
 				fprintf(stderr, "decoder basic info failed\n");
+				free(decoded_pixels);
+				JxlDecoderDestroy(dec);
+				free(encoded);
+				return 1;
+			}
+			if (JxlDecoderGetExtraChannelInfo(dec, 0, &decoded_alpha) != JXL_DEC_SUCCESS) {
+				fprintf(stderr, "decoder alpha info failed\n");
 				free(decoded_pixels);
 				JxlDecoderDestroy(dec);
 				free(encoded);
@@ -186,6 +195,31 @@ int main(void) {
 		JxlDecoderDestroy(dec);
 		free(encoded);
 		return 1;
+	}
+	if (decoded_alpha.type != JXL_CHANNEL_ALPHA || decoded_alpha.name_length != 5) {
+		fprintf(stderr, "unexpected decoded alpha metadata\n");
+		free(decoded_pixels);
+		JxlDecoderDestroy(dec);
+		free(encoded);
+		return 1;
+	}
+	{
+		char name[6];
+		memset(name, 0, sizeof(name));
+		if (JxlDecoderGetExtraChannelName(dec, 0, name, sizeof(name)) != JXL_DEC_SUCCESS) {
+			fprintf(stderr, "decoder alpha name failed\n");
+			free(decoded_pixels);
+			JxlDecoderDestroy(dec);
+			free(encoded);
+			return 1;
+		}
+		if (memcmp(name, "matte", 6) != 0) {
+			fprintf(stderr, "decoded alpha name mismatch\n");
+			free(decoded_pixels);
+			JxlDecoderDestroy(dec);
+			free(encoded);
+			return 1;
+		}
 	}
 	if (decoded_size != sizeof(pixels) || memcmp(decoded_pixels, pixels, sizeof(pixels)) != 0) {
 		fprintf(stderr, "pixel roundtrip mismatch\n");

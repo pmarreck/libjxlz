@@ -4,6 +4,10 @@ set -u
 SYSTEM="$(nix eval --impure --raw --expr builtins.currentSystem)"
 BUILD_LOG="${TMPDIR}/cjxlz_alpha_name_build.log"
 RUN_STDERR="${TMPDIR}/cjxlz_alpha_name_run_stderr.log"
+CHECK_STDOUT="${TMPDIR}/cjxlz_alpha_name_check_stdout.txt"
+CHECK_STDERR="${TMPDIR}/cjxlz_alpha_name_check_stderr.txt"
+CHECK_BIN="${TMPDIR}/cjxlz_alpha_name_info"
+CHECK_BUILD_LOG="${TMPDIR}/cjxlz_alpha_name_check_build.log"
 INPUT_PAM="${TMPDIR}/cjxlz_alpha_name_input.pam"
 EXPECTED_PAM="${TMPDIR}/cjxlz_alpha_name_expected.pam"
 ENCODED_JXL="${TMPDIR}/cjxlz_alpha_name_output.jxl"
@@ -30,5 +34,28 @@ fi
 
 if ! cmp -s "${EXPECTED_PAM}" "${ROUNDTRIP_PAM}"; then
 	echo "pam roundtrip mismatch"
+	exit 1
+fi
+
+if ! clang \
+	-std=c11 \
+	-Wall -Wextra -Werror \
+	-Iinclude \
+	-Ilib/include \
+	tests/cli/cjxlz_extra_channel_name.c \
+	"${PACKAGE_OUT}/lib/libjxlz_capi.a" \
+	-o "${CHECK_BIN}" >"${CHECK_BUILD_LOG}" 2>&1; then
+	cat "${CHECK_BUILD_LOG}"
+	exit 1
+fi
+
+if ! "${CHECK_BIN}" "${ENCODED_JXL}" >"${CHECK_STDOUT}" 2>"${CHECK_STDERR}"; then
+	cat "${CHECK_STDERR}"
+	exit 1
+fi
+
+if ! grep -Eq '^matte$' "${CHECK_STDOUT}"; then
+	echo "unexpected decoded alpha name"
+	cat "${CHECK_STDOUT}"
 	exit 1
 fi

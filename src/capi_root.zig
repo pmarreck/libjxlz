@@ -1175,6 +1175,25 @@ pub export fn JxlDecoderGetExtraChannelInfo(
 	return .JXL_DEC_SUCCESS;
 }
 
+pub export fn JxlDecoderGetExtraChannelName(
+	dec_ptr: ?*const JxlDecoder,
+	index: usize,
+	name_ptr: ?[*]u8,
+	size: usize,
+) JxlDecoderStatus {
+	const dec = dec_ptr orelse return .JXL_DEC_ERROR;
+	const impl: *const DecoderImpl = @ptrCast(@alignCast(dec));
+	if (!impl.basic_info_available) return .JXL_DEC_NEED_MORE_INPUT;
+	if (index >= impl.codec_meta.m.num_extra_channels) return .JXL_DEC_ERROR;
+
+	const extra = &impl.codec_meta.m.extra_channel_info[index];
+	if (size < extra.name.len + 1) return .JXL_DEC_ERROR;
+	const name = name_ptr orelse return .JXL_DEC_ERROR;
+	@memcpy(name[0..extra.name.len], extra.name);
+	name[extra.name.len] = 0;
+	return .JXL_DEC_SUCCESS;
+}
+
 pub export fn JxlDecoderImageOutBufferSize(dec_ptr: ?*const JxlDecoder, format: ?*const JxlPixelFormat, size: ?*usize) JxlDecoderStatus {
 	const dec = dec_ptr orelse return .JXL_DEC_ERROR;
 	const impl: *const DecoderImpl = @ptrCast(@alignCast(dec));
