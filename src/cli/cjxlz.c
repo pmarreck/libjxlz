@@ -57,6 +57,8 @@ static void print_help(FILE* out) {
 		"Options:\n"
 		"  -h, --help                Show this help\n"
 		"  --about                   Show version, platform, and architecture\n"
+		"  --premultiplied-alpha     Mark the alpha channel as premultiplied/associated\n"
+		"  --associated-alpha        Alias for --premultiplied-alpha\n"
 		"  --extra TYPE PATH         Add a grayscale sidecar extra channel\n"
 		"                            TYPE may be one of:\n"
 		"                              alpha\n"
@@ -481,6 +483,7 @@ static int encode_image(
 	const ParsedImage* image,
 	const ParsedExtraInput* extras,
 	size_t extra_count,
+	int alpha_premultiplied,
 	uint8_t** encoded_out,
 	size_t* encoded_size_out,
 	char* err,
@@ -512,7 +515,11 @@ static int encode_image(
 	info.num_color_channels = image->num_color_channels;
 	info.num_extra_channels = image->num_extra_channels + (uint32_t)extra_count;
 	info.alpha_bits = (image->num_extra_channels != 0 || staged_alpha_seen) ? 8 : 0;
-	info.alpha_premultiplied = 0;
+	if (info.alpha_bits == 0 && alpha_premultiplied) {
+		snprintf(err, err_cap, "--premultiplied-alpha requires an alpha channel");
+		return 0;
+	}
+	info.alpha_premultiplied = alpha_premultiplied ? 1 : 0;
 
 	JxlColorEncoding color;
 	JxlColorEncodingSetToSRGB(&color, image->num_color_channels == 1 ? 1 : 0);
@@ -649,6 +656,7 @@ int cjxlz_main(int argc, char** argv) {
 
 	const char* input_path = NULL;
 	const char* output_path = NULL;
+	int alpha_premultiplied = 0;
 	ParsedExtraInput extras[MAX_EXTRA_INPUTS];
 	memset(extras, 0, sizeof(extras));
 	size_t extra_count = 0;
@@ -661,6 +669,10 @@ int cjxlz_main(int argc, char** argv) {
 		if (strcmp(argv[i], "--about") == 0) {
 			printf("cjxlz %u %s %s\n", JxlEncoderVersion(), platform_name(), arch_name());
 			return 0;
+		}
+		if (strcmp(argv[i], "--premultiplied-alpha") == 0 || strcmp(argv[i], "--associated-alpha") == 0) {
+			alpha_premultiplied = 1;
+			continue;
 		}
 		if (strcmp(argv[i], "--extra") == 0) {
 			if (i + 2 >= argc) {
@@ -724,7 +736,7 @@ int cjxlz_main(int argc, char** argv) {
 
 	uint8_t* encoded = NULL;
 	size_t encoded_size = 0;
-	if (!encode_image(&image, extras, extra_count, &encoded, &encoded_size, err, sizeof(err))) {
+	if (!encode_image(&image, extras, extra_count, alpha_premultiplied, &encoded, &encoded_size, err, sizeof(err))) {
 		fprintf(stderr, "%s\n", err[0] ? err : "encode failed");
 		for (size_t i = 0; i < extra_count; ++i) free(extras[i].file_data);
 		free(input);

@@ -55,7 +55,7 @@ if ! "${CHECK_BIN}" "${ENCODED_JXL}" >"${CHECK_STDOUT}" 2>"${CHECK_STDERR}"; the
 	exit 1
 fi
 
-if ! grep -Eq '^4 2 3 1 0 1 1 0$' "${CHECK_STDOUT}"; then
+if ! grep -Eq '^4 2 3 1 0 0 1 1 0$' "${CHECK_STDOUT}"; then
 	echo "unexpected decoded extra-channel info"
 	cat "${CHECK_STDOUT}"
 	exit 1

@@ -102,12 +102,13 @@ int main(int argc, char** argv) {
 	}
 
 	printf(
-		"%u %u %u %u %u %d %u %u\n",
+		"%u %u %u %u %u %u %d %u %u\n",
 		info.xsize,
 		info.ysize,
 		info.num_color_channels,
 		info.num_extra_channels,
 		info.alpha_bits,
+		info.alpha_premultiplied,
 		(int)extra.type,
 		extra.dim_shift,
 		extra.cfa_channel
