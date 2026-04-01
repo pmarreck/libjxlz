@@ -136,6 +136,11 @@ pub const JxlDecoderStatus = enum(c_int) {
 	JXL_DEC_FULL_IMAGE = 0x1000,
 };
 
+pub const JxlColorProfileTarget = enum(c_int) {
+	JXL_COLOR_PROFILE_TARGET_ORIGINAL = 0,
+	JXL_COLOR_PROFILE_TARGET_DATA = 1,
+};
+
 pub const JxlEncoderStatus = enum(c_int) {
 	JXL_ENC_SUCCESS = 0,
 	JXL_ENC_ERROR = 1,
@@ -229,6 +234,7 @@ const DecoderImpl = struct {
 
 	basic_info_available: bool = false,
 	basic_info_emitted: bool = false,
+	color_encoding_emitted: bool = false,
 	basic_info: JxlBasicInfo = std.mem.zeroes(JxlBasicInfo),
 	codec_meta: image_metadata.CodecMetadata = .{},
 	frame_data: []const u8 = &.{},
@@ -419,6 +425,74 @@ fn mapRenderingIntent(intent: JxlRenderingIntent) ?color_encoding_mod.RenderingI
 		.JXL_RENDERING_INTENT_SATURATION => .saturation,
 		.JXL_RENDERING_INTENT_ABSOLUTE => .absolute,
 	};
+}
+
+fn fromInternalColorSpace(color_space: color_encoding_mod.ColorSpace) JxlColorSpace {
+	return switch (color_space) {
+		.rgb => .JXL_COLOR_SPACE_RGB,
+		.gray => .JXL_COLOR_SPACE_GRAY,
+		.xyb => .JXL_COLOR_SPACE_XYB,
+		.unknown => .JXL_COLOR_SPACE_UNKNOWN,
+	};
+}
+
+fn fromInternalWhitePoint(white_point: color_encoding_mod.WhitePoint) JxlWhitePoint {
+	return switch (white_point) {
+		.d65 => .JXL_WHITE_POINT_D65,
+		.custom => .JXL_WHITE_POINT_CUSTOM,
+		.e => .JXL_WHITE_POINT_E,
+		.dci => .JXL_WHITE_POINT_DCI,
+	};
+}
+
+fn fromInternalPrimaries(primaries: color_encoding_mod.Primaries) JxlPrimaries {
+	return switch (primaries) {
+		.srgb => .JXL_PRIMARIES_SRGB,
+		.custom => .JXL_PRIMARIES_CUSTOM,
+		.bt2100 => .JXL_PRIMARIES_2100,
+		.p3 => .JXL_PRIMARIES_P3,
+	};
+}
+
+fn fromInternalTransferFunction(tf: *const color_encoding_mod.CustomTransferFunction, gamma_out: *f64) JxlTransferFunction {
+	if (tf.have_gamma) {
+		gamma_out.* = @as(f64, @floatFromInt(tf.gamma)) / 10000000.0;
+		return .JXL_TRANSFER_FUNCTION_GAMMA;
+	}
+	gamma_out.* = 0.0;
+	return switch (tf.transfer_function) {
+		.bt709 => .JXL_TRANSFER_FUNCTION_709,
+		.unknown => .JXL_TRANSFER_FUNCTION_UNKNOWN,
+		.linear => .JXL_TRANSFER_FUNCTION_LINEAR,
+		.srgb => .JXL_TRANSFER_FUNCTION_SRGB,
+		.pq => .JXL_TRANSFER_FUNCTION_PQ,
+		.dci => .JXL_TRANSFER_FUNCTION_DCI,
+		.hlg => .JXL_TRANSFER_FUNCTION_HLG,
+	};
+}
+
+fn fromInternalRenderingIntent(intent: color_encoding_mod.RenderingIntent) JxlRenderingIntent {
+	return switch (intent) {
+		.perceptual => .JXL_RENDERING_INTENT_PERCEPTUAL,
+		.relative => .JXL_RENDERING_INTENT_RELATIVE,
+		.saturation => .JXL_RENDERING_INTENT_SATURATION,
+		.absolute => .JXL_RENDERING_INTENT_ABSOLUTE,
+	};
+}
+
+/// Maps the parsed structured JPEG XL color profile back onto the public C API
+/// struct so decoder clients can inspect nominal color space without ICC.
+fn populateColorEncoding(dst: *JxlColorEncoding, color: *const color_encoding_mod.ColorEncoding) void {
+	dst.* = std.mem.zeroes(JxlColorEncoding);
+	dst.color_space = fromInternalColorSpace(color.color_space);
+	dst.white_point = fromInternalWhitePoint(color.white_point);
+	dst.primaries = fromInternalPrimaries(color.primaries);
+	dst.white_point_xy = defaultWhitePointXY();
+	dst.primaries_red_xy = defaultPrimariesRedXY();
+	dst.primaries_green_xy = defaultPrimariesGreenXY();
+	dst.primaries_blue_xy = defaultPrimariesBlueXY();
+	dst.transfer_function = fromInternalTransferFunction(&color.tf, &dst.gamma);
+	dst.rendering_intent = fromInternalRenderingIntent(color.rendering_intent);
 }
 
 /// Converts the public C color-encoding struct into the narrow non-ICC Zig
@@ -1218,6 +1292,25 @@ pub export fn JxlDecoderGetExtraChannelName(
 	return .JXL_DEC_SUCCESS;
 }
 
+pub export fn JxlDecoderGetColorAsEncodedProfile(
+	dec_ptr: ?*const JxlDecoder,
+	target: JxlColorProfileTarget,
+	color_ptr: ?*JxlColorEncoding,
+) JxlDecoderStatus {
+	const dec = dec_ptr orelse return .JXL_DEC_ERROR;
+	const impl: *const DecoderImpl = @ptrCast(@alignCast(dec));
+	if (!impl.basic_info_available) return .JXL_DEC_NEED_MORE_INPUT;
+
+	switch (target) {
+		.JXL_COLOR_PROFILE_TARGET_ORIGINAL, .JXL_COLOR_PROFILE_TARGET_DATA => {},
+	}
+
+	const color = &impl.codec_meta.m.color_encoding;
+	if (color.want_icc) return .JXL_DEC_ERROR;
+	if (color_ptr) |dst| populateColorEncoding(dst, color);
+	return .JXL_DEC_SUCCESS;
+}
+
 pub export fn JxlDecoderImageOutBufferSize(dec_ptr: ?*const JxlDecoder, format: ?*const JxlPixelFormat, size: ?*usize) JxlDecoderStatus {
 	const dec = dec_ptr orelse return .JXL_DEC_ERROR;
 	const impl: *const DecoderImpl = @ptrCast(@alignCast(dec));
@@ -1256,6 +1349,11 @@ pub export fn JxlDecoderProcessInput(dec_ptr: ?*JxlDecoder) JxlDecoderStatus {
 	if ((impl.subscribed_events & @intFromEnum(JxlDecoderStatus.JXL_DEC_BASIC_INFO)) != 0 and !impl.basic_info_emitted) {
 		impl.basic_info_emitted = true;
 		return .JXL_DEC_BASIC_INFO;
+	}
+
+	if ((impl.subscribed_events & @intFromEnum(JxlDecoderStatus.JXL_DEC_COLOR_ENCODING)) != 0 and !impl.color_encoding_emitted) {
+		impl.color_encoding_emitted = true;
+		return .JXL_DEC_COLOR_ENCODING;
 	}
 
 	if (impl.output_buffer == null) return .JXL_DEC_NEED_IMAGE_OUT_BUFFER;

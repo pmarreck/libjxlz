@@ -33,6 +33,15 @@
             installPhase = ''
               mkdir -p $out
               cp -R zig-out/. $out/
+              ${lib.optionalString stdenv.isDarwin ''
+                if [ -d "$out/lib" ]; then
+                  for archive in "$out"/lib/*.a; do
+                    [ -f "$archive" ] || continue
+                    libtool -static -o "$archive.repacked" "$archive"
+                    mv "$archive.repacked" "$archive"
+                  done
+                fi
+              ''}
             '';
           };
         in

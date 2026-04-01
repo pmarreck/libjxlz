@@ -64,6 +64,7 @@ static void print_help(FILE* out) {
 		"  --about                   Show version, platform, and architecture\n"
 		"  --premultiplied-alpha     Mark the alpha channel as premultiplied/associated\n"
 		"  --associated-alpha        Alias for --premultiplied-alpha\n"
+		"  --linear-srgb             Use linear sRGB/gray instead of nonlinear sRGB\n"
 		"  --alpha-name NAME         Set the alpha extra-channel name\n"
 		"  --intensity-target NITS   Set tone-mapping intensity_target\n"
 		"  --min-nits NITS           Set tone-mapping min_nits\n"
@@ -608,6 +609,7 @@ static int encode_image(
 	const ParsedExtraInput* extras,
 	size_t extra_count,
 	int alpha_premultiplied,
+	int linear_srgb,
 	const char* alpha_name,
 	float intensity_target,
 	float min_nits,
@@ -661,7 +663,11 @@ static int encode_image(
 	info.alpha_premultiplied = alpha_premultiplied ? 1 : 0;
 
 	JxlColorEncoding color;
-	JxlColorEncodingSetToSRGB(&color, image->num_color_channels == 1 ? 1 : 0);
+	if (linear_srgb) {
+		JxlColorEncodingSetToLinearSRGB(&color, image->num_color_channels == 1 ? 1 : 0);
+	} else {
+		JxlColorEncodingSetToSRGB(&color, image->num_color_channels == 1 ? 1 : 0);
+	}
 
 	JxlPixelFormat format = {
 		image->channels,
@@ -815,6 +821,7 @@ int cjxlz_main(int argc, char** argv) {
 	const char* input_path = NULL;
 	const char* output_path = NULL;
 	int alpha_premultiplied = 0;
+	int linear_srgb = 0;
 	const char* alpha_name = NULL;
 	float intensity_target = 255.0f;
 	float min_nits = 0.0f;
@@ -838,6 +845,10 @@ int cjxlz_main(int argc, char** argv) {
 		}
 		if (strcmp(argv[i], "--premultiplied-alpha") == 0 || strcmp(argv[i], "--associated-alpha") == 0) {
 			alpha_premultiplied = 1;
+			continue;
+		}
+		if (strcmp(argv[i], "--linear-srgb") == 0) {
+			linear_srgb = 1;
 			continue;
 		}
 		if (strcmp(argv[i], "--alpha-name") == 0) {
@@ -966,6 +977,7 @@ int cjxlz_main(int argc, char** argv) {
 		extras,
 		extra_count,
 		alpha_premultiplied,
+		linear_srgb,
 		alpha_name,
 		intensity_target,
 		min_nits,
