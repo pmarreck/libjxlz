@@ -22,6 +22,10 @@ pub const SimpleInterleavedU8Image = struct {
 	orientation: u32 = 1,
 	intrinsic_width: u32 = 0,
 	intrinsic_height: u32 = 0,
+	have_animation: bool = false,
+	animation: headers.AnimationHeader = .{},
+	frame_duration: u32 = 0,
+	frame_timecode: u32 = 0,
 	tone_mapping: image_metadata.ToneMapping = .{},
 	extra_channel_info: []const image_metadata.ExtraChannelInfo = &.{},
 	row_stride: usize,
@@ -47,6 +51,10 @@ pub const SimplePackedU8Image = struct {
 	orientation: u32 = 1,
 	intrinsic_width: u32 = 0,
 	intrinsic_height: u32 = 0,
+	have_animation: bool = false,
+	animation: headers.AnimationHeader = .{},
+	frame_duration: u32 = 0,
+	frame_timecode: u32 = 0,
 	tone_mapping: image_metadata.ToneMapping = .{},
 	extra_planes: []const SimpleExtraPlaneU8 = &.{},
 };
@@ -61,6 +69,20 @@ fn validateToneMapping(tone_mapping: image_metadata.ToneMapping) !void {
 fn validateOrientationAndIntrinsic(orientation: u32, intrinsic_width: u32, intrinsic_height: u32) !void {
 	if (orientation < 1 or orientation > 8) return error.InvalidArgs;
 	if ((intrinsic_width == 0) != (intrinsic_height == 0)) return error.InvalidArgs;
+}
+
+fn validateAnimation(
+	have_animation: bool,
+	animation: headers.AnimationHeader,
+	frame_duration: u32,
+	frame_timecode: u32,
+) !void {
+	if (!have_animation) {
+		if (frame_duration != 0 or frame_timecode != 0) return error.InvalidArgs;
+		return;
+	}
+	if (animation.tps_numerator == 0 or animation.tps_denominator == 0) return error.InvalidArgs;
+	if (!animation.have_timecodes and frame_timecode != 0) return error.InvalidArgs;
 }
 
 fn graySrgbColorEncoding() color_encoding_mod.ColorEncoding {
@@ -81,6 +103,7 @@ fn validateSimpleImage(image: SimpleInterleavedU8Image) !void {
 	if (image.num_extra_channels == 0 and image.alpha_associated) return error.Unsupported;
 	if (image.extra_channel_info.len != 0 and image.extra_channel_info.len != image.num_extra_channels) return error.InvalidArgs;
 	try validateOrientationAndIntrinsic(image.orientation, image.intrinsic_width, image.intrinsic_height);
+	try validateAnimation(image.have_animation, image.animation, image.frame_duration, image.frame_timecode);
 	try validateToneMapping(image.tone_mapping);
 
 	const min_row_stride = @as(usize, image.width) * image.num_channels;
@@ -99,6 +122,7 @@ fn validateSimplePackedImage(image: SimplePackedU8Image) !void {
 	if (image.alpha_pixels.len == 0 and image.alpha_associated) return error.Unsupported;
 	if (image.alpha_pixels.len == 0 and image.alpha_info != null) return error.InvalidArgs;
 	try validateOrientationAndIntrinsic(image.orientation, image.intrinsic_width, image.intrinsic_height);
+	try validateAnimation(image.have_animation, image.animation, image.frame_duration, image.frame_timecode);
 	try validateToneMapping(image.tone_mapping);
 
 	const min_color_row_stride = @as(usize, image.width) * image.num_color_channels;
@@ -137,6 +161,8 @@ fn buildCodecMetadata(
 	orientation: u32,
 	intrinsic_width: u32,
 	intrinsic_height: u32,
+	have_animation: bool,
+	animation: headers.AnimationHeader,
 	tone_mapping: image_metadata.ToneMapping,
 	extra_channel_info: []const image_metadata.ExtraChannelInfo,
 	color_encoding: color_encoding_mod.ColorEncoding,
@@ -165,6 +191,10 @@ fn buildCodecMetadata(
 			.xsize_raw = intrinsic_width,
 		};
 	}
+	if (have_animation) {
+		codec_meta.m.have_animation = true;
+		codec_meta.m.animation = animation;
+	}
 	if (num_extra_channels != 0) {
 		codec_meta.m.num_extra_channels = num_extra_channels;
 		codec_meta.m.extra_channel_count = num_extra_channels;
@@ -184,12 +214,18 @@ fn buildCodecMetadata(
 	return codec_meta;
 }
 
-fn buildSimpleFrameHeader(extra_channel_info: []const image_metadata.ExtraChannelInfo) frame_header_mod.FrameHeader {
+fn buildSimpleFrameHeader(
+	extra_channel_info: []const image_metadata.ExtraChannelInfo,
+	frame_duration: u32,
+	frame_timecode: u32,
+) frame_header_mod.FrameHeader {
 	var frame_header: frame_header_mod.FrameHeader = .{
 		.encoding = .modular,
 		.color_transform = .none,
 		.loop_filter = .{},
 	};
+	frame_header.animation_frame.duration = frame_duration;
+	frame_header.animation_frame.timecode = frame_timecode;
 	for (extra_channel_info, 0..) |extra, i| {
 		frame_header.extra_channel_upsampling[i] = @as(u32, 1) << @intCast(extra.dim_shift);
 	}
@@ -407,11 +443,13 @@ pub fn encodeSimplePackedU8(
 		image.orientation,
 		image.intrinsic_width,
 		image.intrinsic_height,
+		image.have_animation,
+		image.animation,
 		image.tone_mapping,
 		extra_info_slice,
 		effective_color_encoding,
 	);
-	const frame_header = buildSimpleFrameHeader(extra_info_slice);
+	const frame_header = buildSimpleFrameHeader(extra_info_slice, image.frame_duration, image.frame_timecode);
 
 	var source = try buildPackedSourceImage(allocator, image);
 	defer source.deinit();
@@ -445,11 +483,17 @@ pub fn encodeSimpleInterleavedU8(
 		image.orientation,
 		image.intrinsic_width,
 		image.intrinsic_height,
+		image.have_animation,
+		image.animation,
 		image.tone_mapping,
 		image.extra_channel_info,
 		effective_color_encoding,
 	);
-	const frame_header = buildSimpleFrameHeader(codec_meta.m.extra_channel_info[0..@intCast(codec_meta.m.num_extra_channels)]);
+	const frame_header = buildSimpleFrameHeader(
+		codec_meta.m.extra_channel_info[0..@intCast(codec_meta.m.num_extra_channels)],
+		image.frame_duration,
+		image.frame_timecode,
+	);
 
 	var source = try buildSourceImage(allocator, image);
 	defer source.deinit();

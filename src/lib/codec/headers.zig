@@ -204,6 +204,21 @@ pub const AnimationHeader = struct {
     }
 };
 
+/// Writes the animation timing header used by animated codestream metadata,
+/// mirroring the decoder's compact U32 forms for ticks-per-second, loop count, and timecode presence.
+pub fn writeAnimationHeader(animation: *const AnimationHeader, writer: anytype) !void {
+	const tps_num_enc = fc.U32Enc.init(fc.val(100), fc.val(1000), fc.bitsOffset(10, 1), fc.bitsOffset(30, 1));
+	try fc.U32Coder.write(tps_num_enc, animation.tps_numerator, writer);
+
+	const tps_den_enc = fc.U32Enc.init(fc.val(1), fc.val(1001), fc.bitsOffset(8, 1), fc.bitsOffset(10, 1));
+	try fc.U32Coder.write(tps_den_enc, animation.tps_denominator, writer);
+
+	const loops_enc = fc.U32Enc.init(fc.val(0), fc.bits(3), fc.bits(16), fc.bits(32));
+	try fc.U32Coder.write(loops_enc, animation.num_loops, writer);
+
+	try writer.write(1, @intFromBool(animation.have_timecodes));
+}
+
 // ── Tests ──
 
 const testing = std.testing;
@@ -311,4 +326,26 @@ test "AnimationHeader defaults" {
     try testing.expectEqual(@as(u32, 1), h.tps_denominator);
     try testing.expectEqual(@as(u32, 0), h.num_loops);
     try testing.expect(!h.have_timecodes);
+}
+
+test "writeAnimationHeader round-trips non-default values" {
+	const allocator = testing.allocator;
+	const animation: AnimationHeader = .{
+		.tps_numerator = 24,
+		.tps_denominator = 1001,
+		.num_loops = 7,
+		.have_timecodes = true,
+	};
+
+	var writer = @import("../base/bit_writer.zig").BitWriter.init(allocator);
+	defer writer.deinit();
+	try writeAnimationHeader(&animation, &writer);
+	try writer.zeroPadToByte();
+
+	var br = BitReader.init(writer.bytes());
+	const roundtrip = AnimationHeader.readFromBitStream(&br);
+	try testing.expectEqual(animation.tps_numerator, roundtrip.tps_numerator);
+	try testing.expectEqual(animation.tps_denominator, roundtrip.tps_denominator);
+	try testing.expectEqual(animation.num_loops, roundtrip.num_loops);
+	try testing.expectEqual(animation.have_timecodes, roundtrip.have_timecodes);
 }

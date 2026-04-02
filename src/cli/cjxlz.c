@@ -74,6 +74,10 @@ static void print_help(FILE* out) {
 		"  --linear-below VALUE      Set tone-mapping linear_below\n"
 		"  --orientation N           Set orientation 1..8\n"
 		"  --intrinsic-size WxH      Set intrinsic pixel size metadata\n"
+		"  --animation-tps N/D       Set animation ticks per second numerator/denominator\n"
+		"  --animation-loops N       Set animation loop count\n"
+		"  --frame-duration N        Set the single frame duration in ticks\n"
+		"  --frame-timecode N        Set the single frame SMPTE timecode as a u32\n"
 		"  --extra TYPE PATH         Add a grayscale sidecar extra channel\n"
 		"                            TYPE may be one of:\n"
 		"                              alpha[:SHIFT]\n"
@@ -201,6 +205,27 @@ static int parse_u32_token(const char* token, uint32_t* value) {
 	unsigned long parsed = strtoul(token, &end, 10);
 	if (!end || *end != '\0' || parsed > 0xffffffffUL) return 0;
 	*value = (uint32_t)parsed;
+	return 1;
+}
+
+static int parse_ratio_token(const char* token, uint32_t* num, uint32_t* den) {
+	const char* slash = strchr(token, '/');
+	if (!slash) return 0;
+	size_t num_len = (size_t)(slash - token);
+	if (num_len == 0 || slash[1] == '\0') return 0;
+
+	char num_buf[32];
+	char den_buf[32];
+	if (num_len + 1 > sizeof(num_buf)) return 0;
+	size_t den_len = strlen(slash + 1);
+	if (den_len + 1 > sizeof(den_buf)) return 0;
+
+	memcpy(num_buf, token, num_len);
+	num_buf[num_len] = '\0';
+	memcpy(den_buf, slash + 1, den_len + 1);
+	if (!parse_u32_token(num_buf, num)) return 0;
+	if (!parse_u32_token(den_buf, den)) return 0;
+	if (*num == 0 || *den == 0) return 0;
 	return 1;
 }
 
@@ -642,6 +667,12 @@ static int encode_image(
 	int orientation,
 	uint32_t intrinsic_width,
 	uint32_t intrinsic_height,
+	int have_animation,
+	uint32_t animation_tps_numerator,
+	uint32_t animation_tps_denominator,
+	uint32_t animation_loops,
+	uint32_t frame_duration,
+	uint32_t frame_timecode,
 	uint8_t** encoded_out,
 	size_t* encoded_size_out,
 	char* err,
@@ -676,6 +707,13 @@ static int encode_image(
 	info.orientation = (JxlOrientation)orientation;
 	info.intrinsic_xsize = intrinsic_width;
 	info.intrinsic_ysize = intrinsic_height;
+	info.have_animation = have_animation ? 1 : 0;
+	if (have_animation) {
+		info.animation.tps_numerator = animation_tps_numerator;
+		info.animation.tps_denominator = animation_tps_denominator;
+		info.animation.num_loops = animation_loops;
+		info.animation.have_timecodes = frame_timecode != 0 ? 1 : 0;
+	}
 	if (info.alpha_bits == 0 && alpha_premultiplied) {
 		snprintf(err, err_cap, "--premultiplied-alpha requires an alpha channel");
 		return 0;
@@ -712,6 +750,17 @@ static int encode_image(
 		snprintf(err, err_cap, "JxlEncoderFrameSettingsCreate failed");
 		JxlEncoderDestroy(enc);
 		return 0;
+	}
+	if (have_animation) {
+		JxlFrameHeader frame_header;
+		memset(&frame_header, 0, sizeof(frame_header));
+		frame_header.duration = frame_duration;
+		frame_header.timecode = frame_timecode;
+		if (JxlEncoderSetFrameHeader(settings, &frame_header) != JXL_ENC_SUCCESS) {
+			snprintf(err, err_cap, "JxlEncoderSetFrameHeader failed");
+			JxlEncoderDestroy(enc);
+			return 0;
+		}
 	}
 	if (JxlEncoderSetBasicInfo(enc, &info) != JXL_ENC_SUCCESS) {
 		snprintf(err, err_cap, "JxlEncoderSetBasicInfo failed");
@@ -856,6 +905,12 @@ int cjxlz_main(int argc, char** argv) {
 	int orientation = 1;
 	uint32_t intrinsic_width = 0;
 	uint32_t intrinsic_height = 0;
+	int have_animation = 0;
+	uint32_t animation_tps_numerator = 100;
+	uint32_t animation_tps_denominator = 1;
+	uint32_t animation_loops = 0;
+	uint32_t frame_duration = 0;
+	uint32_t frame_timecode = 0;
 	ParsedExtraInput extras[MAX_EXTRA_INPUTS];
 	memset(extras, 0, sizeof(extras));
 	size_t extra_count = 0;
@@ -940,6 +995,42 @@ int cjxlz_main(int argc, char** argv) {
 			i += 1;
 			continue;
 		}
+		if (strcmp(argv[i], "--animation-tps") == 0) {
+			if (i + 1 >= argc || !parse_ratio_token(argv[i + 1], &animation_tps_numerator, &animation_tps_denominator)) {
+				fprintf(stderr, "--animation-tps requires N/D with positive integers\n");
+				return 2;
+			}
+			have_animation = 1;
+			i += 1;
+			continue;
+		}
+		if (strcmp(argv[i], "--animation-loops") == 0) {
+			if (i + 1 >= argc || !parse_u32_token(argv[i + 1], &animation_loops)) {
+				fprintf(stderr, "--animation-loops requires N\n");
+				return 2;
+			}
+			have_animation = 1;
+			i += 1;
+			continue;
+		}
+		if (strcmp(argv[i], "--frame-duration") == 0) {
+			if (i + 1 >= argc || !parse_u32_token(argv[i + 1], &frame_duration)) {
+				fprintf(stderr, "--frame-duration requires N\n");
+				return 2;
+			}
+			have_animation = 1;
+			i += 1;
+			continue;
+		}
+		if (strcmp(argv[i], "--frame-timecode") == 0) {
+			if (i + 1 >= argc || !parse_u32_token(argv[i + 1], &frame_timecode)) {
+				fprintf(stderr, "--frame-timecode requires N\n");
+				return 2;
+			}
+			have_animation = 1;
+			i += 1;
+			continue;
+		}
 		if (strcmp(argv[i], "--extra") == 0) {
 			if (i + 2 >= argc) {
 				fprintf(stderr, "--extra requires TYPE and PATH\n");
@@ -1021,6 +1112,12 @@ int cjxlz_main(int argc, char** argv) {
 		orientation,
 		intrinsic_width,
 		intrinsic_height,
+		have_animation,
+		animation_tps_numerator,
+		animation_tps_denominator,
+		animation_loops,
+		frame_duration,
+		frame_timecode,
 		&encoded,
 		&encoded_size,
 		err,

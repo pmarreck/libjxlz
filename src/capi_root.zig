@@ -88,6 +88,39 @@ pub const JxlAnimationHeader = extern struct {
 	have_timecodes: JXL_BOOL,
 };
 
+pub const JxlBlendMode = enum(c_int) {
+	JXL_BLEND_REPLACE = 0,
+	JXL_BLEND_ADD = 1,
+	JXL_BLEND_BLEND = 2,
+	JXL_BLEND_MULADD = 3,
+	JXL_BLEND_MUL = 4,
+};
+
+pub const JxlBlendInfo = extern struct {
+	blendmode: JxlBlendMode,
+	source: u32,
+	alpha: u32,
+	clamp: JXL_BOOL,
+};
+
+pub const JxlLayerInfo = extern struct {
+	have_crop: JXL_BOOL,
+	crop_x0: i32,
+	crop_y0: i32,
+	xsize: u32,
+	ysize: u32,
+	blend_info: JxlBlendInfo,
+	save_as_reference: u32,
+};
+
+pub const JxlFrameHeader = extern struct {
+	duration: u32,
+	timecode: u32,
+	name_length: u32,
+	is_last: JXL_BOOL,
+	layer_info: JxlLayerInfo,
+};
+
 pub const JxlBasicInfo = extern struct {
 	have_container: JXL_BOOL,
 	xsize: u32,
@@ -278,11 +311,15 @@ const EncoderImpl = struct {
 		.@"align" = 0,
 	},
 	image_bytes: []u8 = &.{},
+	pending_frame_header_set: bool = false,
+	pending_frame_header: JxlFrameHeader = std.mem.zeroes(JxlFrameHeader),
 	pending_extra_channels: [256]EncoderPendingExtraChannel = [_]EncoderPendingExtraChannel{.{}} ** 256,
 };
 
 const EncoderFrameSettingsImpl = struct {
 	owner: *EncoderImpl,
+	frame_header_set: bool = false,
+	frame_header: JxlFrameHeader = std.mem.zeroes(JxlFrameHeader),
 };
 
 const EncoderPendingExtraChannel = struct {
@@ -556,11 +593,12 @@ fn rowStrideBytes(width: usize, format: JxlPixelFormat) ?usize {
 }
 
 /// Validates the narrow one-shot encoder surface: 8-bit grayscale/RGB with an
-/// optional 8-bit alpha plus full-size/subsampled uint8 sidecar extras, no preview/animation,
-/// plus simple orientation/intrinsic-size and tone-mapping metadata.
+/// optional 8-bit alpha plus full-size/subsampled uint8 sidecar extras, no preview/container,
+/// plus simple orientation/intrinsic-size, tone-mapping, and animation metadata.
 fn validateBasicInfoForSimpleEncode(info: *const JxlBasicInfo) !void {
 	if (info.xsize == 0 or info.ysize == 0) return error.InvalidArgs;
-	if (info.have_container != 0 or info.have_preview != 0 or info.have_animation != 0) return error.Unsupported;
+	if (info.have_container != 0 or info.have_preview != 0) return error.Unsupported;
+	if (!(info.have_animation == 0 or info.have_animation == 1)) return error.InvalidArgs;
 	if (@intFromEnum(info.orientation) < 1 or @intFromEnum(info.orientation) > 8) return error.InvalidArgs;
 	if ((info.intrinsic_xsize == 0) != (info.intrinsic_ysize == 0)) return error.InvalidArgs;
 	if (info.bits_per_sample != 8 or info.exponent_bits_per_sample != 0) return error.Unsupported;
@@ -569,6 +607,12 @@ fn validateBasicInfoForSimpleEncode(info: *const JxlBasicInfo) !void {
 	if (!(info.relative_to_max_display == 0 or info.relative_to_max_display == 1)) return error.InvalidArgs;
 	if (info.linear_below < 0.0) return error.InvalidArgs;
 	if (info.relative_to_max_display != 0 and info.linear_below > 1.0) return error.InvalidArgs;
+	if (info.have_animation != 0) {
+		if (info.animation.tps_numerator == 0 or info.animation.tps_denominator == 0) return error.InvalidArgs;
+		if (!(info.animation.have_timecodes == 0 or info.animation.have_timecodes == 1)) return error.InvalidArgs;
+	} else {
+		if (info.animation.have_timecodes != 0) return error.InvalidArgs;
+	}
 	if (!(info.num_color_channels == 1 or info.num_color_channels == 3)) return error.Unsupported;
 	if (info.num_extra_channels == 0) {
 		if (info.alpha_bits != 0 or info.alpha_exponent_bits != 0 or info.alpha_premultiplied != 0) return error.Unsupported;
@@ -580,6 +624,27 @@ fn validateBasicInfoForSimpleEncode(info: *const JxlBasicInfo) !void {
 	}
 	if (info.alpha_bits != 8 or info.alpha_exponent_bits != 0) return error.Unsupported;
 	if (!(info.alpha_premultiplied == 0 or info.alpha_premultiplied == 1)) return error.Unsupported;
+}
+
+fn validateFrameHeaderForSimpleEncode(basic_info: *const JxlBasicInfo, frame_header: *const JxlFrameHeader) !void {
+	const zero_blend = std.mem.zeroes(JxlBlendInfo);
+	const zero_layer = std.mem.zeroes(JxlLayerInfo);
+
+	if (frame_header.name_length != 0) return error.Unsupported;
+	if (frame_header.is_last != 0) return error.Unsupported;
+	if (frame_header.layer_info.have_crop != 0) return error.Unsupported;
+	if (frame_header.layer_info.crop_x0 != 0 or frame_header.layer_info.crop_y0 != 0) return error.Unsupported;
+	if (frame_header.layer_info.xsize != 0 or frame_header.layer_info.ysize != 0) return error.Unsupported;
+	if (!std.meta.eql(frame_header.layer_info.blend_info, zero_blend)) return error.Unsupported;
+	if (frame_header.layer_info.save_as_reference != 0) return error.Unsupported;
+	if (!std.meta.eql(frame_header.layer_info, zero_layer)) return error.Unsupported;
+
+	if (basic_info.have_animation == 0) {
+		if (frame_header.duration != 0 or frame_header.timecode != 0) return error.Unsupported;
+		return;
+	}
+
+	if (basic_info.animation.have_timecodes == 0 and frame_header.timecode != 0) return error.InvalidArgs;
 }
 
 fn clearEncodedBytes(enc: *EncoderImpl) void {
@@ -613,6 +678,8 @@ fn clearPendingFrameBuffers(enc: *EncoderImpl) void {
 		.endianness = .JXL_NATIVE_ENDIAN,
 		.@"align" = 0,
 	};
+	enc.pending_frame_header_set = false;
+	enc.pending_frame_header = std.mem.zeroes(JxlFrameHeader);
 	for (&enc.pending_extra_channels) |*pending| {
 		if (pending.buffer.len != 0) {
 			std.heap.c_allocator.free(pending.buffer);
@@ -867,6 +934,15 @@ fn finalizeSimpleEncode(impl: *EncoderImpl) !void {
 		.orientation = @intCast(@intFromEnum(impl.basic_info.orientation)),
 		.intrinsic_width = impl.basic_info.intrinsic_xsize,
 		.intrinsic_height = impl.basic_info.intrinsic_ysize,
+		.have_animation = impl.basic_info.have_animation != 0,
+		.animation = .{
+			.tps_numerator = impl.basic_info.animation.tps_numerator,
+			.tps_denominator = impl.basic_info.animation.tps_denominator,
+			.num_loops = impl.basic_info.animation.num_loops,
+			.have_timecodes = impl.basic_info.animation.have_timecodes != 0,
+		},
+		.frame_duration = if (impl.pending_frame_header_set) impl.pending_frame_header.duration else 0,
+		.frame_timecode = if (impl.pending_frame_header_set) impl.pending_frame_header.timecode else 0,
 		.tone_mapping = .{
 			.intensity_target = impl.basic_info.intensity_target,
 			.min_nits = impl.basic_info.min_nits,
@@ -1396,14 +1472,17 @@ pub export fn JxlEncoderDestroy(enc_ptr: ?*JxlEncoder) void {
 pub export fn JxlEncoderFrameSettingsCreate(enc_ptr: ?*JxlEncoder, source_ptr: ?*const JxlEncoderFrameSettings) ?*JxlEncoderFrameSettings {
 	const enc = enc_ptr orelse return null;
 	const impl: *EncoderImpl = @ptrCast(@alignCast(enc));
+	var initial = EncoderFrameSettingsImpl{ .owner = impl };
 	if (source_ptr) |source| {
 		const source_impl: *const EncoderFrameSettingsImpl = @ptrCast(@alignCast(source));
 		if (source_impl.owner != impl) return null;
+		initial.frame_header_set = source_impl.frame_header_set;
+		initial.frame_header = source_impl.frame_header;
 	}
 
 	const settings = std.heap.c_allocator.create(EncoderFrameSettingsImpl) catch return null;
 	errdefer std.heap.c_allocator.destroy(settings);
-	settings.* = .{ .owner = impl };
+	settings.* = initial;
 	impl.frame_settings.append(std.heap.c_allocator, settings) catch return null;
 	return @ptrCast(settings);
 }
@@ -1496,6 +1575,19 @@ pub export fn JxlEncoderSetExtraChannelName(
 	return .JXL_ENC_SUCCESS;
 }
 
+pub export fn JxlEncoderSetFrameHeader(
+	frame_settings_ptr: ?*JxlEncoderFrameSettings,
+	frame_header_ptr: ?*const JxlFrameHeader,
+) JxlEncoderStatus {
+	const frame_settings = frame_settings_ptr orelse return .JXL_ENC_ERROR;
+	const settings_impl: *EncoderFrameSettingsImpl = @ptrCast(@alignCast(frame_settings));
+	const frame_header = frame_header_ptr orelse return .JXL_ENC_ERROR;
+	if (settings_impl.owner.added_frame or settings_impl.owner.started_processing) return .JXL_ENC_ERROR;
+	settings_impl.frame_header = frame_header.*;
+	settings_impl.frame_header_set = true;
+	return .JXL_ENC_SUCCESS;
+}
+
 pub export fn JxlEncoderAddImageFrame(
 	frame_settings_ptr: ?*const JxlEncoderFrameSettings,
 	format_ptr: ?*const JxlPixelFormat,
@@ -1520,6 +1612,9 @@ pub export fn JxlEncoderAddImageFrame(
 		impl.pending_extra_channels[0].info_set and
 		impl.pending_extra_channels[0].info.dim_shift != 0
 	) return .JXL_ENC_ERROR;
+	if (settings_impl.frame_header_set) {
+		validateFrameHeaderForSimpleEncode(&impl.basic_info, &settings_impl.frame_header) catch return .JXL_ENC_ERROR;
+	}
 
 	const stride = rowStrideBytes(impl.basic_info.xsize, format.*) orelse return .JXL_ENC_ERROR;
 	const needed = stride * impl.basic_info.ysize;
@@ -1529,6 +1624,8 @@ pub export fn JxlEncoderAddImageFrame(
 	const pixels: [*]const u8 = @ptrCast(data);
 	impl.image_bytes = std.heap.c_allocator.dupe(u8, pixels[0..needed]) catch return .JXL_ENC_ERROR;
 	impl.image_format = format.*;
+	impl.pending_frame_header_set = settings_impl.frame_header_set;
+	impl.pending_frame_header = settings_impl.frame_header;
 	impl.added_frame = true;
 	return .JXL_ENC_SUCCESS;
 }
@@ -2763,4 +2860,96 @@ test "JxlEncoder encodes a subsampled depth extra channel buffer" {
 	try testing.expectEqual(@as(usize, 2), image.channels.items[3].w);
 	try testing.expectEqual(@as(usize, 1), image.channels.items[3].h);
 	try testing.expectEqualSlices(i32, &.{ 100, 25 }, image.channels.items[3].data);
+}
+
+test "JxlEncoder encodes animation metadata and frame timing" {
+	const testing = std.testing;
+	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlEncoderDestroy(enc);
+
+	var info: JxlBasicInfo = undefined;
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 2;
+	info.ysize = 2;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 3;
+	info.have_animation = 1;
+	info.animation.tps_numerator = 24;
+	info.animation.tps_denominator = 1001;
+	info.animation.num_loops = 3;
+	info.animation.have_timecodes = 1;
+
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetBasicInfo(enc, &info));
+
+	var color = std.mem.zeroes(JxlColorEncoding);
+	JxlColorEncodingSetToSRGB(&color, 0);
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetColorEncoding(enc, &color));
+
+	const settings = JxlEncoderFrameSettingsCreate(enc, null) orelse return error.OutOfMemory;
+	var frame_header = std.mem.zeroes(JxlFrameHeader);
+	frame_header.duration = 7;
+	frame_header.timecode = 0x01020304;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetFrameHeader(settings, &frame_header));
+
+	const pixels = [_]u8{
+		0, 10, 20, 30, 40, 50,
+		60, 70, 80, 90, 100, 110,
+	};
+	const format = JxlPixelFormat{
+		.num_channels = 3,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderAddImageFrame(settings, &format, &pixels, pixels.len),
+	);
+
+	JxlEncoderCloseInput(enc);
+
+	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	defer encoded.deinit(testing.allocator);
+	while (true) {
+		var chunk: [23]u8 = undefined;
+		var next_out: [*]u8 = &chunk;
+		var avail_out: usize = chunk.len;
+		const status = JxlEncoderProcessOutput(enc, &next_out, &avail_out);
+		const produced = chunk.len - avail_out;
+		if (produced != 0) {
+			try encoded.appendSlice(testing.allocator, chunk[0..produced]);
+		}
+		switch (status) {
+			.JXL_ENC_SUCCESS => break,
+			.JXL_ENC_NEED_MORE_OUTPUT => continue,
+			else => return error.UnexpectedEncoderStatus,
+		}
+	}
+
+	var br = BitReader.init(encoded.items[2..]);
+	const size = headers.SizeHeader.readFromBitStream(&br);
+	const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+	const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+	try br.jumpToByteBoundary();
+
+	try testing.expectEqual(@as(usize, 2), size.xsize());
+	try testing.expectEqual(@as(usize, 2), size.ysize());
+	try testing.expect(metadata.have_animation);
+	try testing.expectEqual(@as(u32, 24), metadata.animation.tps_numerator);
+	try testing.expectEqual(@as(u32, 1001), metadata.animation.tps_denominator);
+	try testing.expectEqual(@as(u32, 3), metadata.animation.num_loops);
+	try testing.expect(metadata.animation.have_timecodes);
+
+	var codec_meta = image_metadata.CodecMetadata{};
+	codec_meta.size = size;
+	codec_meta.m = metadata;
+	codec_meta.transform_data = transform_data;
+
+	const frame_offset = br.totalBitsConsumed() / 8;
+	var frame_dec = dec_frame.FrameDecoder.init(testing.allocator, &codec_meta);
+	defer frame_dec.deinit();
+	var frame_br = BitReader.init(encoded.items[2 + frame_offset ..]);
+	try frame_dec.initFrame(&frame_br);
+	try testing.expectEqual(@as(u32, 7), frame_dec.frame_header.animation_frame.duration);
+	try testing.expectEqual(@as(u32, 0x01020304), frame_dec.frame_header.animation_frame.timecode);
 }

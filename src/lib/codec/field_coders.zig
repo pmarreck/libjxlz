@@ -29,7 +29,7 @@ pub const U32Distr = struct {
         return self.d & (k_direct - 1);
     }
 
-    pub fn extraBits(self: U32Distr) u5 {
+    pub fn extraBits(self: U32Distr) u6 {
         return @intCast((self.d & 0x1F) + 1);
     }
 
@@ -98,7 +98,7 @@ pub const U32Coder = struct {
     pub fn write(enc: U32Enc, value: u32, writer: anytype) !void {
         var found = false;
         var best_selector: u2 = 0;
-        var best_extra_bits: u5 = 0;
+        var best_extra_bits: u6 = 0;
         var best_extra_value: u32 = 0;
         var best_total_bits: usize = std.math.maxInt(usize);
 
@@ -107,7 +107,7 @@ pub const U32Coder = struct {
             const selector: u2 = @intCast(selector_index);
             const d = enc.getDistr(selector);
 
-            var extra_bits: u5 = 0;
+            var extra_bits: u6 = 0;
             var extra_value: u32 = 0;
             if (d.isDirect()) {
                 if (value != d.direct()) continue;

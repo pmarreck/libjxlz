@@ -428,7 +428,7 @@ pub const ImageMetadata = struct {
 };
 
 /// Emits the currently-supported codestream metadata surface: orientation,
-/// intrinsic-size, and tone-mapping extra fields, alpha/plain/spot/CFA extras,
+/// intrinsic-size, animation, and tone-mapping extra fields, alpha/plain/spot/CFA extras,
 /// non-XYB grayscale/RGB color encodings, and no extensions.
 pub fn writeImageMetadata(metadata: *const ImageMetadata, writer: anytype) !void {
     if (metadata.extensions != 0) return error.Unsupported;
@@ -439,7 +439,7 @@ pub fn writeImageMetadata(metadata: *const ImageMetadata, writer: anytype) !void
         metadata.have_animation or
         metadata.have_intrinsic_size or
         !tone_mapping_default;
-    if (metadata.have_preview or metadata.have_animation) {
+    if (metadata.have_preview) {
 		return error.Unsupported;
 	}
     if (metadata.orientation < 1 or metadata.orientation > 8) return error.Unsupported;
@@ -456,7 +456,10 @@ pub fn writeImageMetadata(metadata: *const ImageMetadata, writer: anytype) !void
 			try headers.writeSizeHeader(&metadata.intrinsic_size, writer);
 		}
 		try writer.write(1, 0); // have_preview = false
-		try writer.write(1, 0); // have_animation = false
+		try writer.write(1, @intFromBool(metadata.have_animation));
+		if (metadata.have_animation) {
+			try headers.writeAnimationHeader(&metadata.animation, writer);
+		}
 	}
     try writeBitDepth(&metadata.bit_depth, writer);
     try writer.write(1, @intFromBool(metadata.modular_16_bit_buffer_sufficient));
@@ -927,6 +930,34 @@ test "writeImageMetadata round-trips non-default orientation and intrinsic size"
 	try testing.expect(roundtrip.have_intrinsic_size);
 	try testing.expectEqual(@as(usize, 9), roundtrip.intrinsic_size.xsize());
 	try testing.expectEqual(@as(usize, 7), roundtrip.intrinsic_size.ysize());
+}
+
+test "writeImageMetadata round-trips non-default animation metadata" {
+	const allocator = testing.allocator;
+	const data = @embedFile("../testdata/lossless_4x4.jxl");
+	const extracted = try extractMetadataBits(data);
+
+	var metadata = extracted.metadata;
+	metadata.have_animation = true;
+	metadata.animation = .{
+		.tps_numerator = 24,
+		.tps_denominator = 1001,
+		.num_loops = 3,
+		.have_timecodes = true,
+	};
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writeImageMetadata(&metadata, &writer);
+	try writer.zeroPadToByte();
+
+	var br = BitReader.init(writer.bytes());
+	const roundtrip = try ImageMetadata.readFromBitStream(&br);
+	try testing.expect(roundtrip.have_animation);
+	try testing.expectEqual(@as(u32, 24), roundtrip.animation.tps_numerator);
+	try testing.expectEqual(@as(u32, 1001), roundtrip.animation.tps_denominator);
+	try testing.expectEqual(@as(u32, 3), roundtrip.animation.num_loops);
+	try testing.expect(roundtrip.animation.have_timecodes);
 }
 
 test "BitDepth default (8-bit uint)" {
