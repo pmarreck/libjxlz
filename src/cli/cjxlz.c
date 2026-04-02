@@ -10,6 +10,10 @@
 #include <png.h>
 #endif
 
+#ifdef JXLZ_HAVE_GIF_INPUT
+#include <gif_lib.h>
+#endif
+
 typedef struct {
 	uint32_t width;
 	uint32_t height;
@@ -32,6 +36,27 @@ typedef struct {
 	size_t file_size;
 	ParsedImage image;
 } ParsedExtraInput;
+
+typedef struct {
+	ParsedImage image;
+	uint32_t duration;
+	uint32_t timecode;
+} ParsedAnimationFrame;
+
+typedef struct {
+	uint32_t width;
+	uint32_t height;
+	uint32_t channels;
+	uint32_t num_color_channels;
+	uint32_t num_extra_channels;
+	uint32_t tps_numerator;
+	uint32_t tps_denominator;
+	uint32_t num_loops;
+	ParsedAnimationFrame* frames;
+	size_t frame_count;
+} ParsedAnimation;
+
+static void free_parsed_image(ParsedImage* image);
 
 static const char* platform_name(void) {
 #if defined(__APPLE__)
@@ -87,6 +112,9 @@ static void print_help(FILE* out) {
 		"                              cfa:N\n\n"
 		"Formats:\n"
 		"  INPUT may be "
+#ifdef JXLZ_HAVE_GIF_INPUT
+		"GIF, "
+#endif
 #ifdef JXLZ_HAVE_PNG_INPUT
 		"PNG, "
 #endif
@@ -544,6 +572,10 @@ static int has_png_signature(const uint8_t* data, size_t size) {
 	return size >= sizeof(signature) && memcmp(data, signature, sizeof(signature)) == 0;
 }
 
+static int has_gif_signature(const uint8_t* data, size_t size) {
+	return size >= 6 && (memcmp(data, "GIF87a", 6) == 0 || memcmp(data, "GIF89a", 6) == 0);
+}
+
 #ifdef JXLZ_HAVE_PNG_INPUT
 static int parse_png(const uint8_t* data, size_t size, ParsedImage* image, char* err, size_t err_cap) {
 	png_image png_image_state;
@@ -595,6 +627,289 @@ static int parse_png(const uint8_t* data, size_t size, ParsedImage* image, char*
 }
 #endif
 
+#ifdef JXLZ_HAVE_GIF_INPUT
+typedef struct {
+	const uint8_t* bytes;
+	size_t size;
+	size_t pos;
+} GifReadState;
+
+static int gif_read_from_memory(GifFileType* gif, GifByteType* out, int count) {
+	GifReadState* state = (GifReadState*)gif->UserData;
+	size_t remaining = state->pos < state->size ? state->size - state->pos : 0;
+	size_t want = count < 0 ? 0 : (size_t)count;
+	if (want > remaining) want = remaining;
+	if (want == 0) return 0;
+	memcpy(out, state->bytes + state->pos, want);
+	state->pos += want;
+	return (int)want;
+}
+
+static uint32_t parse_gif_loop_count(const GifFileType* gif) {
+	for (int image_index = 0; image_index < gif->ImageCount; ++image_index) {
+		const SavedImage* image = &gif->SavedImages[image_index];
+		int saw_netscape = 0;
+		for (int ext_index = 0; ext_index < image->ExtensionBlockCount; ++ext_index) {
+			const ExtensionBlock* block = &image->ExtensionBlocks[ext_index];
+			if (
+				block->Function == APPLICATION_EXT_FUNC_CODE &&
+				block->ByteCount >= 11 &&
+				(
+					memcmp(block->Bytes, "NETSCAPE2.0", 11) == 0 ||
+					memcmp(block->Bytes, "ANIMEXTS1.0", 11) == 0
+				)
+			) {
+				saw_netscape = 1;
+				continue;
+			}
+			if (
+				saw_netscape &&
+				block->Function == CONTINUE_EXT_FUNC_CODE &&
+				block->ByteCount >= 3 &&
+				block->Bytes[0] == 1
+			) {
+				return (uint32_t)block->Bytes[1] | ((uint32_t)block->Bytes[2] << 8);
+			}
+		}
+	}
+	return 1;
+}
+
+static void clear_gif_rect(
+	uint8_t* canvas,
+	uint32_t canvas_width,
+	uint32_t canvas_height,
+	uint32_t left,
+	uint32_t top,
+	uint32_t width,
+	uint32_t height,
+	const uint8_t background[4]
+) {
+	if (left >= canvas_width || top >= canvas_height) return;
+	if (width > canvas_width - left) width = canvas_width - left;
+	if (height > canvas_height - top) height = canvas_height - top;
+	for (uint32_t y = 0; y < height; ++y) {
+		uint8_t* row = canvas + (((size_t)(top + y) * canvas_width + left) * 4);
+		for (uint32_t x = 0; x < width; ++x) {
+			memcpy(row + (size_t)x * 4, background, 4);
+		}
+	}
+}
+
+static int parse_gif_animation(const uint8_t* data, size_t size, ParsedAnimation* animation, char* err, size_t err_cap) {
+	memset(animation, 0, sizeof(*animation));
+
+	GifReadState state = { data, size, 0 };
+	int gif_error = GIF_OK;
+	GifFileType* gif = DGifOpen(&state, gif_read_from_memory, &gif_error);
+	if (!gif) {
+		snprintf(err, err_cap, "failed to open GIF: %s", GifErrorString(gif_error));
+		return 0;
+	}
+
+	if (DGifSlurp(gif) != GIF_OK) {
+		snprintf(err, err_cap, "failed to read GIF: %s", GifErrorString(gif->Error));
+		DGifCloseFile(gif, NULL);
+		return 0;
+	}
+
+	if (gif->SWidth <= 0 || gif->SHeight <= 0 || gif->ImageCount <= 0) {
+		snprintf(err, err_cap, "invalid GIF dimensions or frame count");
+		DGifCloseFile(gif, NULL);
+		return 0;
+	}
+
+	if (!gif->SColorMap) {
+		for (int i = 0; i < gif->ImageCount; ++i) {
+			if (!gif->SavedImages[i].ImageDesc.ColorMap) {
+				snprintf(err, err_cap, "GIF frame is missing a color map");
+				DGifCloseFile(gif, NULL);
+				return 0;
+			}
+		}
+	}
+
+	const uint32_t width = (uint32_t)gif->SWidth;
+	const uint32_t height = (uint32_t)gif->SHeight;
+	const size_t pixel_count = (size_t)width * height;
+	if (width == 0 || height == 0 || pixel_count / width != height) {
+		snprintf(err, err_cap, "GIF dimensions overflow");
+		DGifCloseFile(gif, NULL);
+		return 0;
+	}
+
+	uint8_t background[4] = { 0, 0, 0, 0 };
+	if (gif->SColorMap && gif->SBackGroundColor >= 0 && gif->SBackGroundColor < gif->SColorMap->ColorCount) {
+		const GifColorType color = gif->SColorMap->Colors[gif->SBackGroundColor];
+		background[0] = color.Red;
+		background[1] = color.Green;
+		background[2] = color.Blue;
+	}
+
+	uint8_t* canvas = (uint8_t*)malloc(pixel_count * 4);
+	uint8_t* composed = (uint8_t*)malloc(pixel_count * 4);
+	ParsedAnimationFrame* frames = (ParsedAnimationFrame*)calloc((size_t)gif->ImageCount, sizeof(*frames));
+	if (!canvas || !composed || !frames) {
+		snprintf(err, err_cap, "GIF frame allocation failed");
+		free(canvas);
+		free(composed);
+		free(frames);
+		DGifCloseFile(gif, NULL);
+		return 0;
+	}
+	for (size_t i = 0; i < pixel_count; ++i) {
+		memcpy(canvas + i * 4, background, 4);
+	}
+
+	int seen_alpha = 0;
+	for (int image_index = 0; image_index < gif->ImageCount; ++image_index) {
+		const SavedImage* image = &gif->SavedImages[image_index];
+		const GifImageDesc* desc = &image->ImageDesc;
+		if (
+			desc->Left < 0 || desc->Top < 0 || desc->Width < 0 || desc->Height < 0 ||
+			(uint32_t)desc->Left > width ||
+			(uint32_t)desc->Top > height ||
+			(uint32_t)desc->Width > width - (uint32_t)desc->Left ||
+			(uint32_t)desc->Height > height - (uint32_t)desc->Top
+		) {
+			snprintf(err, err_cap, "GIF frame extends outside the canvas");
+			goto fail;
+		}
+
+		const ColorMapObject* color_map = desc->ColorMap ? desc->ColorMap : gif->SColorMap;
+		if (!color_map) {
+			snprintf(err, err_cap, "GIF frame has no color map");
+			goto fail;
+		}
+
+		GraphicsControlBlock gcb;
+		if (DGifSavedExtensionToGCB(gif, image_index, &gcb) == GIF_ERROR) {
+			memset(&gcb, 0, sizeof(gcb));
+			gcb.TransparentColor = NO_TRANSPARENT_COLOR;
+		}
+
+		memcpy(composed, canvas, pixel_count * 4);
+		size_t raster_index = 0;
+		for (uint32_t y = 0; y < (uint32_t)desc->Height; ++y) {
+			uint8_t* row = composed + (((size_t)((uint32_t)desc->Top + y) * width + (uint32_t)desc->Left) * 4);
+			for (uint32_t x = 0; x < (uint32_t)desc->Width; ++x, ++raster_index) {
+				const GifByteType color_index = image->RasterBits[raster_index];
+				if (color_index >= color_map->ColorCount) {
+					snprintf(err, err_cap, "GIF color index is out of bounds");
+					goto fail;
+				}
+				if (gcb.TransparentColor != NO_TRANSPARENT_COLOR && color_index == (GifByteType)gcb.TransparentColor) {
+					continue;
+				}
+				const GifColorType color = color_map->Colors[color_index];
+				uint8_t* pixel = row + (size_t)x * 4;
+				pixel[0] = color.Red;
+				pixel[1] = color.Green;
+				pixel[2] = color.Blue;
+				pixel[3] = 255;
+			}
+		}
+
+		frames[image_index].image.width = width;
+		frames[image_index].image.height = height;
+		frames[image_index].image.channels = 4;
+		frames[image_index].image.num_color_channels = 3;
+		frames[image_index].image.num_extra_channels = 1;
+		frames[image_index].image.pixels_size = pixel_count * 4;
+		frames[image_index].image.owned_pixels = (uint8_t*)malloc(pixel_count * 4);
+		if (!frames[image_index].image.owned_pixels) {
+			snprintf(err, err_cap, "GIF frame allocation failed");
+			goto fail;
+		}
+		memcpy(frames[image_index].image.owned_pixels, composed, pixel_count * 4);
+		frames[image_index].image.pixels = frames[image_index].image.owned_pixels;
+		frames[image_index].duration = (uint32_t)gcb.DelayTime;
+		frames[image_index].timecode = 0;
+
+		for (size_t pixel_index = 0; pixel_index < pixel_count; ++pixel_index) {
+			if (composed[pixel_index * 4 + 3] != 255) {
+				seen_alpha = 1;
+				break;
+			}
+		}
+
+		switch (gcb.DisposalMode) {
+			case DISPOSE_DO_NOT:
+			case DISPOSAL_UNSPECIFIED:
+				memcpy(canvas, composed, pixel_count * 4);
+				break;
+			case DISPOSE_BACKGROUND:
+				memcpy(canvas, composed, pixel_count * 4);
+				clear_gif_rect(
+					canvas,
+					width,
+					height,
+					(uint32_t)desc->Left,
+					(uint32_t)desc->Top,
+					(uint32_t)desc->Width,
+					(uint32_t)desc->Height,
+					background
+				);
+				break;
+			case DISPOSE_PREVIOUS:
+				break;
+			default:
+				memcpy(canvas, composed, pixel_count * 4);
+				break;
+		}
+	}
+
+	if (!seen_alpha) {
+		for (int image_index = 0; image_index < gif->ImageCount; ++image_index) {
+			uint8_t* rgb = (uint8_t*)malloc(pixel_count * 3);
+			if (!rgb) {
+				snprintf(err, err_cap, "GIF RGB allocation failed");
+				goto fail;
+			}
+			for (size_t pixel_index = 0; pixel_index < pixel_count; ++pixel_index) {
+				const uint8_t* rgba = frames[image_index].image.owned_pixels + pixel_index * 4;
+				uint8_t* rgb_px = rgb + pixel_index * 3;
+				rgb_px[0] = rgba[0];
+				rgb_px[1] = rgba[1];
+				rgb_px[2] = rgba[2];
+			}
+			free(frames[image_index].image.owned_pixels);
+			frames[image_index].image.owned_pixels = rgb;
+			frames[image_index].image.pixels = rgb;
+			frames[image_index].image.channels = 3;
+			frames[image_index].image.num_extra_channels = 0;
+			frames[image_index].image.pixels_size = pixel_count * 3;
+		}
+	}
+
+	animation->width = width;
+	animation->height = height;
+	animation->channels = seen_alpha ? 4 : 3;
+	animation->num_color_channels = 3;
+	animation->num_extra_channels = seen_alpha ? 1 : 0;
+	animation->tps_numerator = 100;
+	animation->tps_denominator = 1;
+	animation->num_loops = parse_gif_loop_count(gif);
+	animation->frames = frames;
+	animation->frame_count = (size_t)gif->ImageCount;
+
+	free(canvas);
+	free(composed);
+	DGifCloseFile(gif, NULL);
+	return 1;
+
+fail:
+	for (int i = 0; i < gif->ImageCount; ++i) {
+		free_parsed_image(&frames[i].image);
+	}
+	free(frames);
+	free(canvas);
+	free(composed);
+	DGifCloseFile(gif, NULL);
+	return 0;
+}
+#endif
+
 static int parse_input_image(const uint8_t* data, size_t size, ParsedImage* image, char* err, size_t err_cap) {
 	if (has_png_signature(data, size)) {
 #ifdef JXLZ_HAVE_PNG_INPUT
@@ -611,6 +926,17 @@ static void free_parsed_image(ParsedImage* image) {
 	if (!image) return;
 	free(image->owned_pixels);
 	memset(image, 0, sizeof(*image));
+}
+
+static void free_parsed_animation(ParsedAnimation* animation) {
+	if (!animation) return;
+	if (animation->frames) {
+		for (size_t i = 0; i < animation->frame_count; ++i) {
+			free_parsed_image(&animation->frames[i].image);
+		}
+	}
+	free(animation->frames);
+	memset(animation, 0, sizeof(*animation));
 }
 
 static int parse_extra_input(ParsedExtraInput* extra, uint32_t width, uint32_t height, char* err, size_t err_cap) {
@@ -649,6 +975,193 @@ static int parse_extra_input(ParsedExtraInput* extra, uint32_t width, uint32_t h
 		);
 		return 0;
 	}
+	return 1;
+}
+
+static int encode_animation(
+	const ParsedAnimation* animation,
+	int alpha_premultiplied,
+	int linear_srgb,
+	JxlRenderingIntent rendering_intent,
+	const char* alpha_name,
+	float intensity_target,
+	float min_nits,
+	int relative_to_max_display,
+	float linear_below,
+	int orientation,
+	uint32_t intrinsic_width,
+	uint32_t intrinsic_height,
+	uint32_t animation_tps_numerator,
+	uint32_t animation_tps_denominator,
+	uint32_t animation_loops,
+	uint8_t** encoded_out,
+	size_t* encoded_size_out,
+	char* err,
+	size_t err_cap
+) {
+	if (!animation || animation->frame_count == 0) {
+		snprintf(err, err_cap, "animation must contain at least one frame");
+		return 0;
+	}
+	if (animation->channels != 3 && animation->channels != 4) {
+		snprintf(err, err_cap, "only RGB and RGBA animation frames are supported");
+		return 0;
+	}
+	for (size_t i = 0; i < animation->frame_count; ++i) {
+		const ParsedImage* frame = &animation->frames[i].image;
+		if (
+			frame->width != animation->width ||
+			frame->height != animation->height ||
+			frame->channels != animation->channels ||
+			frame->num_color_channels != animation->num_color_channels ||
+			frame->num_extra_channels != animation->num_extra_channels
+		) {
+			snprintf(err, err_cap, "all animation frames must share geometry and pixel format");
+			return 0;
+		}
+	}
+
+	JxlBasicInfo info;
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = animation->width;
+	info.ysize = animation->height;
+	info.bits_per_sample = 8;
+	info.num_color_channels = animation->num_color_channels;
+	info.num_extra_channels = animation->num_extra_channels;
+	info.alpha_bits = animation->num_extra_channels != 0 ? 8 : 0;
+	info.intensity_target = intensity_target;
+	info.min_nits = min_nits;
+	info.relative_to_max_display = relative_to_max_display ? 1 : 0;
+	info.linear_below = linear_below;
+	info.orientation = (JxlOrientation)orientation;
+	info.intrinsic_xsize = intrinsic_width;
+	info.intrinsic_ysize = intrinsic_height;
+	info.have_animation = 1;
+	info.animation.tps_numerator = animation_tps_numerator;
+	info.animation.tps_denominator = animation_tps_denominator;
+	info.animation.num_loops = animation_loops;
+	info.animation.have_timecodes = 0;
+	for (size_t i = 0; i < animation->frame_count; ++i) {
+		if (animation->frames[i].timecode != 0) {
+			info.animation.have_timecodes = 1;
+			break;
+		}
+	}
+	if (info.alpha_bits == 0 && alpha_premultiplied) {
+		snprintf(err, err_cap, "--premultiplied-alpha requires an alpha channel");
+		return 0;
+	}
+	if (info.alpha_bits == 0 && alpha_name) {
+		snprintf(err, err_cap, "--alpha-name requires an alpha channel");
+		return 0;
+	}
+	info.alpha_premultiplied = alpha_premultiplied ? 1 : 0;
+
+	JxlColorEncoding color;
+	if (linear_srgb) {
+		JxlColorEncodingSetToLinearSRGB(&color, 0);
+	} else {
+		JxlColorEncodingSetToSRGB(&color, 0);
+	}
+	color.rendering_intent = rendering_intent;
+
+	JxlPixelFormat format = {
+		animation->channels,
+		JXL_TYPE_UINT8,
+		JXL_NATIVE_ENDIAN,
+		0,
+	};
+
+	JxlEncoder* enc = JxlEncoderCreate(NULL);
+	if (!enc) {
+		snprintf(err, err_cap, "JxlEncoderCreate failed");
+		return 0;
+	}
+	if (JxlEncoderSetBasicInfo(enc, &info) != JXL_ENC_SUCCESS) {
+		snprintf(err, err_cap, "JxlEncoderSetBasicInfo failed");
+		JxlEncoderDestroy(enc);
+		return 0;
+	}
+	if (JxlEncoderSetColorEncoding(enc, &color) != JXL_ENC_SUCCESS) {
+		snprintf(err, err_cap, "JxlEncoderSetColorEncoding failed");
+		JxlEncoderDestroy(enc);
+		return 0;
+	}
+	if (alpha_name) {
+		JxlExtraChannelInfo alpha;
+		JxlEncoderInitExtraChannelInfo(JXL_CHANNEL_ALPHA, &alpha);
+		alpha.alpha_premultiplied = info.alpha_premultiplied;
+		if (JxlEncoderSetExtraChannelInfo(enc, 0, &alpha) != JXL_ENC_SUCCESS) {
+			snprintf(err, err_cap, "JxlEncoderSetExtraChannelInfo failed");
+			JxlEncoderDestroy(enc);
+			return 0;
+		}
+		if (JxlEncoderSetExtraChannelName(enc, 0, alpha_name, strlen(alpha_name)) != JXL_ENC_SUCCESS) {
+			snprintf(err, err_cap, "JxlEncoderSetExtraChannelName failed");
+			JxlEncoderDestroy(enc);
+			return 0;
+		}
+	}
+
+	for (size_t i = 0; i < animation->frame_count; ++i) {
+		JxlEncoderFrameSettings* settings = JxlEncoderFrameSettingsCreate(enc, NULL);
+		if (!settings) {
+			snprintf(err, err_cap, "JxlEncoderFrameSettingsCreate failed");
+			JxlEncoderDestroy(enc);
+			return 0;
+		}
+		JxlFrameHeader frame_header;
+		memset(&frame_header, 0, sizeof(frame_header));
+		frame_header.duration = animation->frames[i].duration;
+		frame_header.timecode = animation->frames[i].timecode;
+		if (JxlEncoderSetFrameHeader(settings, &frame_header) != JXL_ENC_SUCCESS) {
+			snprintf(err, err_cap, "JxlEncoderSetFrameHeader failed");
+			JxlEncoderDestroy(enc);
+			return 0;
+		}
+		if (
+			JxlEncoderAddImageFrame(
+				settings,
+				&format,
+				animation->frames[i].image.pixels,
+				animation->frames[i].image.pixels_size
+			) != JXL_ENC_SUCCESS
+		) {
+			snprintf(err, err_cap, "JxlEncoderAddImageFrame failed");
+			JxlEncoderDestroy(enc);
+			return 0;
+		}
+	}
+
+	JxlEncoderCloseFrames(enc);
+
+	uint8_t* encoded = NULL;
+	size_t encoded_size = 0;
+	size_t encoded_cap = 0;
+	for (;;) {
+		uint8_t chunk[64];
+		uint8_t* next_out = chunk;
+		size_t avail_out = sizeof(chunk);
+		JxlEncoderStatus status = JxlEncoderProcessOutput(enc, &next_out, &avail_out);
+		size_t produced = sizeof(chunk) - avail_out;
+		if (produced && !append_chunk(&encoded, &encoded_size, &encoded_cap, chunk, produced)) {
+			snprintf(err, err_cap, "append encoded bytes failed");
+			free(encoded);
+			JxlEncoderDestroy(enc);
+			return 0;
+		}
+		if (status == JXL_ENC_SUCCESS) break;
+		if (status != JXL_ENC_NEED_MORE_OUTPUT) {
+			snprintf(err, err_cap, "JxlEncoderProcessOutput failed");
+			free(encoded);
+			JxlEncoderDestroy(enc);
+			return 0;
+		}
+	}
+
+	JxlEncoderDestroy(enc);
+	*encoded_out = encoded;
+	*encoded_size_out = encoded_size;
 	return 1;
 }
 
@@ -911,6 +1424,10 @@ int cjxlz_main(int argc, char** argv) {
 	uint32_t animation_loops = 0;
 	uint32_t frame_duration = 0;
 	uint32_t frame_timecode = 0;
+	int animation_tps_set = 0;
+	int animation_loops_set = 0;
+	int frame_duration_set = 0;
+	int frame_timecode_set = 0;
 	ParsedExtraInput extras[MAX_EXTRA_INPUTS];
 	memset(extras, 0, sizeof(extras));
 	size_t extra_count = 0;
@@ -1001,6 +1518,7 @@ int cjxlz_main(int argc, char** argv) {
 				return 2;
 			}
 			have_animation = 1;
+			animation_tps_set = 1;
 			i += 1;
 			continue;
 		}
@@ -1010,6 +1528,7 @@ int cjxlz_main(int argc, char** argv) {
 				return 2;
 			}
 			have_animation = 1;
+			animation_loops_set = 1;
 			i += 1;
 			continue;
 		}
@@ -1019,6 +1538,7 @@ int cjxlz_main(int argc, char** argv) {
 				return 2;
 			}
 			have_animation = 1;
+			frame_duration_set = 1;
 			i += 1;
 			continue;
 		}
@@ -1028,6 +1548,7 @@ int cjxlz_main(int argc, char** argv) {
 				return 2;
 			}
 			have_animation = 1;
+			frame_timecode_set = 1;
 			i += 1;
 			continue;
 		}
@@ -1075,68 +1596,176 @@ int cjxlz_main(int argc, char** argv) {
 
 	char err[256];
 	err[0] = '\0';
-	ParsedImage image;
-	if (!parse_input_image(input, input_size, &image, err, sizeof(err))) {
-		fprintf(stderr, "%s\n", err[0] ? err : "parse failed");
+	uint8_t* encoded = NULL;
+	size_t encoded_size = 0;
+	if (has_gif_signature(input, input_size)) {
+#ifdef JXLZ_HAVE_GIF_INPUT
+		ParsedAnimation animation;
+		if (!parse_gif_animation(input, input_size, &animation, err, sizeof(err))) {
+			fprintf(stderr, "%s\n", err[0] ? err : "GIF parse failed");
+			free(input);
+			return 1;
+		}
+		if (extra_count != 0) {
+			fprintf(stderr, "GIF input does not support --extra yet\n");
+			free_parsed_animation(&animation);
+			free(input);
+			return 1;
+		}
+		if (frame_timecode_set) {
+			fprintf(stderr, "--frame-timecode is not supported for GIF input\n");
+			free_parsed_animation(&animation);
+			free(input);
+			return 1;
+		}
+
+		if (frame_duration_set) {
+			for (size_t i = 0; i < animation.frame_count; ++i) {
+				animation.frames[i].duration = frame_duration;
+			}
+		}
+		if (!animation_tps_set) {
+			animation_tps_numerator = animation.tps_numerator;
+			animation_tps_denominator = animation.tps_denominator;
+		}
+		if (!animation_loops_set) {
+			animation_loops = animation.num_loops;
+		}
+
+		if (
+			animation.frame_count > 1 ||
+			have_animation ||
+			animation_tps_set ||
+			animation_loops_set ||
+			frame_duration_set
+		) {
+			if (!encode_animation(
+				&animation,
+				alpha_premultiplied,
+				linear_srgb,
+				rendering_intent,
+				alpha_name,
+				intensity_target,
+				min_nits,
+				relative_to_max_display,
+				linear_below,
+				orientation,
+				intrinsic_width,
+				intrinsic_height,
+				animation_tps_numerator,
+				animation_tps_denominator,
+				animation_loops,
+				&encoded,
+				&encoded_size,
+				err,
+				sizeof(err)
+			)) {
+				fprintf(stderr, "%s\n", err[0] ? err : "animation encode failed");
+				free_parsed_animation(&animation);
+				free(input);
+				return 1;
+			}
+		} else {
+			if (!encode_image(
+				&animation.frames[0].image,
+				extras,
+				0,
+				alpha_premultiplied,
+				linear_srgb,
+				rendering_intent,
+				alpha_name,
+				intensity_target,
+				min_nits,
+				relative_to_max_display,
+				linear_below,
+				orientation,
+				intrinsic_width,
+				intrinsic_height,
+				0,
+				100,
+				1,
+				0,
+				0,
+				0,
+				&encoded,
+				&encoded_size,
+				err,
+				sizeof(err)
+			)) {
+				fprintf(stderr, "%s\n", err[0] ? err : "encode failed");
+				free_parsed_animation(&animation);
+				free(input);
+				return 1;
+			}
+		}
+		free_parsed_animation(&animation);
+#else
+		fprintf(stderr, "gif input is not supported in this build\n");
 		free(input);
 		return 1;
-	}
+#endif
+	} else {
+		ParsedImage image;
+		if (!parse_input_image(input, input_size, &image, err, sizeof(err))) {
+			fprintf(stderr, "%s\n", err[0] ? err : "parse failed");
+			free(input);
+			return 1;
+		}
 
-	for (size_t i = 0; i < extra_count; ++i) {
-		if (!parse_extra_input(&extras[i], image.width, image.height, err, sizeof(err))) {
-			fprintf(stderr, "%s\n", err[0] ? err : "extra parse failed");
-			for (size_t j = 0; j < extra_count; ++j) {
-				free_parsed_image(&extras[j].image);
-				free(extras[j].file_data);
+		for (size_t i = 0; i < extra_count; ++i) {
+			if (!parse_extra_input(&extras[i], image.width, image.height, err, sizeof(err))) {
+				fprintf(stderr, "%s\n", err[0] ? err : "extra parse failed");
+				for (size_t j = 0; j < extra_count; ++j) {
+					free_parsed_image(&extras[j].image);
+					free(extras[j].file_data);
+				}
+				free_parsed_image(&image);
+				free(input);
+				return 1;
+			}
+		}
+
+		if (!encode_image(
+			&image,
+			extras,
+			extra_count,
+			alpha_premultiplied,
+			linear_srgb,
+			rendering_intent,
+			alpha_name,
+			intensity_target,
+			min_nits,
+			relative_to_max_display,
+			linear_below,
+			orientation,
+			intrinsic_width,
+			intrinsic_height,
+			have_animation,
+			animation_tps_numerator,
+			animation_tps_denominator,
+			animation_loops,
+			frame_duration,
+			frame_timecode,
+			&encoded,
+			&encoded_size,
+			err,
+			sizeof(err)
+		)) {
+			fprintf(stderr, "%s\n", err[0] ? err : "encode failed");
+			for (size_t i = 0; i < extra_count; ++i) {
+				free_parsed_image(&extras[i].image);
+				free(extras[i].file_data);
 			}
 			free_parsed_image(&image);
 			free(input);
 			return 1;
 		}
-	}
-
-	uint8_t* encoded = NULL;
-	size_t encoded_size = 0;
-	if (!encode_image(
-		&image,
-		extras,
-		extra_count,
-		alpha_premultiplied,
-		linear_srgb,
-		rendering_intent,
-		alpha_name,
-		intensity_target,
-		min_nits,
-		relative_to_max_display,
-		linear_below,
-		orientation,
-		intrinsic_width,
-		intrinsic_height,
-		have_animation,
-		animation_tps_numerator,
-		animation_tps_denominator,
-		animation_loops,
-		frame_duration,
-		frame_timecode,
-		&encoded,
-		&encoded_size,
-		err,
-		sizeof(err)
-	)) {
-		fprintf(stderr, "%s\n", err[0] ? err : "encode failed");
 		for (size_t i = 0; i < extra_count; ++i) {
 			free_parsed_image(&extras[i].image);
 			free(extras[i].file_data);
 		}
 		free_parsed_image(&image);
-		free(input);
-		return 1;
 	}
-	for (size_t i = 0; i < extra_count; ++i) {
-		free_parsed_image(&extras[i].image);
-		free(extras[i].file_data);
-	}
-	free_parsed_image(&image);
 	free(input);
 
 	FILE* out = open_output(output_path);

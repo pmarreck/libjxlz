@@ -8,6 +8,11 @@ pub fn build(b: *std.Build) void {
 		"Optimization mode (default: ReleaseFast)",
 	) orelse .ReleaseFast;
 	const png_input = b.option(bool, "png_input", "Enable PNG input support in cjxlz (default: true)") orelse true;
+	const gif_input = b.option(bool, "gif_input", "Enable GIF input support in cjxlz (default: true)") orelse true;
+	const gif_include_dir = std.process.getEnvVarOwned(b.allocator, "GIF_INCLUDE_DIR") catch null;
+	const gif_lib_dir = std.process.getEnvVarOwned(b.allocator, "GIF_LIB_DIR") catch null;
+	defer if (gif_include_dir) |path| b.allocator.free(path);
+	defer if (gif_lib_dir) |path| b.allocator.free(path);
 
 	const root_module = b.createModule(.{
 		.root_source_file = b.path("src/root.zig"),
@@ -89,6 +94,16 @@ pub fn build(b: *std.Build) void {
 	if (png_input) {
 		cjxlz.root_module.addCMacro("JXLZ_HAVE_PNG_INPUT", "1");
 		cjxlz.linkSystemLibrary2("libpng", .{ .use_pkg_config = .force });
+	}
+	if (gif_input) {
+		cjxlz.root_module.addCMacro("JXLZ_HAVE_GIF_INPUT", "1");
+		if (gif_include_dir) |path| {
+			cjxlz.addIncludePath(.{ .cwd_relative = path });
+		}
+		if (gif_lib_dir) |path| {
+			cjxlz.root_module.addLibraryPath(.{ .cwd_relative = path });
+		}
+		cjxlz.linkSystemLibrary("gif");
 	}
 	if (target.result.os.tag != .windows and png_input) {
 		cjxlz.linkSystemLibrary("m");

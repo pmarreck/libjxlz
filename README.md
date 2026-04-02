@@ -18,6 +18,7 @@ Current status is lossless-modular first:
 - `djxlz`, a C CLI that talks only through that C API
 - first narrow `libjxl`-shaped encoder C API slice
 - `cjxlz`, a C CLI that talks only through that C API
+- first GIF-to-JXL animation conversion path through that public encoder API
 - CI coverage for Linux `x86_64`/`aarch64`, macOS `aarch64`, and Windows
   `x86_64` cross-compilation
 - checked-in public-API benchmark harness against upstream `libjxl`
@@ -28,11 +29,11 @@ Marreck with Codex (`gpt-5.4-xhigh`, per session attribution request).
 
 ## Current Wins
 
-As of April 1, 2026, the checked-in public C API benchmark (`./bm`) shows a real
+As of April 2, 2026, the checked-in public C API benchmark (`./bm`) shows a real
 decode lead over upstream `libjxl` on this Apple Silicon development machine:
 
-- full committed corpus: `70.8 ms` vs `77.0 ms` (`~1.09x` faster)
-- large modular multigroup fixture: `1.081 s` vs `1.175 s` (`~1.09x` faster)
+- full committed corpus: `70.5 ms` vs `76.7 ms` (`~1.09x` faster)
+- large modular multigroup fixture: `1.084 s` vs `1.199 s` (`~1.11x` faster)
 
 The benchmark harness is in
 [`tests/benchmark/decode_public_api.c`](tests/benchmark/decode_public_api.c),
@@ -61,15 +62,16 @@ portable back to C/C++ and where Zig helped or hurt, is in
 - Exposes a narrow encoder-focused `libjxl`-shaped C ABI including:
   `JxlEncoderCreate`, `JxlEncoderReset`, `JxlEncoderDestroy`,
   `JxlEncoderFrameSettingsCreate`, `JxlEncoderSetBasicInfo`,
-  `JxlEncoderSetColorEncoding`, `JxlEncoderAddImageFrame`,
+  `JxlEncoderSetColorEncoding`, `JxlEncoderSetFrameHeader`,
+  `JxlEncoderAddImageFrame`, `JxlEncoderCloseFrames`,
   `JxlEncoderSetExtraChannelInfo`, `JxlEncoderSetExtraChannelName`,
   `JxlEncoderSetExtraChannelBuffer`, `JxlEncoderCloseInput`, and
   `JxlEncoderProcessOutput`.
 - Ships `cjxlz`, a C CLI that uses only that public C API and currently accepts
-  native-build PNG input plus raw `P5`/`P6`/`P7` PNM/PAM.
+  native-build GIF and PNG input plus raw `P5`/`P6`/`P7` PNM/PAM.
 - Runs strict correctness and benchmark checks via `./test` and `./bm`.
 - Encodes a real narrow lossless modular static-image path for grayscale/RGB,
-  alpha, and selected extra-channel metadata/forms.
+  alpha, selected extra-channel metadata/forms, and narrow multi-frame animation.
 
 ## Current Limitations
 
@@ -134,8 +136,10 @@ zig-out/bin/cjxlz input.png output.jxl
 ```
 
 `cjxlz` currently focuses on the narrow lossless modular public-API path. It
-accepts native-build PNG input plus raw `P5`/`P6`/narrow `P7` PNM/PAM and is
-not yet intended to mirror every upstream `cjxl` feature.
+accepts native-build GIF and PNG input plus raw `P5`/`P6`/narrow `P7` PNM/PAM,
+and can now turn GIF animation into animated JXL through repeated public
+`JxlEncoderAddImageFrame(...)` calls. It is not yet intended to mirror every
+upstream `cjxl` feature.
 
 ## Additional Documentation
 

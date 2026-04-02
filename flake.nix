@@ -15,7 +15,7 @@
           mkZigPackage = optimize: with pkgs; stdenv.mkDerivation {
             inherit pname version;
             src = ./.;
-            nativeBuildInputs = [ zig pkg-config libpng zlib ]
+            nativeBuildInputs = [ zig pkg-config libpng giflib zlib ]
               ++ lib.optionals (stdenv.isDarwin) [
                 darwin.cctools
                 apple-sdk
@@ -28,6 +28,10 @@
               rm -rf zig-out
               mkdir -p zig-out
               ${lib.optionalString stdenv.isDarwin "unset NIX_CFLAGS_COMPILE NIX_LDFLAGS"}
+              export GIF_INCLUDE_DIR=${giflib}/include
+              export GIF_LIB_DIR=${giflib}/lib
+              export CPATH=${giflib}/include''${CPATH:+:$CPATH}
+              export LIBRARY_PATH=${giflib}/lib''${LIBRARY_PATH:+:$LIBRARY_PATH}
               zig build install -Doptimize=${optimize} --prefix zig-out
             '';
             installPhase = ''
@@ -58,7 +62,7 @@
               pname = "${pname}-test";
               inherit version;
               src = ./.;
-            nativeBuildInputs = [ zig pkg-config libpng zlib ]
+            nativeBuildInputs = [ zig pkg-config libpng giflib zlib ]
                 ++ lib.optionals (stdenv.isDarwin) [
                   darwin.cctools
                   apple-sdk
@@ -69,6 +73,10 @@
                 export HOME=$TMPDIR
                 export XDG_CACHE_HOME=$TMPDIR/cache
                 ${lib.optionalString stdenv.isDarwin "unset NIX_CFLAGS_COMPILE NIX_LDFLAGS"}
+                export GIF_INCLUDE_DIR=${giflib}/include
+                export GIF_LIB_DIR=${giflib}/lib
+                export CPATH=${giflib}/include''${CPATH:+:$CPATH}
+                export LIBRARY_PATH=${giflib}/lib''${LIBRARY_PATH:+:$LIBRARY_PATH}
                 zig build test -Doptimize=Debug
               '';
               installPhase = ''
