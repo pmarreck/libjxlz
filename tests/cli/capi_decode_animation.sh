@@ -8,6 +8,8 @@ RUN_STDERR="${TMPDIR}/capi_decode_animation_stderr.txt"
 ENC_STDOUT="${TMPDIR}/capi_decode_animation_enc_stdout.txt"
 ENC_STDERR="${TMPDIR}/capi_decode_animation_enc_stderr.txt"
 CHECK_BIN="${TMPDIR}/capi_decode_animation"
+GIF_BIN="${TMPDIR}/make_traffic_light_gif"
+INPUT_GIF="${TMPDIR}/traffic_light.gif"
 OUTPUT_JXL="${TMPDIR}/traffic_light_dec_animation.jxl"
 
 if ! PACKAGE_OUT="$(nix build --no-link --print-out-paths ".#packages.${SYSTEM}.default" 2>"${BUILD_LOG}")"; then
@@ -27,7 +29,17 @@ if ! clang \
 	exit 1
 fi
 
-if ! "${PACKAGE_OUT}/bin/cjxlz" testdata/jxl/traffic_light.gif "${OUTPUT_JXL}" >"${ENC_STDOUT}" 2>"${ENC_STDERR}"; then
+if ! clang -std=c11 -Wall -Wextra -Werror tests/cli/make_traffic_light_gif.c -o "${GIF_BIN}" >"${BUILD_LOG}" 2>&1; then
+	cat "${BUILD_LOG}"
+	exit 1
+fi
+
+if ! "${GIF_BIN}" "${INPUT_GIF}" >"${ENC_STDOUT}" 2>"${ENC_STDERR}"; then
+	cat "${ENC_STDERR}"
+	exit 1
+fi
+
+if ! "${PACKAGE_OUT}/bin/cjxlz" "${INPUT_GIF}" "${OUTPUT_JXL}" >"${ENC_STDOUT}" 2>"${ENC_STDERR}"; then
 	cat "${ENC_STDERR}"
 	exit 1
 fi
