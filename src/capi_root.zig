@@ -271,6 +271,14 @@ const DecoderImpl = struct {
 	basic_info: JxlBasicInfo = std.mem.zeroes(JxlBasicInfo),
 	codec_meta: image_metadata.CodecMetadata = .{},
 	frame_data: []const u8 = &.{},
+	frame_offset: usize = 0,
+	frame_size: usize = 0,
+	frame_parsed: bool = false,
+	frame_emitted: bool = false,
+	frame_decoded: bool = false,
+	frame_name_len: usize = 0,
+	frame_name_buf: [1071]u8 = [_]u8{0} ** 1071,
+	frame_header: JxlFrameHeader = std.mem.zeroes(JxlFrameHeader),
 
 	output_format: JxlPixelFormat = .{
 		.num_channels = 0,
@@ -1440,6 +1448,83 @@ fn populateBasicInfo(metadata: *const image_metadata.CodecMetadata) JxlBasicInfo
 	return info;
 }
 
+fn populateBlendInfo(dst: *JxlBlendInfo, src: *const frame_header_mod.BlendingInfo) void {
+	dst.* = .{
+		.blendmode = switch (src.mode) {
+			.replace => .JXL_BLEND_REPLACE,
+			.add => .JXL_BLEND_ADD,
+			.blend => .JXL_BLEND_BLEND,
+			.alpha_weighted_add => .JXL_BLEND_MULADD,
+			.mul => .JXL_BLEND_MUL,
+		},
+		.source = src.source,
+		.alpha = src.alpha_channel,
+		.clamp = @intFromBool(src.clamp),
+	};
+}
+
+fn populateFrameHeader(
+	dst: *JxlFrameHeader,
+	src: *const frame_header_mod.FrameHeader,
+) void {
+	dst.* = std.mem.zeroes(JxlFrameHeader);
+	dst.duration = src.animation_frame.duration;
+	dst.timecode = src.animation_frame.timecode;
+	dst.name_length = src.name_len;
+	dst.is_last = @intFromBool(src.is_last);
+	dst.layer_info.have_crop = @intFromBool(src.custom_size_or_origin);
+	dst.layer_info.crop_x0 = src.frame_origin.x0;
+	dst.layer_info.crop_y0 = src.frame_origin.y0;
+	dst.layer_info.xsize = if (src.custom_size_or_origin) src.frame_size.xsize else 0;
+	dst.layer_info.ysize = if (src.custom_size_or_origin) src.frame_size.ysize else 0;
+	dst.layer_info.save_as_reference = src.save_as_reference;
+	populateBlendInfo(&dst.layer_info.blend_info, &src.blending_info);
+}
+
+/// Parses the current frame header without decoding pixels so the public C API
+/// can emit `JXL_DEC_FRAME` and expose timing/name metadata one displayed frame at a time.
+fn ensureCurrentFrameParsed(dec: *DecoderImpl) JxlDecoderStatus {
+	if (dec.decode_complete or dec.frame_parsed) return .JXL_DEC_SUCCESS;
+	if (!dec.basic_info_available) {
+		const parse_status = ensureParsed(dec);
+		if (parse_status != .JXL_DEC_SUCCESS) return parse_status;
+	}
+	if (dec.frame_offset >= dec.frame_data.len) {
+		dec.decode_complete = true;
+		return .JXL_DEC_SUCCESS;
+	}
+
+	var frame_dec = dec_frame.FrameDecoder.init(std.heap.c_allocator, &dec.codec_meta);
+	defer frame_dec.deinit();
+	var header_br = BitReader.init(dec.frame_data[dec.frame_offset..]);
+	frame_dec.initFrame(&header_br) catch |err| return statusFromError(err, dec.input_closed);
+	header_br.close() catch |err| return statusFromError(err, dec.input_closed);
+
+	dec.frame_size = dec_frame.frameByteCount(std.heap.c_allocator, &dec.codec_meta, dec.frame_data[dec.frame_offset..]) catch |err| return statusFromError(err, dec.input_closed);
+	populateFrameHeader(&dec.frame_header, &frame_dec.frame_header);
+	dec.frame_name_len = @intCast(frame_dec.frame_header.name_len);
+	if (dec.frame_name_len != 0) {
+		@memcpy(dec.frame_name_buf[0..dec.frame_name_len], frame_dec.frame_header.getName());
+	}
+	dec.frame_parsed = true;
+	return .JXL_DEC_SUCCESS;
+}
+
+fn advanceCurrentFrame(dec: *DecoderImpl) void {
+	if (!dec.frame_parsed) return;
+	dec.frame_offset += dec.frame_size;
+	dec.frame_size = 0;
+	dec.frame_parsed = false;
+	dec.frame_emitted = false;
+	dec.frame_decoded = false;
+	dec.full_image_emitted = false;
+	dec.frame_name_len = 0;
+	dec.frame_header = std.mem.zeroes(JxlFrameHeader);
+	if (dec.frame_offset >= dec.frame_data.len) {
+		dec.decode_complete = true;
+	}
+}
+
 /// Parses the codestream headers once and caches the frame slice so the
 /// compatibility-layer state machine can emit basic-info and full-image events
 /// without duplicating decode logic.
@@ -1476,18 +1561,18 @@ fn ensureParsed(dec: *DecoderImpl) JxlDecoderStatus {
 
 fn ensureDecoded(dec: *DecoderImpl) JxlDecoderStatus {
 	if (dec.decode_complete) return .JXL_DEC_SUCCESS;
-	if (!dec.basic_info_available) {
-		const parse_status = ensureParsed(dec);
-		if (parse_status != .JXL_DEC_SUCCESS) return parse_status;
-	}
+	const frame_status = ensureCurrentFrameParsed(dec);
+	if (frame_status != .JXL_DEC_SUCCESS) return frame_status;
+	if (!dec.frame_parsed) return .JXL_DEC_SUCCESS;
+	if (dec.frame_decoded) return .JXL_DEC_SUCCESS;
 	if (dec.output_buffer == null) return .JXL_DEC_NEED_IMAGE_OUT_BUFFER;
 
 	var frame_dec = dec_frame.FrameDecoder.init(std.heap.c_allocator, &dec.codec_meta);
 	defer frame_dec.deinit();
-	frame_dec.decodeFrame(dec.frame_data) catch return .JXL_DEC_ERROR;
+	frame_dec.decodeFrame(dec.frame_data[dec.frame_offset .. dec.frame_offset + dec.frame_size]) catch return .JXL_DEC_ERROR;
 
 	writeImageToOutput(frame_dec.getDecodedImage(), &dec.codec_meta.m, dec.output_format, dec.output_buffer.?, dec.output_buffer_size) catch return .JXL_DEC_ERROR;
-	dec.decode_complete = true;
+	dec.frame_decoded = true;
 	return .JXL_DEC_SUCCESS;
 }
 
@@ -1663,6 +1748,31 @@ pub export fn JxlDecoderGetColorAsEncodedProfile(
 	return .JXL_DEC_SUCCESS;
 }
 
+pub export fn JxlDecoderGetFrameHeader(dec_ptr: ?*const JxlDecoder, header_ptr: ?*JxlFrameHeader) JxlDecoderStatus {
+	const dec = dec_ptr orelse return .JXL_DEC_ERROR;
+	const impl: *const DecoderImpl = @ptrCast(@alignCast(dec));
+	if (!impl.frame_parsed) return .JXL_DEC_NEED_MORE_INPUT;
+	if (header_ptr) |dst| dst.* = impl.frame_header;
+	return .JXL_DEC_SUCCESS;
+}
+
+pub export fn JxlDecoderGetFrameName(
+	dec_ptr: ?*const JxlDecoder,
+	name_ptr: ?[*]u8,
+	size: usize,
+) JxlDecoderStatus {
+	const dec = dec_ptr orelse return .JXL_DEC_ERROR;
+	const impl: *const DecoderImpl = @ptrCast(@alignCast(dec));
+	if (!impl.frame_parsed) return .JXL_DEC_NEED_MORE_INPUT;
+	if (size < impl.frame_name_len + 1) return .JXL_DEC_ERROR;
+	const name = name_ptr orelse return .JXL_DEC_ERROR;
+	if (impl.frame_name_len != 0) {
+		@memcpy(name[0..impl.frame_name_len], impl.frame_name_buf[0..impl.frame_name_len]);
+	}
+	name[impl.frame_name_len] = 0;
+	return .JXL_DEC_SUCCESS;
+}
+
 pub export fn JxlDecoderImageOutBufferSize(dec_ptr: ?*const JxlDecoder, format: ?*const JxlPixelFormat, size: ?*usize) JxlDecoderStatus {
 	const dec = dec_ptr orelse return .JXL_DEC_ERROR;
 	const impl: *const DecoderImpl = @ptrCast(@alignCast(dec));
@@ -1695,30 +1805,41 @@ pub export fn JxlDecoderProcessInput(dec_ptr: ?*JxlDecoder) JxlDecoderStatus {
 
 	if (impl.input_data == null and impl.input_size == 0) return .JXL_DEC_NEED_MORE_INPUT;
 
-	const parse_status = ensureParsed(impl);
-	if (parse_status != .JXL_DEC_SUCCESS) return parse_status;
+	while (true) {
+		const parse_status = ensureParsed(impl);
+		if (parse_status != .JXL_DEC_SUCCESS) return parse_status;
 
-	if ((impl.subscribed_events & @intFromEnum(JxlDecoderStatus.JXL_DEC_BASIC_INFO)) != 0 and !impl.basic_info_emitted) {
-		impl.basic_info_emitted = true;
-		return .JXL_DEC_BASIC_INFO;
+		if ((impl.subscribed_events & @intFromEnum(JxlDecoderStatus.JXL_DEC_BASIC_INFO)) != 0 and !impl.basic_info_emitted) {
+			impl.basic_info_emitted = true;
+			return .JXL_DEC_BASIC_INFO;
+		}
+
+		if ((impl.subscribed_events & @intFromEnum(JxlDecoderStatus.JXL_DEC_COLOR_ENCODING)) != 0 and !impl.color_encoding_emitted) {
+			impl.color_encoding_emitted = true;
+			return .JXL_DEC_COLOR_ENCODING;
+		}
+
+		const frame_status = ensureCurrentFrameParsed(impl);
+		if (frame_status != .JXL_DEC_SUCCESS) return frame_status;
+		if (!impl.frame_parsed) return .JXL_DEC_SUCCESS;
+
+		if ((impl.subscribed_events & @intFromEnum(JxlDecoderStatus.JXL_DEC_FRAME)) != 0 and !impl.frame_emitted) {
+			impl.frame_emitted = true;
+			return .JXL_DEC_FRAME;
+		}
+
+		if (impl.output_buffer == null) return .JXL_DEC_NEED_IMAGE_OUT_BUFFER;
+
+		const decode_status = ensureDecoded(impl);
+		if (decode_status != .JXL_DEC_SUCCESS) return decode_status;
+
+		if ((impl.subscribed_events & @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)) != 0 and !impl.full_image_emitted) {
+			impl.full_image_emitted = true;
+			return .JXL_DEC_FULL_IMAGE;
+		}
+
+		advanceCurrentFrame(impl);
 	}
-
-	if ((impl.subscribed_events & @intFromEnum(JxlDecoderStatus.JXL_DEC_COLOR_ENCODING)) != 0 and !impl.color_encoding_emitted) {
-		impl.color_encoding_emitted = true;
-		return .JXL_DEC_COLOR_ENCODING;
-	}
-
-	if (impl.output_buffer == null) return .JXL_DEC_NEED_IMAGE_OUT_BUFFER;
-
-	const decode_status = ensureDecoded(impl);
-	if (decode_status != .JXL_DEC_SUCCESS) return decode_status;
-
-	if ((impl.subscribed_events & @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)) != 0 and !impl.full_image_emitted) {
-		impl.full_image_emitted = true;
-		return .JXL_DEC_FULL_IMAGE;
-	}
-
-	return .JXL_DEC_SUCCESS;
 }
 
 pub export fn JxlEncoderVersion() u32 {
@@ -3361,4 +3482,129 @@ test "JxlEncoder encodes two animation frames" {
 		frame_offset += frame_bytes;
 	}
 	try testing.expectEqual(encoded.items.len, frame_offset);
+}
+
+test "JxlDecoder emits frame headers for animated codestreams" {
+	const testing = std.testing;
+	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlEncoderDestroy(enc);
+
+	var info: JxlBasicInfo = undefined;
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 2;
+	info.ysize = 2;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 3;
+	info.have_animation = 1;
+	info.animation.tps_numerator = 30;
+	info.animation.tps_denominator = 1;
+	info.animation.num_loops = 1;
+	info.animation.have_timecodes = 1;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetBasicInfo(enc, &info));
+
+	var color = std.mem.zeroes(JxlColorEncoding);
+	JxlColorEncodingSetToSRGB(&color, 0);
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetColorEncoding(enc, &color));
+
+	const settings = JxlEncoderFrameSettingsCreate(enc, null) orelse return error.OutOfMemory;
+	var frame_header = std.mem.zeroes(JxlFrameHeader);
+	const pixels0 = [_]u8{
+		0, 10, 20, 30, 40, 50,
+		60, 70, 80, 90, 100, 110,
+	};
+	const pixels1 = [_]u8{
+		5, 15, 25, 35, 45, 55,
+		65, 75, 85, 95, 105, 115,
+	};
+	const format = JxlPixelFormat{
+		.num_channels = 3,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+
+	frame_header.duration = 3;
+	frame_header.timecode = 0x01020304;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetFrameHeader(settings, &frame_header));
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderAddImageFrame(settings, &format, &pixels0, pixels0.len));
+
+	frame_header.duration = 5;
+	frame_header.timecode = 0x05060708;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetFrameHeader(settings, &frame_header));
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderAddImageFrame(settings, &format, &pixels1, pixels1.len));
+	JxlEncoderCloseFrames(enc);
+
+	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	defer encoded.deinit(testing.allocator);
+	while (true) {
+		var chunk: [23]u8 = undefined;
+		var next_out: [*]u8 = &chunk;
+		var avail_out: usize = chunk.len;
+		const status = JxlEncoderProcessOutput(enc, &next_out, &avail_out);
+		const produced = chunk.len - avail_out;
+		if (produced != 0) {
+			try encoded.appendSlice(testing.allocator, chunk[0..produced]);
+		}
+		switch (status) {
+			.JXL_ENC_SUCCESS => break,
+			.JXL_ENC_NEED_MORE_OUTPUT => continue,
+			else => return error.UnexpectedEncoderStatus,
+		}
+	}
+
+	const dec = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlDecoderDestroy(dec);
+	try testing.expectEqual(
+		JxlDecoderStatus.JXL_DEC_SUCCESS,
+		JxlDecoderSubscribeEvents(
+			dec,
+			@intFromEnum(JxlDecoderStatus.JXL_DEC_BASIC_INFO) |
+				@intFromEnum(JxlDecoderStatus.JXL_DEC_FRAME) |
+				@intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE),
+		),
+	);
+	try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(dec, encoded.items.ptr, encoded.items.len));
+	JxlDecoderCloseInput(dec);
+
+	var basic_info = std.mem.zeroes(JxlBasicInfo);
+	var output: [12]u8 = undefined;
+	var output_set = false;
+	var durations: [2]u32 = .{ 0, 0 };
+	var timecodes: [2]u32 = .{ 0, 0 };
+	var last_flags: [2]JXL_BOOL = .{ 0, 0 };
+	var frame_count: usize = 0;
+	var full_count: usize = 0;
+
+	while (true) {
+		switch (JxlDecoderProcessInput(dec)) {
+			.JXL_DEC_BASIC_INFO => {
+				try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderGetBasicInfo(dec, &basic_info));
+				try testing.expect(basic_info.have_animation != 0);
+			},
+			.JXL_DEC_FRAME => {
+				var out_header = std.mem.zeroes(JxlFrameHeader);
+				try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderGetFrameHeader(dec, &out_header));
+				try testing.expect(frame_count < durations.len);
+				durations[frame_count] = out_header.duration;
+				timecodes[frame_count] = out_header.timecode;
+				last_flags[frame_count] = out_header.is_last;
+				frame_count += 1;
+			},
+			.JXL_DEC_NEED_IMAGE_OUT_BUFFER => {
+				if (!output_set) {
+					try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(dec, &format, &output, output.len));
+					output_set = true;
+				}
+			},
+			.JXL_DEC_FULL_IMAGE => full_count += 1,
+			.JXL_DEC_SUCCESS => break,
+			else => return error.UnexpectedDecoderStatus,
+		}
+	}
+
+	try testing.expectEqual(@as(usize, 2), frame_count);
+	try testing.expectEqual(@as(usize, 2), full_count);
+	try testing.expectEqualSlices(u32, &.{ 3, 5 }, &durations);
+	try testing.expectEqualSlices(u32, &.{ 0x01020304, 0x05060708 }, &timecodes);
+	try testing.expectEqualSlices(JXL_BOOL, &.{ 0, 1 }, &last_flags);
 }

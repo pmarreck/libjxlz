@@ -19,6 +19,7 @@ Current status is lossless-modular first:
 - first narrow `libjxl`-shaped encoder C API slice
 - `cjxlz`, a C CLI that talks only through that C API
 - first GIF-to-JXL animation conversion path through that public encoder API
+- public animated decoder iteration through `JXL_DEC_FRAME` / `JxlDecoderGetFrameHeader`
 - CI coverage for Linux `x86_64`/`aarch64`, macOS `aarch64`, and Windows
   `x86_64` cross-compilation
 - checked-in public-API benchmark harness against upstream `libjxl`
