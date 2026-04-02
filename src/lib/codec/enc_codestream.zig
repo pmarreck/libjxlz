@@ -101,14 +101,28 @@ pub fn writeCodestream(
     frame_data: []const u8,
     writer: *BitWriter,
 ) !void {
+    const frame_datas = [_][]const u8{frame_data};
+    try writeCodestreamFrames(codec_meta, &frame_datas, writer);
+}
+
+/// Writes one metadata shell followed by a sequence of encoded frame payloads.
+/// This is the narrow animation-friendly codestream builder used by the
+/// current multi-frame encoder slices.
+pub fn writeCodestreamFrames(
+    codec_meta: *const image_metadata.CodecMetadata,
+    frame_datas: []const []const u8,
+    writer: *BitWriter,
+) !void {
     try writer.write(8, 0xFF);
     try writer.write(8, headers.codestream_marker);
     try writeRawSizeHeader(@intCast(codec_meta.xsize()), @intCast(codec_meta.ysize()), writer);
     try image_metadata.writeImageMetadata(&codec_meta.m, writer);
     try image_metadata.writeCustomTransformData(&codec_meta.transform_data, codec_meta.m.xyb_encoded, writer);
     try writer.zeroPadToByte();
-    for (frame_data) |byte| {
-        try writer.write(8, byte);
+    for (frame_datas) |frame_data| {
+        for (frame_data) |byte| {
+            try writer.write(8, byte);
+        }
     }
 }
 

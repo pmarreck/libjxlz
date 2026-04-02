@@ -77,6 +77,30 @@ fn sectionData(
     return data[start..end];
 }
 
+/// Computes the total byte span of one encoded frame by parsing its header and
+/// TOC, then summing the declared section payload sizes. This is the minimal
+/// primitive needed to step through animated codestreams frame-by-frame.
+pub fn frameByteCount(
+	allocator: std.mem.Allocator,
+	metadata: *const CodecMetadata,
+	data: []const u8,
+) JxlError!usize {
+	var frame_dec = FrameDecoder.init(allocator, metadata);
+	defer frame_dec.deinit();
+
+	var header_br = BitReader.init(data);
+	try frame_dec.initFrame(&header_br);
+	const header_byte_offset = frame_dec.headerBytes(&header_br);
+	try header_br.close();
+
+	const layout = try computeSectionLayout(allocator, header_byte_offset, data.len, frame_dec.toc_entries);
+	defer allocator.free(layout.offsets);
+
+	const total_u64 = common.safeAdd(@as(u64, @intCast(header_byte_offset)), layout.total_size) orelse return error.GenericError;
+	if (total_u64 > data.len) return error.GenericError;
+	return @intCast(total_u64);
+}
+
 fn subsampledSize(size: usize, shift: i32) usize {
     return if (shift >= 0)
         common.divCeil(size, @as(usize, 1) << @intCast(shift))

@@ -59,6 +59,29 @@ pub const SimplePackedU8Image = struct {
 	extra_planes: []const SimpleExtraPlaneU8 = &.{},
 };
 
+pub const SimplePackedU8AnimationFrame = struct {
+	color_row_stride: usize,
+	color_pixels: []const u8,
+	alpha_row_stride: usize = 0,
+	alpha_pixels: []const u8 = &.{},
+	frame_duration: u32 = 0,
+	frame_timecode: u32 = 0,
+};
+
+pub const SimplePackedU8Animation = struct {
+	width: u32,
+	height: u32,
+	num_color_channels: u32,
+	alpha_associated: bool = false,
+	alpha_info: ?image_metadata.ExtraChannelInfo = null,
+	orientation: u32 = 1,
+	intrinsic_width: u32 = 0,
+	intrinsic_height: u32 = 0,
+	animation: headers.AnimationHeader,
+	tone_mapping: image_metadata.ToneMapping = .{},
+	frames: []const SimplePackedU8AnimationFrame,
+};
+
 fn validateToneMapping(tone_mapping: image_metadata.ToneMapping) !void {
 	if (!(tone_mapping.intensity_target > 0.0)) return error.InvalidArgs;
 	if (tone_mapping.min_nits < 0.0 or tone_mapping.min_nits > tone_mapping.intensity_target) return error.InvalidArgs;
@@ -150,6 +173,35 @@ fn validateSimplePackedImage(image: SimplePackedU8Image) !void {
 		const plane_height = subsampledSize(image.height, extra.info.dim_shift);
 		if (extra.row_stride < plane_width) return error.InvalidArgs;
 		if (extra.pixels.len < extra.row_stride * plane_height) return error.InvalidArgs;
+	}
+}
+
+fn validateSimplePackedAnimation(image: SimplePackedU8Animation) !void {
+	if (image.frames.len == 0) return error.InvalidArgs;
+	try validateOrientationAndIntrinsic(image.orientation, image.intrinsic_width, image.intrinsic_height);
+	try validateAnimation(true, image.animation, 0, 0);
+	try validateToneMapping(image.tone_mapping);
+
+	for (image.frames) |frame| {
+		try validateSimplePackedImage(.{
+			.width = image.width,
+			.height = image.height,
+			.num_color_channels = image.num_color_channels,
+			.color_row_stride = frame.color_row_stride,
+			.color_pixels = frame.color_pixels,
+			.alpha_row_stride = frame.alpha_row_stride,
+			.alpha_pixels = frame.alpha_pixels,
+			.alpha_associated = image.alpha_associated,
+			.alpha_info = image.alpha_info,
+			.orientation = image.orientation,
+			.intrinsic_width = image.intrinsic_width,
+			.intrinsic_height = image.intrinsic_height,
+			.have_animation = true,
+			.animation = image.animation,
+			.frame_duration = frame.frame_duration,
+			.frame_timecode = frame.frame_timecode,
+			.tone_mapping = image.tone_mapping,
+		});
 	}
 }
 
@@ -327,7 +379,7 @@ fn buildPackedSourceImage(allocator: std.mem.Allocator, image: SimplePackedU8Ima
 	return source;
 }
 
-fn encodePreparedSource(
+fn encodePreparedFrameData(
 	allocator: std.mem.Allocator,
 	codec_meta: image_metadata.CodecMetadata,
 	frame_header: frame_header_mod.FrameHeader,
@@ -394,9 +446,23 @@ fn encodePreparedSource(
 	try enc_frame.writeFrame(&frame_header, &codec_meta, section_payloads, &frame_writer);
 	try frame_writer.zeroPadToByte();
 
+	return allocator.dupe(u8, frame_writer.bytes());
+}
+
+fn encodePreparedSource(
+	allocator: std.mem.Allocator,
+	codec_meta: image_metadata.CodecMetadata,
+	frame_header: frame_header_mod.FrameHeader,
+	source: *modular_image.Image,
+) ![]u8 {
+	const frame_data = try encodePreparedFrameData(allocator, codec_meta, frame_header, source);
+	defer allocator.free(frame_data);
+
+	const frame_datas = [_][]const u8{frame_data};
+
 	var codestream = BitWriter.init(allocator);
 	defer codestream.deinit();
-	try enc_codestream.writeCodestream(&codec_meta, frame_writer.bytes(), &codestream);
+	try enc_codestream.writeCodestreamFrames(&codec_meta, &frame_datas, &codestream);
 	try codestream.zeroPadToByte();
 
 	return allocator.dupe(u8, codestream.bytes());
@@ -455,6 +521,92 @@ pub fn encodeSimplePackedU8(
 	defer source.deinit();
 
 	return encodePreparedSource(allocator, codec_meta, frame_header, &source);
+}
+
+/// Encodes a narrow animated lossless modular codestream from same-geometry
+/// packed uint8 frames with shared metadata and per-frame duration/timecode.
+pub fn encodeSimplePackedU8Animation(
+	allocator: std.mem.Allocator,
+	image: SimplePackedU8Animation,
+	color_encoding: ?color_encoding_mod.ColorEncoding,
+) ![]u8 {
+	try validateSimplePackedAnimation(image);
+
+	const has_alpha = image.frames[0].alpha_pixels.len != 0;
+	const num_extra_channels: u32 = @intFromBool(has_alpha);
+	const extra_info_storage = [_]image_metadata.ExtraChannelInfo{
+		image.alpha_info orelse .{
+			.type = .alpha,
+			.bit_depth = .{},
+			.alpha_associated = image.alpha_associated,
+		},
+	};
+	const extra_info_slice: []const image_metadata.ExtraChannelInfo = if (has_alpha) extra_info_storage[0..1] else &.{};
+
+	const effective_color_encoding = color_encoding orelse if (image.num_color_channels == 1)
+		graySrgbColorEncoding()
+	else
+		color_encoding_mod.ColorEncoding{};
+	if (effective_color_encoding.channels() != image.num_color_channels) return error.Unsupported;
+	if (effective_color_encoding.want_icc) return error.Unsupported;
+
+	const codec_meta = buildCodecMetadata(
+		image.width,
+		image.height,
+		num_extra_channels,
+		image.alpha_associated,
+		image.orientation,
+		image.intrinsic_width,
+		image.intrinsic_height,
+		true,
+		image.animation,
+		image.tone_mapping,
+		extra_info_slice,
+		effective_color_encoding,
+	);
+
+	const frame_datas = try allocator.alloc([]const u8, image.frames.len);
+	defer {
+		for (frame_datas) |frame_data| {
+			if (frame_data.len != 0) allocator.free(frame_data);
+		}
+		allocator.free(frame_datas);
+	}
+	@memset(frame_datas, &.{});
+
+	for (image.frames, 0..) |frame, i| {
+		var source = try buildPackedSourceImage(allocator, .{
+			.width = image.width,
+			.height = image.height,
+			.num_color_channels = image.num_color_channels,
+			.color_row_stride = frame.color_row_stride,
+			.color_pixels = frame.color_pixels,
+			.alpha_row_stride = frame.alpha_row_stride,
+			.alpha_pixels = frame.alpha_pixels,
+			.alpha_associated = image.alpha_associated,
+			.alpha_info = image.alpha_info,
+			.orientation = image.orientation,
+			.intrinsic_width = image.intrinsic_width,
+			.intrinsic_height = image.intrinsic_height,
+			.have_animation = true,
+			.animation = image.animation,
+			.frame_duration = frame.frame_duration,
+			.frame_timecode = frame.frame_timecode,
+			.tone_mapping = image.tone_mapping,
+		});
+		defer source.deinit();
+
+		var frame_header = buildSimpleFrameHeader(extra_info_slice, frame.frame_duration, frame.frame_timecode);
+		frame_header.is_last = i + 1 == image.frames.len;
+		frame_datas[i] = try encodePreparedFrameData(allocator, codec_meta, frame_header, &source);
+	}
+
+	var codestream = BitWriter.init(allocator);
+	defer codestream.deinit();
+	try enc_codestream.writeCodestreamFrames(&codec_meta, frame_datas, &codestream);
+	try codestream.zeroPadToByte();
+
+	return allocator.dupe(u8, codestream.bytes());
 }
 
 /// Encodes the current narrow lossless modular surface from interleaved uint8
@@ -538,6 +690,59 @@ fn expectCodestreamRoundtrip(
 			}
 		}
 	}
+}
+
+fn expectAnimationCodestreamRoundtrip(
+	allocator: std.mem.Allocator,
+	encoded: []const u8,
+	expected_frames: []const SimpleInterleavedU8Image,
+	expected_durations: []const u32,
+	expected_timecodes: []const u32,
+) !void {
+	var br = BitReader.init(encoded[2..]);
+	const size = headers.SizeHeader.readFromBitStream(&br);
+	const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+	const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+	try br.jumpToByteBoundary();
+
+	var parsed_meta = image_metadata.CodecMetadata{};
+	parsed_meta.m = metadata;
+	parsed_meta.size = size;
+	parsed_meta.transform_data = transform_data;
+
+	try testing.expect(metadata.have_animation);
+
+	var frame_offset = 2 + br.totalBitsConsumed() / 8;
+	for (expected_frames, expected_durations, expected_timecodes, 0..) |expected, duration, timecode, i| {
+		const frame_bytes = try dec_frame.frameByteCount(allocator, &parsed_meta, encoded[frame_offset..]);
+
+		var frame_dec = dec_frame.FrameDecoder.init(allocator, &parsed_meta);
+		defer frame_dec.deinit();
+		try frame_dec.decodeFrame(encoded[frame_offset .. frame_offset + frame_bytes]);
+
+		try testing.expectEqual(duration, frame_dec.frame_header.animation_frame.duration);
+		try testing.expectEqual(timecode, frame_dec.frame_header.animation_frame.timecode);
+		try testing.expectEqual(i + 1 == expected_frames.len, frame_dec.frame_header.is_last);
+
+		const image = frame_dec.getDecodedImage();
+		try testing.expectEqual(@as(usize, expected.num_channels), image.channels.items.len);
+		try testing.expectEqual(@as(usize, expected.width), image.w);
+		try testing.expectEqual(@as(usize, expected.height), image.h);
+
+		for (0..image.h) |y| {
+			const expected_row = expected.pixels[y * expected.row_stride .. y * expected.row_stride + expected.row_stride];
+			for (0..image.w) |x| {
+				const pixel_base = x * expected.num_channels;
+				for (0..image.channels.items.len) |c| {
+					try testing.expectEqual(@as(i32, expected_row[pixel_base + c]), image.channels.items[c].row(y)[x]);
+				}
+			}
+		}
+
+		frame_offset += frame_bytes;
+	}
+
+	try testing.expectEqual(encoded.len, frame_offset);
 }
 
 test "encodeSimpleInterleavedU8 round-trips grayscale through FrameDecoder" {
@@ -765,4 +970,62 @@ test "encodeSimplePackedU8 round-trips RGB plus subsampled depth through FrameDe
 	try testing.expectEqual(@as(usize, 2), image.channels.items[3].w);
 	try testing.expectEqual(@as(usize, 1), image.channels.items[3].h);
 	try testing.expectEqualSlices(i32, &.{ 100, 25 }, image.channels.items[3].data);
+}
+
+test "encodeSimplePackedU8Animation round-trips two RGB animation frames" {
+	const frame0_rgb = [_]u8{
+		0, 10, 20, 30, 40, 50,
+		60, 70, 80, 90, 100, 110,
+	};
+	const frame1_rgb = [_]u8{
+		5, 15, 25, 35, 45, 55,
+		65, 75, 85, 95, 105, 115,
+	};
+	const frame0 = SimplePackedU8AnimationFrame{
+		.color_row_stride = 6,
+		.color_pixels = &frame0_rgb,
+		.frame_duration = 3,
+		.frame_timecode = 0x01020304,
+	};
+	const frame1 = SimplePackedU8AnimationFrame{
+		.color_row_stride = 6,
+		.color_pixels = &frame1_rgb,
+		.frame_duration = 5,
+		.frame_timecode = 0x05060708,
+	};
+	const encoded = try encodeSimplePackedU8Animation(testing.allocator, .{
+		.width = 2,
+		.height = 2,
+		.num_color_channels = 3,
+		.animation = .{
+			.tps_numerator = 24,
+			.tps_denominator = 1,
+			.num_loops = 2,
+			.have_timecodes = true,
+		},
+		.frames = &.{ frame0, frame1 },
+	}, null);
+	defer testing.allocator.free(encoded);
+
+	const expected_frame0 = SimpleInterleavedU8Image{
+		.width = 2,
+		.height = 2,
+		.num_channels = 3,
+		.row_stride = 6,
+		.pixels = &frame0_rgb,
+	};
+	const expected_frame1 = SimpleInterleavedU8Image{
+		.width = 2,
+		.height = 2,
+		.num_channels = 3,
+		.row_stride = 6,
+		.pixels = &frame1_rgb,
+	};
+	try expectAnimationCodestreamRoundtrip(
+		testing.allocator,
+		encoded,
+		&.{ expected_frame0, expected_frame1 },
+		&.{ 3, 5 },
+		&.{ 0x01020304, 0x05060708 },
+	);
 }

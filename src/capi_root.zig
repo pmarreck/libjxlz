@@ -296,6 +296,7 @@ const EncoderImpl = struct {
 	basic_info_set: bool = false,
 	color_encoding_set: bool = false,
 	added_frame: bool = false,
+	frames_closed: bool = false,
 	input_closed: bool = false,
 	started_processing: bool = false,
 	basic_info: JxlBasicInfo = std.mem.zeroes(JxlBasicInfo),
@@ -303,6 +304,7 @@ const EncoderImpl = struct {
 	encoded_bytes: []u8 = &.{},
 	output_offset: usize = 0,
 	frame_settings: std.ArrayListUnmanaged(*EncoderFrameSettingsImpl) = .{},
+	queued_frames: std.ArrayListUnmanaged(EncoderQueuedFrame) = .{},
 	internal_color_encoding: ?color_encoding_mod.ColorEncoding = null,
 	image_format: JxlPixelFormat = .{
 		.num_channels = 0,
@@ -330,6 +332,37 @@ const EncoderPendingExtraChannel = struct {
 	buffer: []u8 = &.{},
 	row_stride: usize = 0,
 	buffer_set: bool = false,
+};
+
+const EncoderQueuedPlaneBuffer = struct {
+	buffer: []u8 = &.{},
+	row_stride: usize = 0,
+	buffer_set: bool = false,
+};
+
+const EncoderQueuedFrame = struct {
+	image_format: JxlPixelFormat = .{
+		.num_channels = 0,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	},
+	image_bytes: []u8 = &.{},
+	frame_header_set: bool = false,
+	frame_header: JxlFrameHeader = std.mem.zeroes(JxlFrameHeader),
+	extra_buffers: [256]EncoderQueuedPlaneBuffer = [_]EncoderQueuedPlaneBuffer{.{}} ** 256,
+
+	fn deinit(self: *EncoderQueuedFrame) void {
+		if (self.image_bytes.len != 0) {
+			std.heap.c_allocator.free(self.image_bytes);
+		}
+		for (&self.extra_buffers) |*plane| {
+			if (plane.buffer.len != 0) {
+				std.heap.c_allocator.free(plane.buffer);
+			}
+		}
+		self.* = .{};
+	}
 };
 
 fn decoderVersion() u32 {
@@ -393,6 +426,11 @@ fn allocEncoder(mm: ?*const JxlMemoryManager) ?*EncoderImpl {
 
 fn freeEncoderState(enc: *EncoderImpl) void {
 	clearPendingEncodeBuffers(enc);
+	for (enc.queued_frames.items) |*frame| {
+		frame.deinit();
+	}
+	enc.queued_frames.deinit(std.heap.c_allocator);
+	enc.queued_frames = .{};
 	for (enc.frame_settings.items) |settings| {
 		std.heap.c_allocator.destroy(settings);
 	}
@@ -690,6 +728,32 @@ fn clearPendingFrameBuffers(enc: *EncoderImpl) void {
 	}
 }
 
+/// Finalizes the currently staged frame into the encoder's frame queue. The
+/// first multi-frame slice intentionally only accepts main-image data here;
+/// staged sidecar extras remain a later widening step.
+fn queuePendingFrame(enc: *EncoderImpl) !void {
+	if (enc.image_bytes.len == 0) return;
+
+	var queued = EncoderQueuedFrame{
+		.image_format = enc.image_format,
+		.image_bytes = try std.heap.c_allocator.dupe(u8, enc.image_bytes),
+		.frame_header_set = enc.pending_frame_header_set,
+		.frame_header = enc.pending_frame_header,
+	};
+	errdefer queued.deinit();
+
+	for (&enc.pending_extra_channels, &queued.extra_buffers) |*pending, *plane| {
+		if (!pending.buffer_set) continue;
+		plane.buffer = try std.heap.c_allocator.dupe(u8, pending.buffer);
+		plane.row_stride = pending.row_stride;
+		plane.buffer_set = true;
+	}
+
+	try enc.queued_frames.append(std.heap.c_allocator, queued);
+	clearPendingFrameBuffers(enc);
+	enc.added_frame = enc.queued_frames.items.len != 0;
+}
+
 fn extraChannelTypeToInternal(extra_type: JxlExtraChannelType) ?image_metadata.ExtraChannel {
 	return switch (extra_type) {
 		.JXL_CHANNEL_ALPHA => .alpha,
@@ -909,47 +973,259 @@ fn prepareSimplePackedInput(allocator: std.mem.Allocator, impl: *const EncoderIm
 	};
 }
 
+/// Splits one queued main-image frame into the packed color/alpha planes the
+/// Zig animation encoder expects. The first multi-frame slice intentionally
+/// excludes staged sidecar extras, so only interleaved alpha is handled here.
+fn prepareQueuedAnimationFrameInput(
+	allocator: std.mem.Allocator,
+	basic_info: *const JxlBasicInfo,
+	frame: *const EncoderQueuedFrame,
+) !PreparedSimplePackedInput {
+	const width: usize = @intCast(basic_info.xsize);
+	const height: usize = @intCast(basic_info.ysize);
+	const num_color_channels: usize = @intCast(basic_info.num_color_channels);
+	const has_alpha = basic_info.alpha_bits != 0;
+	const has_interleaved_alpha = has_alpha and frame.image_format.num_channels == num_color_channels + 1;
+	const image_stride = rowStrideBytes(width, frame.image_format) orelse return error.GenericError;
+	const color_row_stride = width * num_color_channels;
+	const color_pixels = try allocator.alloc(u8, color_row_stride * height);
+	errdefer allocator.free(color_pixels);
+
+	var alpha_pixels: []u8 = &.{};
+	if (has_alpha) {
+		if (!has_interleaved_alpha) return error.Unsupported;
+		alpha_pixels = try allocator.alloc(u8, width * height);
+	}
+	errdefer if (alpha_pixels.len != 0) allocator.free(alpha_pixels);
+
+	for (0..height) |y| {
+		const src_row_start = y * image_stride;
+		const src_row = frame.image_bytes[src_row_start .. src_row_start + image_stride];
+		const color_row_start = y * color_row_stride;
+		const color_row = color_pixels[color_row_start .. color_row_start + color_row_stride];
+		if (has_interleaved_alpha) {
+			const alpha_row_start = y * width;
+			const alpha_row = alpha_pixels[alpha_row_start .. alpha_row_start + width];
+			for (0..width) |x| {
+				const src_pixel = x * (num_color_channels + 1);
+				const dst_pixel = x * num_color_channels;
+				@memcpy(
+					color_row[dst_pixel .. dst_pixel + num_color_channels],
+					src_row[src_pixel .. src_pixel + num_color_channels],
+				);
+				alpha_row[x] = src_row[src_pixel + num_color_channels];
+			}
+		} else {
+			@memcpy(color_row, src_row[0..color_row_stride]);
+		}
+	}
+
+	return .{
+		.color_row_stride = color_row_stride,
+		.color_pixels = color_pixels,
+		.alpha_row_stride = if (has_alpha) width else 0,
+		.alpha_pixels = alpha_pixels,
+		.extra_planes = &.{},
+	};
+}
+
+/// Rebuilds the packed per-frame view from one queued frame plus the global
+/// declared extra-channel metadata, preserving the existing single-frame
+/// sidecar-extra behavior after frames are moved into the queue.
+fn prepareQueuedPackedInput(
+	allocator: std.mem.Allocator,
+	impl: *const EncoderImpl,
+	frame: *const EncoderQueuedFrame,
+) !PreparedSimplePackedInput {
+	const width: usize = @intCast(impl.basic_info.xsize);
+	const height: usize = @intCast(impl.basic_info.ysize);
+	const num_color_channels: usize = @intCast(impl.basic_info.num_color_channels);
+	const has_alpha = impl.basic_info.alpha_bits != 0;
+	const has_staged_alpha = has_alpha and frame.extra_buffers[0].buffer_set;
+	const has_interleaved_alpha = has_alpha and frame.image_format.num_channels == num_color_channels + 1;
+	const staged_alpha_dim_shift: u32 = if (has_alpha and impl.pending_extra_channels[0].info_set) impl.pending_extra_channels[0].info.dim_shift else 0;
+	const image_stride = rowStrideBytes(width, frame.image_format) orelse return error.GenericError;
+	const color_row_stride = width * num_color_channels;
+	const color_pixels = try allocator.alloc(u8, color_row_stride * height);
+	errdefer allocator.free(color_pixels);
+
+	const alpha_width = subsampledSize(impl.basic_info.xsize, staged_alpha_dim_shift);
+	const alpha_height = subsampledSize(impl.basic_info.ysize, staged_alpha_dim_shift);
+	const alpha_row_stride = if (has_interleaved_alpha) width else alpha_width;
+	var alpha_pixels: []u8 = &.{};
+	if (has_alpha) {
+		if (has_staged_alpha == has_interleaved_alpha) return error.InvalidArgs;
+		alpha_pixels = try allocator.alloc(u8, alpha_row_stride * if (has_interleaved_alpha) height else alpha_height);
+	}
+	errdefer if (alpha_pixels.len != 0) allocator.free(alpha_pixels);
+
+	const sidecar_start: usize = if (has_alpha) 1 else 0;
+	const sidecar_count: usize = @intCast(impl.basic_info.num_extra_channels - sidecar_start);
+	const extra_planes = try allocator.alloc(enc_api.SimpleExtraPlaneU8, sidecar_count);
+	errdefer allocator.free(extra_planes);
+
+	for (0..sidecar_count) |i| {
+		const extra_index = sidecar_start + i;
+		const pending = &impl.pending_extra_channels[extra_index];
+		const plane = &frame.extra_buffers[extra_index];
+		if (!pending.info_set or !plane.buffer_set) return error.InvalidArgs;
+		extra_planes[i] = .{
+			.info = try toInternalExtraChannelInfo(pending),
+			.row_stride = plane.row_stride,
+			.pixels = plane.buffer,
+		};
+	}
+
+	for (0..height) |y| {
+		const src_row_start = y * image_stride;
+		const src_row = frame.image_bytes[src_row_start .. src_row_start + image_stride];
+		const color_row_start = y * color_row_stride;
+		const color_row = color_pixels[color_row_start .. color_row_start + color_row_stride];
+		if (has_alpha and has_interleaved_alpha) {
+			const alpha_row_start = y * alpha_row_stride;
+			const alpha_row = alpha_pixels[alpha_row_start .. alpha_row_start + alpha_row_stride];
+			for (0..width) |x| {
+				const src_pixel = x * (num_color_channels + 1);
+				const dst_pixel = x * num_color_channels;
+				@memcpy(
+					color_row[dst_pixel .. dst_pixel + num_color_channels],
+					src_row[src_pixel .. src_pixel + num_color_channels],
+				);
+				alpha_row[x] = src_row[src_pixel + num_color_channels];
+			}
+		} else {
+			@memcpy(color_row, src_row[0..color_row_stride]);
+		}
+	}
+	if (has_alpha and has_staged_alpha) {
+		for (0..alpha_height) |y| {
+			const alpha_row_start = y * alpha_row_stride;
+			const alpha_row = alpha_pixels[alpha_row_start .. alpha_row_start + alpha_row_stride];
+			const alpha_src_start = y * frame.extra_buffers[0].row_stride;
+			@memcpy(alpha_row, frame.extra_buffers[0].buffer[alpha_src_start .. alpha_src_start + alpha_row_stride]);
+		}
+	}
+
+	return .{
+		.color_row_stride = color_row_stride,
+		.color_pixels = color_pixels,
+		.alpha_row_stride = alpha_row_stride,
+		.alpha_pixels = alpha_pixels,
+		.extra_planes = extra_planes,
+	};
+}
+
 /// Finalizes the staged public-API input into the existing Zig one-shot
 /// encoder by packing color and extra planes into a normalized interleaved buffer.
 fn finalizeSimpleEncode(impl: *EncoderImpl) !void {
 	if (impl.encoded_bytes.len != 0) return;
-	if (impl.image_bytes.len == 0) return error.InvalidArgs;
+	if (impl.queued_frames.items.len == 0) return error.InvalidArgs;
 
-	var prepared = try prepareSimplePackedInput(std.heap.c_allocator, impl);
-	defer prepared.deinit(std.heap.c_allocator);
+	if (impl.queued_frames.items.len == 1) {
+		if (impl.image_bytes.len != 0) return error.InvalidArgs;
 
-	impl.encoded_bytes = try enc_api.encodeSimplePackedU8(std.heap.c_allocator, .{
+		var prepared = try prepareQueuedPackedInput(std.heap.c_allocator, impl, &impl.queued_frames.items[0]);
+		defer prepared.deinit(std.heap.c_allocator);
+
+		impl.encoded_bytes = try enc_api.encodeSimplePackedU8(std.heap.c_allocator, .{
+			.width = impl.basic_info.xsize,
+			.height = impl.basic_info.ysize,
+			.num_color_channels = impl.basic_info.num_color_channels,
+			.color_row_stride = prepared.color_row_stride,
+			.color_pixels = prepared.color_pixels,
+			.alpha_row_stride = prepared.alpha_row_stride,
+			.alpha_pixels = prepared.alpha_pixels,
+			.alpha_associated = impl.basic_info.alpha_premultiplied != 0,
+			.alpha_info = if (impl.basic_info.alpha_bits != 0 and impl.pending_extra_channels[0].info_set)
+				try toInternalExtraChannelInfo(&impl.pending_extra_channels[0])
+			else if (impl.basic_info.alpha_bits != 0)
+				image_metadata.ExtraChannelInfo{
+					.type = .alpha,
+					.bit_depth = .{},
+					.alpha_associated = impl.basic_info.alpha_premultiplied != 0,
+				}
+			else
+				null,
+			.orientation = @intCast(@intFromEnum(impl.basic_info.orientation)),
+			.intrinsic_width = impl.basic_info.intrinsic_xsize,
+			.intrinsic_height = impl.basic_info.intrinsic_ysize,
+			.have_animation = impl.basic_info.have_animation != 0,
+			.animation = .{
+				.tps_numerator = impl.basic_info.animation.tps_numerator,
+				.tps_denominator = impl.basic_info.animation.tps_denominator,
+				.num_loops = impl.basic_info.animation.num_loops,
+				.have_timecodes = impl.basic_info.animation.have_timecodes != 0,
+			},
+			.frame_duration = if (impl.queued_frames.items[0].frame_header_set) impl.queued_frames.items[0].frame_header.duration else 0,
+			.frame_timecode = if (impl.queued_frames.items[0].frame_header_set) impl.queued_frames.items[0].frame_header.timecode else 0,
+			.tone_mapping = .{
+				.intensity_target = impl.basic_info.intensity_target,
+				.min_nits = impl.basic_info.min_nits,
+				.relative_to_max_display = impl.basic_info.relative_to_max_display != 0,
+				.linear_below = impl.basic_info.linear_below,
+			},
+			.extra_planes = prepared.extra_planes,
+		}, impl.internal_color_encoding);
+		impl.output_offset = 0;
+		return;
+	}
+
+	const has_sidecar_extras = impl.basic_info.num_extra_channels > @as(u32, @intFromBool(impl.basic_info.alpha_bits != 0));
+	if (has_sidecar_extras) return error.Unsupported;
+	if (impl.basic_info.alpha_bits != 0 and impl.pending_extra_channels[0].info_set and impl.pending_extra_channels[0].info.dim_shift != 0) return error.Unsupported;
+
+	const prepared_frames = try std.heap.c_allocator.alloc(PreparedSimplePackedInput, impl.queued_frames.items.len);
+	defer {
+		for (prepared_frames) |*prepared| prepared.deinit(std.heap.c_allocator);
+		std.heap.c_allocator.free(prepared_frames);
+	}
+	const animation_frames = try std.heap.c_allocator.alloc(enc_api.SimplePackedU8AnimationFrame, impl.queued_frames.items.len);
+	defer std.heap.c_allocator.free(animation_frames);
+
+	for (impl.queued_frames.items, 0..) |*queued_frame, i| {
+		if (queued_frame.extra_buffers[0].buffer_set) return error.Unsupported;
+		prepared_frames[i] = try prepareQueuedAnimationFrameInput(std.heap.c_allocator, &impl.basic_info, queued_frame);
+		animation_frames[i] = .{
+			.color_row_stride = prepared_frames[i].color_row_stride,
+			.color_pixels = prepared_frames[i].color_pixels,
+			.alpha_row_stride = prepared_frames[i].alpha_row_stride,
+			.alpha_pixels = prepared_frames[i].alpha_pixels,
+			.frame_duration = if (queued_frame.frame_header_set) queued_frame.frame_header.duration else 0,
+			.frame_timecode = if (queued_frame.frame_header_set) queued_frame.frame_header.timecode else 0,
+		};
+	}
+
+	impl.encoded_bytes = try enc_api.encodeSimplePackedU8Animation(std.heap.c_allocator, .{
 		.width = impl.basic_info.xsize,
 		.height = impl.basic_info.ysize,
 		.num_color_channels = impl.basic_info.num_color_channels,
-		.color_row_stride = prepared.color_row_stride,
-		.color_pixels = prepared.color_pixels,
-		.alpha_row_stride = prepared.alpha_row_stride,
-		.alpha_pixels = prepared.alpha_pixels,
 		.alpha_associated = impl.basic_info.alpha_premultiplied != 0,
 		.alpha_info = if (impl.basic_info.alpha_bits != 0 and impl.pending_extra_channels[0].info_set)
 			try toInternalExtraChannelInfo(&impl.pending_extra_channels[0])
+		else if (impl.basic_info.alpha_bits != 0)
+			image_metadata.ExtraChannelInfo{
+				.type = .alpha,
+				.bit_depth = .{},
+				.alpha_associated = impl.basic_info.alpha_premultiplied != 0,
+			}
 		else
 			null,
 		.orientation = @intCast(@intFromEnum(impl.basic_info.orientation)),
 		.intrinsic_width = impl.basic_info.intrinsic_xsize,
 		.intrinsic_height = impl.basic_info.intrinsic_ysize,
-		.have_animation = impl.basic_info.have_animation != 0,
 		.animation = .{
 			.tps_numerator = impl.basic_info.animation.tps_numerator,
 			.tps_denominator = impl.basic_info.animation.tps_denominator,
 			.num_loops = impl.basic_info.animation.num_loops,
 			.have_timecodes = impl.basic_info.animation.have_timecodes != 0,
 		},
-		.frame_duration = if (impl.pending_frame_header_set) impl.pending_frame_header.duration else 0,
-		.frame_timecode = if (impl.pending_frame_header_set) impl.pending_frame_header.timecode else 0,
 		.tone_mapping = .{
 			.intensity_target = impl.basic_info.intensity_target,
 			.min_nits = impl.basic_info.min_nits,
 			.relative_to_max_display = impl.basic_info.relative_to_max_display != 0,
 			.linear_below = impl.basic_info.linear_below,
 		},
-		.extra_planes = prepared.extra_planes,
+		.frames = animation_frames,
 	}, impl.internal_color_encoding);
 	impl.output_offset = 0;
 }
@@ -1513,7 +1789,7 @@ pub export fn JxlEncoderSetBasicInfo(enc_ptr: ?*JxlEncoder, info: ?*const JxlBas
 	const enc = enc_ptr orelse return .JXL_ENC_ERROR;
 	const impl: *EncoderImpl = @ptrCast(@alignCast(enc));
 	const src = info orelse return .JXL_ENC_ERROR;
-	if (impl.started_processing or impl.added_frame) return .JXL_ENC_ERROR;
+	if (impl.started_processing or impl.added_frame or impl.frames_closed) return .JXL_ENC_ERROR;
 	validateBasicInfoForSimpleEncode(src) catch return .JXL_ENC_ERROR;
 	impl.basic_info = src.*;
 	impl.basic_info_set = true;
@@ -1524,7 +1800,7 @@ pub export fn JxlEncoderSetColorEncoding(enc_ptr: ?*JxlEncoder, color_ptr: ?*con
 	const enc = enc_ptr orelse return .JXL_ENC_ERROR;
 	const impl: *EncoderImpl = @ptrCast(@alignCast(enc));
 	const color = color_ptr orelse return .JXL_ENC_ERROR;
-	if (!impl.basic_info_set or impl.started_processing or impl.added_frame) return .JXL_ENC_ERROR;
+	if (!impl.basic_info_set or impl.started_processing or impl.added_frame or impl.frames_closed) return .JXL_ENC_ERROR;
 	const internal = toInternalColorEncoding(color, impl.basic_info.num_color_channels) catch return .JXL_ENC_ERROR;
 	impl.color_encoding = color.*;
 	impl.internal_color_encoding = internal;
@@ -1540,7 +1816,7 @@ pub export fn JxlEncoderSetExtraChannelInfo(
 	const enc = enc_ptr orelse return .JXL_ENC_ERROR;
 	const impl: *EncoderImpl = @ptrCast(@alignCast(enc));
 	const info = info_ptr orelse return .JXL_ENC_ERROR;
-	if (!impl.basic_info_set or impl.started_processing or impl.added_frame) return .JXL_ENC_ERROR;
+	if (!impl.basic_info_set or impl.started_processing or impl.added_frame or impl.frames_closed) return .JXL_ENC_ERROR;
 	if (index >= impl.basic_info.num_extra_channels) return .JXL_ENC_ERROR;
 	validateExtraChannelInfoForSimpleEncode(&impl.basic_info, index, info) catch return .JXL_ENC_ERROR;
 
@@ -1559,7 +1835,7 @@ pub export fn JxlEncoderSetExtraChannelName(
 ) JxlEncoderStatus {
 	const enc = enc_ptr orelse return .JXL_ENC_ERROR;
 	const impl: *EncoderImpl = @ptrCast(@alignCast(enc));
-	if (!impl.basic_info_set or impl.started_processing or impl.added_frame) return .JXL_ENC_ERROR;
+	if (!impl.basic_info_set or impl.started_processing or impl.added_frame or impl.frames_closed) return .JXL_ENC_ERROR;
 	if (index >= impl.basic_info.num_extra_channels or size > 1071) return .JXL_ENC_ERROR;
 	const pending = &impl.pending_extra_channels[index];
 	if (!pending.info_set) return .JXL_ENC_ERROR;
@@ -1582,7 +1858,7 @@ pub export fn JxlEncoderSetFrameHeader(
 	const frame_settings = frame_settings_ptr orelse return .JXL_ENC_ERROR;
 	const settings_impl: *EncoderFrameSettingsImpl = @ptrCast(@alignCast(frame_settings));
 	const frame_header = frame_header_ptr orelse return .JXL_ENC_ERROR;
-	if (settings_impl.owner.added_frame or settings_impl.owner.started_processing) return .JXL_ENC_ERROR;
+	if (settings_impl.owner.started_processing or settings_impl.owner.frames_closed) return .JXL_ENC_ERROR;
 	settings_impl.frame_header = frame_header.*;
 	settings_impl.frame_header_set = true;
 	return .JXL_ENC_SUCCESS;
@@ -1600,7 +1876,7 @@ pub export fn JxlEncoderAddImageFrame(
 	const format = format_ptr orelse return .JXL_ENC_ERROR;
 	const data = buffer orelse return .JXL_ENC_ERROR;
 
-	if (!impl.basic_info_set or !impl.color_encoding_set or impl.added_frame or impl.started_processing) return .JXL_ENC_ERROR;
+	if (!impl.basic_info_set or !impl.color_encoding_set or impl.frames_closed or impl.started_processing) return .JXL_ENC_ERROR;
 	if (format.data_type != .JXL_TYPE_UINT8) return .JXL_ENC_ERROR;
 
 	const min_channels = impl.basic_info.num_color_channels;
@@ -1620,7 +1896,7 @@ pub export fn JxlEncoderAddImageFrame(
 	const needed = stride * impl.basic_info.ysize;
 	if (size < needed) return .JXL_ENC_ERROR;
 
-	clearPendingFrameBuffers(impl);
+	queuePendingFrame(impl) catch return .JXL_ENC_ERROR;
 	const pixels: [*]const u8 = @ptrCast(data);
 	impl.image_bytes = std.heap.c_allocator.dupe(u8, pixels[0..needed]) catch return .JXL_ENC_ERROR;
 	impl.image_format = format.*;
@@ -1642,7 +1918,7 @@ pub export fn JxlEncoderSetExtraChannelBuffer(
 	const impl = settings_impl.owner;
 	const format = format_ptr orelse return .JXL_ENC_ERROR;
 	const data = buffer orelse return .JXL_ENC_ERROR;
-	if (!impl.basic_info_set or !impl.color_encoding_set or !impl.added_frame or impl.started_processing) return .JXL_ENC_ERROR;
+	if (!impl.basic_info_set or !impl.color_encoding_set or impl.image_bytes.len == 0 or impl.started_processing or impl.frames_closed) return .JXL_ENC_ERROR;
 	if (index >= impl.basic_info.num_extra_channels) return .JXL_ENC_ERROR;
 
 	const pending = &impl.pending_extra_channels[index];
@@ -1670,9 +1946,19 @@ pub export fn JxlEncoderSetExtraChannelBuffer(
 	return .JXL_ENC_SUCCESS;
 }
 
+pub export fn JxlEncoderCloseFrames(enc_ptr: ?*JxlEncoder) void {
+	const enc = enc_ptr orelse return;
+	const impl: *EncoderImpl = @ptrCast(@alignCast(enc));
+	if (impl.started_processing) return;
+	queuePendingFrame(impl) catch return;
+	impl.frames_closed = true;
+}
+
 pub export fn JxlEncoderCloseInput(enc_ptr: ?*JxlEncoder) void {
 	const enc = enc_ptr orelse return;
 	const impl: *EncoderImpl = @ptrCast(@alignCast(enc));
+	queuePendingFrame(impl) catch return;
+	impl.frames_closed = true;
 	impl.input_closed = true;
 }
 
@@ -1683,7 +1969,7 @@ pub export fn JxlEncoderProcessOutput(enc_ptr: ?*JxlEncoder, next_out_ptr: ?*[*]
 	const avail_out = avail_out_ptr orelse return .JXL_ENC_ERROR;
 	impl.started_processing = true;
 
-	if (!impl.input_closed or !impl.added_frame) return .JXL_ENC_ERROR;
+	if (!(impl.input_closed or impl.frames_closed) or !impl.added_frame) return .JXL_ENC_ERROR;
 	if (impl.encoded_bytes.len == 0) {
 		finalizeSimpleEncode(impl) catch return .JXL_ENC_ERROR;
 	}
@@ -2952,4 +3238,127 @@ test "JxlEncoder encodes animation metadata and frame timing" {
 	try frame_dec.initFrame(&frame_br);
 	try testing.expectEqual(@as(u32, 7), frame_dec.frame_header.animation_frame.duration);
 	try testing.expectEqual(@as(u32, 0x01020304), frame_dec.frame_header.animation_frame.timecode);
+}
+
+test "JxlEncoder encodes two animation frames" {
+	const testing = std.testing;
+	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlEncoderDestroy(enc);
+
+	var info: JxlBasicInfo = undefined;
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 2;
+	info.ysize = 2;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 3;
+	info.have_animation = 1;
+	info.animation.tps_numerator = 30;
+	info.animation.tps_denominator = 1;
+	info.animation.num_loops = 1;
+	info.animation.have_timecodes = 1;
+
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetBasicInfo(enc, &info));
+
+	var color = std.mem.zeroes(JxlColorEncoding);
+	JxlColorEncodingSetToSRGB(&color, 0);
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetColorEncoding(enc, &color));
+
+	const settings = JxlEncoderFrameSettingsCreate(enc, null) orelse return error.OutOfMemory;
+	var frame_header = std.mem.zeroes(JxlFrameHeader);
+
+	const pixels0 = [_]u8{
+		0, 10, 20, 30, 40, 50,
+		60, 70, 80, 90, 100, 110,
+	};
+	const pixels1 = [_]u8{
+		5, 15, 25, 35, 45, 55,
+		65, 75, 85, 95, 105, 115,
+	};
+	const format = JxlPixelFormat{
+		.num_channels = 3,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+
+	frame_header.duration = 3;
+	frame_header.timecode = 0x01020304;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetFrameHeader(settings, &frame_header));
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderAddImageFrame(settings, &format, &pixels0, pixels0.len),
+	);
+
+	frame_header.duration = 5;
+	frame_header.timecode = 0x05060708;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetFrameHeader(settings, &frame_header));
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderAddImageFrame(settings, &format, &pixels1, pixels1.len),
+	);
+
+	JxlEncoderCloseFrames(enc);
+
+	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	defer encoded.deinit(testing.allocator);
+	while (true) {
+		var chunk: [23]u8 = undefined;
+		var next_out: [*]u8 = &chunk;
+		var avail_out: usize = chunk.len;
+		const status = JxlEncoderProcessOutput(enc, &next_out, &avail_out);
+		const produced = chunk.len - avail_out;
+		if (produced != 0) {
+			try encoded.appendSlice(testing.allocator, chunk[0..produced]);
+		}
+		switch (status) {
+			.JXL_ENC_SUCCESS => break,
+			.JXL_ENC_NEED_MORE_OUTPUT => continue,
+			else => return error.UnexpectedEncoderStatus,
+		}
+	}
+
+	var br = BitReader.init(encoded.items[2..]);
+	const size = headers.SizeHeader.readFromBitStream(&br);
+	const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+	const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+	try br.jumpToByteBoundary();
+
+	try testing.expect(metadata.have_animation);
+	try testing.expectEqual(@as(u32, 30), metadata.animation.tps_numerator);
+	try testing.expectEqual(@as(u32, 1), metadata.animation.num_loops);
+
+	var codec_meta = image_metadata.CodecMetadata{};
+	codec_meta.size = size;
+	codec_meta.m = metadata;
+	codec_meta.transform_data = transform_data;
+
+	var frame_offset = 2 + br.totalBitsConsumed() / 8;
+	const expected_frames = [_][]const u8{ &pixels0, &pixels1 };
+	const expected_durations = [_]u32{ 3, 5 };
+	const expected_timecodes = [_]u32{ 0x01020304, 0x05060708 };
+	for (expected_frames, expected_durations, expected_timecodes, 0..) |expected_pixels, duration, timecode, i| {
+		const frame_bytes = try dec_frame.frameByteCount(testing.allocator, &codec_meta, encoded.items[frame_offset..]);
+
+		var frame_dec = dec_frame.FrameDecoder.init(testing.allocator, &codec_meta);
+		defer frame_dec.deinit();
+		try frame_dec.decodeFrame(encoded.items[frame_offset .. frame_offset + frame_bytes]);
+
+		try testing.expectEqual(duration, frame_dec.frame_header.animation_frame.duration);
+		try testing.expectEqual(timecode, frame_dec.frame_header.animation_frame.timecode);
+		try testing.expectEqual(i + 1 == expected_frames.len, frame_dec.frame_header.is_last);
+
+		const image = frame_dec.getDecodedImage();
+		try testing.expectEqual(@as(usize, 3), image.channels.items.len);
+		for (0..image.h) |y| {
+			for (0..image.w) |x| {
+				const pixel_base = (y * image.w + x) * 3;
+				for (0..3) |c| {
+					try testing.expectEqual(@as(i32, expected_pixels[pixel_base + c]), image.channels.items[c].row(y)[x]);
+				}
+			}
+		}
+
+		frame_offset += frame_bytes;
+	}
+	try testing.expectEqual(encoded.items.len, frame_offset);
 }
