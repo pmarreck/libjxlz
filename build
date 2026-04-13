@@ -1,30 +1,29 @@
 #!/usr/bin/env bash
-set -u
+set -uo pipefail
+set -E
 
-SYSTEM="$(nix eval --impure --raw --expr builtins.currentSystem)"
-MODE=""
-for arg in "$@"; do
-	case "$arg" in
-		--test) MODE="test" ;;
-		--debug) MODE="debug" ;;
-	esac
-done
+trap 'echo "ERR at ${BASH_SOURCE[0]}:${LINENO}: $BASH_COMMAND" >&2' ERR
 
-case "$MODE" in
-	test)
-		exec nix build ".#checks.${SYSTEM}.test"
-		;;
-	debug)
-		OUT_PATH="$(nix build --no-link --print-out-paths ".#packages.${SYSTEM}.debug")"
-		;;
-	*)
-		OUT_PATH="$(nix build --no-link --print-out-paths ".#packages.${SYSTEM}.default")"
-		;;
-esac
+run() {
+  "$@" || {
+    echo "FAILED: $*" >&2
+    exit 1
+  }
+}
 
-if [ -e zig-out ] || [ -L zig-out ]; then
-	mv zig-out "${HOME}/.Trash/libjxlz-zig-out.$(date +%s)"
+optimize="ReleaseFast"
+if [[ "${1:-}" == "debug" ]]; then
+  optimize="Debug"
+  shift
 fi
 
-ln -s "${OUT_PATH}" zig-out
-echo "built to ${OUT_PATH}"
+if [[ "$optimize" != "ReleaseFast" ]]; then
+  # Non-release builds use zig directly (local dev, no need for Nix reproducibility)
+  run zig build "-Doptimize=$optimize" "$@"
+elif command -v nix >/dev/null 2>&1; then
+  run nix build "$@"
+  mkdir -p zig-out/bin
+  run install -m755 result/bin/* zig-out/bin/
+else
+  run zig build "-Doptimize=$optimize" "$@"
+fi
