@@ -70,6 +70,19 @@ pub const Customxy = struct {
     }
 };
 
+/// Emits one custom CIExy pair using the same packed-signed U32 coding the
+/// decoder consumes for custom white points and primaries.
+pub fn writeCustomxy(xy: *const Customxy, writer: anytype) !void {
+    const xy_enc = fc.U32Enc.init(
+        fc.bits(19),
+        fc.bitsOffset(19, 524288),
+        fc.bitsOffset(20, 1048576),
+        fc.bitsOffset(21, 2097152),
+    );
+    try fc.U32Coder.write(xy_enc, pack_signed.packSigned(xy.x), writer);
+    try fc.U32Coder.write(xy_enc, pack_signed.packSigned(xy.y), writer);
+}
+
 // ── CustomTransferFunction ──
 
 pub const CustomTransferFunction = struct {
@@ -243,8 +256,10 @@ pub fn writeColorEncoding(ce: *const ColorEncoding, writer: anytype) !void {
     if (ce.want_icc) return;
 
     if (ce.color_space != .xyb) {
-        if (ce.white_point == .custom) return error.Unsupported;
         try fc.writeEnum(@intFromEnum(ce.white_point), writer);
+        if (ce.white_point == .custom) {
+            try writeCustomxy(&ce.white, writer);
+        }
     }
 
     if (ce.hasPrimaries()) {
@@ -377,6 +392,26 @@ test "writeColorEncoding matches gray no-ICC fixture bits" {
         try testing.expectEqual(want.readBits(chunk), got.readBits(chunk));
         remaining -= chunk;
     }
+}
+
+test "writeColorEncoding round-trips custom white point" {
+    const ce = ColorEncoding{
+        .white_point = .custom,
+        .white = .{ .x = 321000, .y = 345000 },
+    };
+
+    var writer = @import("../base/bit_writer.zig").BitWriter.init(testing.allocator);
+    defer writer.deinit();
+    try writeColorEncoding(&ce, &writer);
+    try writer.zeroPadToByte();
+
+    var br = BitReader.init(writer.bytes());
+    const roundtrip = try ColorEncoding.readFromBitStream(&br);
+    try testing.expectEqual(ColorSpace.rgb, roundtrip.color_space);
+    try testing.expectEqual(WhitePoint.custom, roundtrip.white_point);
+    try testing.expectEqual(@as(i32, 321000), roundtrip.white.x);
+    try testing.expectEqual(@as(i32, 345000), roundtrip.white.y);
+    try testing.expectEqual(Primaries.srgb, roundtrip.primaries);
 }
 
 test "enumFromU32" {

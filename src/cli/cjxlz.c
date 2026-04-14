@@ -92,6 +92,7 @@ static void print_help(FILE* out) {
 		"  --linear-srgb             Use linear sRGB/gray instead of nonlinear sRGB\n"
 		"  --gamma VALUE             Set explicit gamma transfer (0 < gamma <= 1)\n"
 		"  --white-point NAME        Set white point: d65, e, or dci\n"
+		"  --white-point-xy X,Y      Set a custom white point and mark it custom\n"
 		"  --primaries NAME          Set RGB primaries: srgb, p3, or 2100\n"
 		"  --transfer-function NAME  Set transfer function: srgb, linear, 709,\n"
 		"                            pq, dci, hlg, or gamma (requires --gamma)\n"
@@ -322,6 +323,29 @@ static int parse_intrinsic_size(const char* text, uint32_t* width, uint32_t* hei
 	if (!parse_u32_token(width_buf, width)) return 0;
 	if (!parse_u32_token(height_text, height)) return 0;
 	if (*width == 0 || *height == 0) return 0;
+	return 1;
+}
+
+static int parse_xy_pair(const char* text, double* x, double* y) {
+	const char* sep = strchr(text, ',');
+	char x_buf[64];
+	char* end = NULL;
+
+	if (!sep || !x || !y) return 0;
+	size_t x_len = (size_t)(sep - text);
+	const char* y_text = sep + 1;
+	if (x_len == 0 || *y_text == '\0' || x_len + 1 > sizeof(x_buf)) return 0;
+
+	memcpy(x_buf, text, x_len);
+	x_buf[x_len] = '\0';
+
+	*x = strtod(x_buf, &end);
+	if (end == x_buf || *end != '\0') return 0;
+
+	end = NULL;
+	*y = strtod(y_text, &end);
+	if (end == y_text || *end != '\0') return 0;
+
 	return 1;
 }
 
@@ -1055,6 +1079,8 @@ static int encode_animation(
 	const ParsedAnimation* animation,
 	int alpha_premultiplied,
 	JxlWhitePoint white_point,
+	double white_point_x,
+	double white_point_y,
 	JxlPrimaries primaries,
 	JxlTransferFunction transfer_function,
 	double gamma,
@@ -1141,6 +1167,8 @@ static int encode_animation(
 	JxlColorEncoding color;
 	JxlColorEncodingSetToSRGB(&color, 0);
 	color.white_point = white_point;
+	color.white_point_xy[0] = white_point_x;
+	color.white_point_xy[1] = white_point_y;
 	color.primaries = primaries;
 	color.transfer_function = transfer_function;
 	color.gamma = gamma;
@@ -1252,6 +1280,8 @@ static int encode_image(
 	size_t extra_count,
 	int alpha_premultiplied,
 	JxlWhitePoint white_point,
+	double white_point_x,
+	double white_point_y,
 	JxlPrimaries primaries,
 	JxlTransferFunction transfer_function,
 	double gamma,
@@ -1329,6 +1359,8 @@ static int encode_image(
 	JxlColorEncoding color;
 	JxlColorEncodingSetToSRGB(&color, image->num_color_channels == 1 ? 1 : 0);
 	color.white_point = white_point;
+	color.white_point_xy[0] = white_point_x;
+	color.white_point_xy[1] = white_point_y;
 	color.primaries = primaries;
 	color.transfer_function = transfer_function;
 	color.gamma = gamma;
@@ -1498,6 +1530,8 @@ int cjxlz_main(int argc, char** argv) {
 	const char* output_path = NULL;
 	int alpha_premultiplied = 0;
 	JxlWhitePoint white_point = JXL_WHITE_POINT_D65;
+	double white_point_x = 0.3127;
+	double white_point_y = 0.3290;
 	JxlPrimaries primaries = JXL_PRIMARIES_SRGB;
 	JxlTransferFunction transfer_function = JXL_TRANSFER_FUNCTION_SRGB;
 	double gamma = 1.0;
@@ -1561,6 +1595,15 @@ int cjxlz_main(int argc, char** argv) {
 				fprintf(stderr, "--white-point requires one of: d65, e, dci\n");
 				return 2;
 			}
+			i += 1;
+			continue;
+		}
+		if (strcmp(argv[i], "--white-point-xy") == 0) {
+			if (i + 1 >= argc || !parse_xy_pair(argv[i + 1], &white_point_x, &white_point_y)) {
+				fprintf(stderr, "--white-point-xy requires X,Y\n");
+				return 2;
+			}
+			white_point = JXL_WHITE_POINT_CUSTOM;
 			i += 1;
 			continue;
 		}
@@ -1786,6 +1829,8 @@ int cjxlz_main(int argc, char** argv) {
 				&animation,
 				alpha_premultiplied,
 				white_point,
+				white_point_x,
+				white_point_y,
 				primaries,
 				transfer_function,
 				gamma,
@@ -1820,6 +1865,8 @@ int cjxlz_main(int argc, char** argv) {
 				0,
 				alpha_premultiplied,
 				white_point,
+				white_point_x,
+				white_point_y,
 				primaries,
 				transfer_function,
 				gamma,
@@ -1884,6 +1931,8 @@ int cjxlz_main(int argc, char** argv) {
 			extra_count,
 			alpha_premultiplied,
 			white_point,
+			white_point_x,
+			white_point_y,
 			primaries,
 			transfer_function,
 			gamma,

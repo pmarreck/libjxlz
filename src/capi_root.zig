@@ -475,6 +475,26 @@ fn defaultPrimariesBlueXY() [2]f64 {
 	return .{ 0.150002046, 0.059997204 };
 }
 
+fn customXYToF64Pair(xy: color_encoding_mod.Customxy) [2]f64 {
+	return .{
+		@as(f64, @floatFromInt(xy.x)) / 1000000.0,
+		@as(f64, @floatFromInt(xy.y)) / 1000000.0,
+	};
+}
+
+fn customXYFromF64Pair(pair: [2]f64) !color_encoding_mod.Customxy {
+	for (pair) |coord| {
+		if (!std.math.isFinite(coord)) return error.Unsupported;
+	}
+
+	const x = @as(i32, @intFromFloat(@round(pair[0] * 1000000.0)));
+	const y = @as(i32, @intFromFloat(@round(pair[1] * 1000000.0)));
+	if (x < -2097152 or x > 2097151 or y < -2097152 or y > 2097151) {
+		return error.Unsupported;
+	}
+	return .{ .x = x, .y = y };
+}
+
 fn defaultJxlColorEncoding(is_gray: bool, linear: bool) JxlColorEncoding {
 	return .{
 		.color_space = if (is_gray) .JXL_COLOR_SPACE_GRAY else .JXL_COLOR_SPACE_RGB,
@@ -571,10 +591,10 @@ fn populateColorEncoding(dst: *JxlColorEncoding, color: *const color_encoding_mo
 	dst.color_space = fromInternalColorSpace(color.color_space);
 	dst.white_point = fromInternalWhitePoint(color.white_point);
 	dst.primaries = fromInternalPrimaries(color.primaries);
-	dst.white_point_xy = defaultWhitePointXY();
-	dst.primaries_red_xy = defaultPrimariesRedXY();
-	dst.primaries_green_xy = defaultPrimariesGreenXY();
-	dst.primaries_blue_xy = defaultPrimariesBlueXY();
+	dst.white_point_xy = if (color.white_point == .custom) customXYToF64Pair(color.white) else defaultWhitePointXY();
+	dst.primaries_red_xy = if (color.primaries == .custom) customXYToF64Pair(color.red) else defaultPrimariesRedXY();
+	dst.primaries_green_xy = if (color.primaries == .custom) customXYToF64Pair(color.green) else defaultPrimariesGreenXY();
+	dst.primaries_blue_xy = if (color.primaries == .custom) customXYToF64Pair(color.blue) else defaultPrimariesBlueXY();
 	dst.transfer_function = fromInternalTransferFunction(&color.tf, &dst.gamma);
 	dst.rendering_intent = fromInternalRenderingIntent(color.rendering_intent);
 }
@@ -611,10 +631,13 @@ fn toInternalColorEncoding(
 
 	internal.white_point = switch (color.white_point) {
 		.JXL_WHITE_POINT_D65 => .d65,
+		.JXL_WHITE_POINT_CUSTOM => .custom,
 		.JXL_WHITE_POINT_E => .e,
 		.JXL_WHITE_POINT_DCI => .dci,
-		else => return error.Unsupported,
 	};
+	if (internal.white_point == .custom) {
+		internal.white = try customXYFromF64Pair(color.white_point_xy);
+	}
 
 	switch (color.transfer_function) {
 		.JXL_TRANSFER_FUNCTION_GAMMA => {
@@ -703,6 +726,18 @@ test "toInternalColorEncoding accepts explicit gamma" {
 	try std.testing.expectEqual(color_encoding_mod.Primaries.srgb, internal.primaries);
 	try std.testing.expect(internal.tf.have_gamma);
 	try std.testing.expectEqual(@as(u32, 4545455), internal.tf.gamma);
+}
+
+test "toInternalColorEncoding accepts custom white point" {
+	var color = defaultJxlColorEncoding(false, false);
+	color.white_point = .JXL_WHITE_POINT_CUSTOM;
+	color.white_point_xy = .{ 0.321, 0.345 };
+
+	const internal = try toInternalColorEncoding(&color, 3);
+
+	try std.testing.expectEqual(color_encoding_mod.WhitePoint.custom, internal.white_point);
+	try std.testing.expectEqual(@as(i32, 321000), internal.white.x);
+	try std.testing.expectEqual(@as(i32, 345000), internal.white.y);
 }
 
 fn bytesPerChannel(data_type: JxlDataType) ?usize {
