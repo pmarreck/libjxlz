@@ -14,7 +14,7 @@ ENCODE_PREP_BUILD_LOG="${TMPDIR}/libjxlz_windows_encode_prep_build.log"
 ENCODE_CODESTREAM_TEST_LOG="${TMPDIR}/libjxlz_windows_encode_codestream_test.log"
 ENCODE_CODESTREAM_BUILD_LOG="${TMPDIR}/libjxlz_windows_encode_codestream_build.log"
 
-if ! zig build -Dtarget="${TARGET}" -Doptimize=ReleaseFast -Dpng_input=false -Dgif_input=false >"${BUILD_LOG}" 2>&1; then
+if ! zig build -Dtarget="${TARGET}" -Doptimize=ReleaseFast -Dpng_input=false -Dgif_input=false -Dgif_output=false >"${BUILD_LOG}" 2>&1; then
 	cat "${BUILD_LOG}"
 	exit 1
 fi
@@ -24,7 +24,7 @@ if ! zig build capi -Dtarget="${TARGET}" -Doptimize=ReleaseFast >"${CAPI_LOG}" 2
 	exit 1
 fi
 
-if ! zig build djxlz -Dtarget="${TARGET}" -Doptimize=ReleaseFast >"${DJXLZ_LOG}" 2>&1; then
+if ! zig build djxlz -Dtarget="${TARGET}" -Doptimize=ReleaseFast -Dgif_output=false >"${DJXLZ_LOG}" 2>&1; then
 	cat "${DJXLZ_LOG}"
 	exit 1
 fi

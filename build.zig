@@ -9,6 +9,7 @@ pub fn build(b: *std.Build) void {
 	) orelse .ReleaseFast;
 	const png_input = b.option(bool, "png_input", "Enable PNG input support in cjxlz (default: true)") orelse true;
 	const gif_input = b.option(bool, "gif_input", "Enable GIF input support in cjxlz (default: true)") orelse true;
+	const gif_output = b.option(bool, "gif_output", "Enable GIF output support in djxlz (default: true)") orelse true;
 	const gif_include_dir = std.process.getEnvVarOwned(b.allocator, "GIF_INCLUDE_DIR") catch null;
 	const gif_lib_dir = std.process.getEnvVarOwned(b.allocator, "GIF_LIB_DIR") catch null;
 	defer if (gif_include_dir) |path| b.allocator.free(path);
@@ -66,6 +67,16 @@ pub fn build(b: *std.Build) void {
 	});
 	djxlz.linkLibrary(capi_lib);
 	djxlz.linkLibC();
+	if (gif_output) {
+		djxlz.root_module.addCMacro("JXLZ_HAVE_GIF_OUTPUT", "1");
+		if (gif_include_dir) |path| {
+			djxlz.addIncludePath(.{ .cwd_relative = path });
+		}
+		if (gif_lib_dir) |path| {
+			djxlz.root_module.addLibraryPath(.{ .cwd_relative = path });
+		}
+		djxlz.linkSystemLibrary("gif");
+	}
 	if (optimize == .Debug) {
 		djxlz.root_module.addCMacro("JXLZ_DEBUG_BUILD", "1");
 	}
