@@ -38,3 +38,5 @@ zig-out/
 jj_cheatsheet.md
 ZIG_RECENT_API_CHANGES.md
 AGENTS.md
+.mcp.json
+result
