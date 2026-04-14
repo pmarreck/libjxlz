@@ -52,7 +52,7 @@ if ! "${CHECK_BIN}" "${ENCODED_JXL}" >"${CHECK_STDOUT}" 2>"${CHECK_STDERR}"; the
 	exit 1
 fi
 
-if ! grep -Eq '^0 8 0\.000000 1$' "${CHECK_STDOUT}"; then
+if ! grep -Eq '^0 1 8 0\.000000 1$' "${CHECK_STDOUT}"; then
 	echo "unexpected encoded color profile"
 	cat "${CHECK_STDOUT}"
 	exit 1

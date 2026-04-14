@@ -594,12 +594,17 @@ fn toInternalColorEncoding(
 			if (num_channels != 1) return error.Unsupported;
 			internal.color_space = .gray;
 			internal.primaries = .srgb;
+			if (color.primaries != .JXL_PRIMARIES_SRGB) return error.Unsupported;
 		},
 		.JXL_COLOR_SPACE_RGB => {
 			if (num_channels != 3) return error.Unsupported;
 			internal.color_space = .rgb;
-			if (color.primaries != .JXL_PRIMARIES_SRGB) return error.Unsupported;
-			internal.primaries = .srgb;
+			internal.primaries = switch (color.primaries) {
+				.JXL_PRIMARIES_SRGB => .srgb,
+				.JXL_PRIMARIES_2100 => .bt2100,
+				.JXL_PRIMARIES_P3 => .p3,
+				else => return error.Unsupported,
+			};
 		},
 		else => return error.Unsupported,
 	}
@@ -608,6 +613,10 @@ fn toInternalColorEncoding(
 	internal.white_point = .d65;
 
 	switch (color.transfer_function) {
+		.JXL_TRANSFER_FUNCTION_709 => internal.tf = .{
+			.have_gamma = false,
+			.transfer_function = .bt709,
+		},
 		.JXL_TRANSFER_FUNCTION_SRGB => internal.tf = .{
 			.have_gamma = false,
 			.transfer_function = .srgb,
@@ -616,10 +625,46 @@ fn toInternalColorEncoding(
 			.have_gamma = false,
 			.transfer_function = .linear,
 		},
+		.JXL_TRANSFER_FUNCTION_PQ => internal.tf = .{
+			.have_gamma = false,
+			.transfer_function = .pq,
+		},
+		.JXL_TRANSFER_FUNCTION_DCI => internal.tf = .{
+			.have_gamma = false,
+			.transfer_function = .dci,
+		},
+		.JXL_TRANSFER_FUNCTION_HLG => internal.tf = .{
+			.have_gamma = false,
+			.transfer_function = .hlg,
+		},
 		else => return error.Unsupported,
 	}
 
 	return internal;
+}
+
+test "toInternalColorEncoding accepts p3 hlg rgb" {
+	var color = defaultJxlColorEncoding(false, false);
+	color.primaries = .JXL_PRIMARIES_P3;
+	color.transfer_function = .JXL_TRANSFER_FUNCTION_HLG;
+
+	const internal = try toInternalColorEncoding(&color, 3);
+	try std.testing.expectEqual(color_encoding_mod.ColorSpace.rgb, internal.color_space);
+	try std.testing.expectEqual(color_encoding_mod.Primaries.p3, internal.primaries);
+	try std.testing.expect(!internal.tf.have_gamma);
+	try std.testing.expectEqual(color_encoding_mod.TransferFunction.hlg, internal.tf.transfer_function);
+}
+
+test "toInternalColorEncoding accepts bt2100 pq rgb" {
+	var color = defaultJxlColorEncoding(false, false);
+	color.primaries = .JXL_PRIMARIES_2100;
+	color.transfer_function = .JXL_TRANSFER_FUNCTION_PQ;
+
+	const internal = try toInternalColorEncoding(&color, 3);
+	try std.testing.expectEqual(color_encoding_mod.ColorSpace.rgb, internal.color_space);
+	try std.testing.expectEqual(color_encoding_mod.Primaries.bt2100, internal.primaries);
+	try std.testing.expect(!internal.tf.have_gamma);
+	try std.testing.expectEqual(color_encoding_mod.TransferFunction.pq, internal.tf.transfer_function);
 }
 
 fn bytesPerChannel(data_type: JxlDataType) ?usize {

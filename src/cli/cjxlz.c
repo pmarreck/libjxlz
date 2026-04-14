@@ -90,6 +90,9 @@ static void print_help(FILE* out) {
 		"  --premultiplied-alpha     Mark the alpha channel as premultiplied/associated\n"
 		"  --associated-alpha        Alias for --premultiplied-alpha\n"
 		"  --linear-srgb             Use linear sRGB/gray instead of nonlinear sRGB\n"
+		"  --primaries NAME          Set RGB primaries: srgb, p3, or 2100\n"
+		"  --transfer-function NAME  Set transfer function: srgb, linear, 709,\n"
+		"                            pq, dci, or hlg\n"
 		"  --rendering-intent NAME   Set rendering intent: perceptual, relative,\n"
 		"                            saturation, or absolute\n"
 		"  --alpha-name NAME         Set the alpha extra-channel name\n"
@@ -335,6 +338,52 @@ static int parse_rendering_intent(const char* text, JxlRenderingIntent* intent) 
 	}
 	if (strcmp(text, "absolute") == 0) {
 		*intent = JXL_RENDERING_INTENT_ABSOLUTE;
+		return 1;
+	}
+	return 0;
+}
+
+static int parse_primaries(const char* text, JxlPrimaries* primaries) {
+	if (!text || !primaries) return 0;
+	if (strcmp(text, "srgb") == 0) {
+		*primaries = JXL_PRIMARIES_SRGB;
+		return 1;
+	}
+	if (strcmp(text, "p3") == 0) {
+		*primaries = JXL_PRIMARIES_P3;
+		return 1;
+	}
+	if (strcmp(text, "2100") == 0 || strcmp(text, "bt2100") == 0) {
+		*primaries = JXL_PRIMARIES_2100;
+		return 1;
+	}
+	return 0;
+}
+
+static int parse_transfer_function(const char* text, JxlTransferFunction* transfer_function) {
+	if (!text || !transfer_function) return 0;
+	if (strcmp(text, "srgb") == 0) {
+		*transfer_function = JXL_TRANSFER_FUNCTION_SRGB;
+		return 1;
+	}
+	if (strcmp(text, "linear") == 0) {
+		*transfer_function = JXL_TRANSFER_FUNCTION_LINEAR;
+		return 1;
+	}
+	if (strcmp(text, "709") == 0 || strcmp(text, "bt709") == 0) {
+		*transfer_function = JXL_TRANSFER_FUNCTION_709;
+		return 1;
+	}
+	if (strcmp(text, "pq") == 0) {
+		*transfer_function = JXL_TRANSFER_FUNCTION_PQ;
+		return 1;
+	}
+	if (strcmp(text, "dci") == 0) {
+		*transfer_function = JXL_TRANSFER_FUNCTION_DCI;
+		return 1;
+	}
+	if (strcmp(text, "hlg") == 0) {
+		*transfer_function = JXL_TRANSFER_FUNCTION_HLG;
 		return 1;
 	}
 	return 0;
@@ -981,7 +1030,8 @@ static int parse_extra_input(ParsedExtraInput* extra, uint32_t width, uint32_t h
 static int encode_animation(
 	const ParsedAnimation* animation,
 	int alpha_premultiplied,
-	int linear_srgb,
+	JxlPrimaries primaries,
+	JxlTransferFunction transfer_function,
 	JxlRenderingIntent rendering_intent,
 	const char* alpha_name,
 	float intensity_target,
@@ -1058,11 +1108,9 @@ static int encode_animation(
 	info.alpha_premultiplied = alpha_premultiplied ? 1 : 0;
 
 	JxlColorEncoding color;
-	if (linear_srgb) {
-		JxlColorEncodingSetToLinearSRGB(&color, 0);
-	} else {
-		JxlColorEncodingSetToSRGB(&color, 0);
-	}
+	JxlColorEncodingSetToSRGB(&color, 0);
+	color.primaries = primaries;
+	color.transfer_function = transfer_function;
 	color.rendering_intent = rendering_intent;
 
 	JxlPixelFormat format = {
@@ -1170,7 +1218,8 @@ static int encode_image(
 	const ParsedExtraInput* extras,
 	size_t extra_count,
 	int alpha_premultiplied,
-	int linear_srgb,
+	JxlPrimaries primaries,
+	JxlTransferFunction transfer_function,
 	JxlRenderingIntent rendering_intent,
 	const char* alpha_name,
 	float intensity_target,
@@ -1238,11 +1287,9 @@ static int encode_image(
 	info.alpha_premultiplied = alpha_premultiplied ? 1 : 0;
 
 	JxlColorEncoding color;
-	if (linear_srgb) {
-		JxlColorEncodingSetToLinearSRGB(&color, image->num_color_channels == 1 ? 1 : 0);
-	} else {
-		JxlColorEncodingSetToSRGB(&color, image->num_color_channels == 1 ? 1 : 0);
-	}
+	JxlColorEncodingSetToSRGB(&color, image->num_color_channels == 1 ? 1 : 0);
+	color.primaries = primaries;
+	color.transfer_function = transfer_function;
 	color.rendering_intent = rendering_intent;
 
 	JxlPixelFormat format = {
@@ -1408,7 +1455,8 @@ int cjxlz_main(int argc, char** argv) {
 	const char* input_path = NULL;
 	const char* output_path = NULL;
 	int alpha_premultiplied = 0;
-	int linear_srgb = 0;
+	JxlPrimaries primaries = JXL_PRIMARIES_SRGB;
+	JxlTransferFunction transfer_function = JXL_TRANSFER_FUNCTION_SRGB;
 	JxlRenderingIntent rendering_intent = JXL_RENDERING_INTENT_RELATIVE;
 	const char* alpha_name = NULL;
 	float intensity_target = 255.0f;
@@ -1446,7 +1494,23 @@ int cjxlz_main(int argc, char** argv) {
 			continue;
 		}
 		if (strcmp(argv[i], "--linear-srgb") == 0) {
-			linear_srgb = 1;
+			transfer_function = JXL_TRANSFER_FUNCTION_LINEAR;
+			continue;
+		}
+		if (strcmp(argv[i], "--primaries") == 0) {
+			if (i + 1 >= argc || !parse_primaries(argv[i + 1], &primaries)) {
+				fprintf(stderr, "--primaries requires one of: srgb, p3, 2100\n");
+				return 2;
+			}
+			i += 1;
+			continue;
+		}
+		if (strcmp(argv[i], "--transfer-function") == 0) {
+			if (i + 1 >= argc || !parse_transfer_function(argv[i + 1], &transfer_function)) {
+				fprintf(stderr, "--transfer-function requires one of: srgb, linear, 709, pq, dci, hlg\n");
+				return 2;
+			}
+			i += 1;
 			continue;
 		}
 		if (strcmp(argv[i], "--rendering-intent") == 0) {
@@ -1642,7 +1706,8 @@ int cjxlz_main(int argc, char** argv) {
 			if (!encode_animation(
 				&animation,
 				alpha_premultiplied,
-				linear_srgb,
+				primaries,
+				transfer_function,
 				rendering_intent,
 				alpha_name,
 				intensity_target,
@@ -1671,7 +1736,8 @@ int cjxlz_main(int argc, char** argv) {
 				extras,
 				0,
 				alpha_premultiplied,
-				linear_srgb,
+				primaries,
+				transfer_function,
 				rendering_intent,
 				alpha_name,
 				intensity_target,
@@ -1730,7 +1796,8 @@ int cjxlz_main(int argc, char** argv) {
 			extras,
 			extra_count,
 			alpha_premultiplied,
-			linear_srgb,
+			primaries,
+			transfer_function,
 			rendering_intent,
 			alpha_name,
 			intensity_target,
