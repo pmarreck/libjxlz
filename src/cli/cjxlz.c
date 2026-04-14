@@ -103,6 +103,7 @@ static void print_help(FILE* out) {
 		"  --relative-to-max-display Mark tone mapping as relative_to_max_display\n"
 		"  --linear-below VALUE      Set tone-mapping linear_below\n"
 		"  --orientation N           Set orientation 1..8\n"
+		"  --preview-size WxH        Set preview pixel size metadata\n"
 		"  --intrinsic-size WxH      Set intrinsic pixel size metadata\n"
 		"  --animation-tps N/D       Set animation ticks per second numerator/denominator\n"
 		"  --animation-loops N       Set animation loop count\n"
@@ -1066,6 +1067,8 @@ static int encode_animation(
 	int orientation,
 	uint32_t intrinsic_width,
 	uint32_t intrinsic_height,
+	uint32_t preview_width,
+	uint32_t preview_height,
 	uint32_t animation_tps_numerator,
 	uint32_t animation_tps_denominator,
 	uint32_t animation_loops,
@@ -1109,6 +1112,9 @@ static int encode_animation(
 	info.relative_to_max_display = relative_to_max_display ? 1 : 0;
 	info.linear_below = linear_below;
 	info.orientation = (JxlOrientation)orientation;
+	info.have_preview = (preview_width != 0 || preview_height != 0) ? 1 : 0;
+	info.preview.xsize = preview_width;
+	info.preview.ysize = preview_height;
 	info.intrinsic_xsize = intrinsic_width;
 	info.intrinsic_ysize = intrinsic_height;
 	info.have_animation = 1;
@@ -1256,6 +1262,8 @@ static int encode_image(
 	int relative_to_max_display,
 	float linear_below,
 	int orientation,
+	uint32_t preview_width,
+	uint32_t preview_height,
 	uint32_t intrinsic_width,
 	uint32_t intrinsic_height,
 	int have_animation,
@@ -1296,6 +1304,9 @@ static int encode_image(
 	info.relative_to_max_display = relative_to_max_display ? 1 : 0;
 	info.linear_below = linear_below;
 	info.orientation = (JxlOrientation)orientation;
+	info.have_preview = (preview_width != 0 || preview_height != 0) ? 1 : 0;
+	info.preview.xsize = preview_width;
+	info.preview.ysize = preview_height;
 	info.intrinsic_xsize = intrinsic_width;
 	info.intrinsic_ysize = intrinsic_height;
 	info.have_animation = have_animation ? 1 : 0;
@@ -1498,6 +1509,8 @@ int cjxlz_main(int argc, char** argv) {
 	int relative_to_max_display = 0;
 	float linear_below = 0.0f;
 	int orientation = 1;
+	uint32_t preview_width = 0;
+	uint32_t preview_height = 0;
 	uint32_t intrinsic_width = 0;
 	uint32_t intrinsic_height = 0;
 	int have_animation = 0;
@@ -1619,6 +1632,14 @@ int cjxlz_main(int argc, char** argv) {
 				return 2;
 			}
 			orientation = (int)parsed;
+			i += 1;
+			continue;
+		}
+		if (strcmp(argv[i], "--preview-size") == 0) {
+			if (i + 1 >= argc || !parse_intrinsic_size(argv[i + 1], &preview_width, &preview_height)) {
+				fprintf(stderr, "--preview-size requires WxH with positive dimensions\n");
+				return 2;
+			}
 			i += 1;
 			continue;
 		}
@@ -1775,6 +1796,8 @@ int cjxlz_main(int argc, char** argv) {
 				relative_to_max_display,
 				linear_below,
 				orientation,
+				preview_width,
+				preview_height,
 				intrinsic_width,
 				intrinsic_height,
 				animation_tps_numerator,
@@ -1807,6 +1830,8 @@ int cjxlz_main(int argc, char** argv) {
 				relative_to_max_display,
 				linear_below,
 				orientation,
+				preview_width,
+				preview_height,
 				intrinsic_width,
 				intrinsic_height,
 				0,
@@ -1869,6 +1894,8 @@ int cjxlz_main(int argc, char** argv) {
 			relative_to_max_display,
 			linear_below,
 			orientation,
+			preview_width,
+			preview_height,
 			intrinsic_width,
 			intrinsic_height,
 			have_animation,

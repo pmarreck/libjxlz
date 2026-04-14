@@ -723,13 +723,16 @@ fn rowStrideBytes(width: usize, format: JxlPixelFormat) ?usize {
 }
 
 /// Validates the narrow one-shot encoder surface: 8-bit grayscale/RGB with an
-/// optional 8-bit alpha plus full-size/subsampled uint8 sidecar extras, no preview/container,
+/// optional 8-bit alpha plus full-size/subsampled uint8 sidecar extras, no container,
 /// plus simple orientation/intrinsic-size, tone-mapping, and animation metadata.
 fn validateBasicInfoForSimpleEncode(info: *const JxlBasicInfo) !void {
 	if (info.xsize == 0 or info.ysize == 0) return error.InvalidArgs;
-	if (info.have_container != 0 or info.have_preview != 0) return error.Unsupported;
+	if (info.have_container != 0) return error.Unsupported;
 	if (!(info.have_animation == 0 or info.have_animation == 1)) return error.InvalidArgs;
+	if (!(info.have_preview == 0 or info.have_preview == 1)) return error.InvalidArgs;
 	if (@intFromEnum(info.orientation) < 1 or @intFromEnum(info.orientation) > 8) return error.InvalidArgs;
+	if ((info.preview.xsize == 0) != (info.preview.ysize == 0)) return error.InvalidArgs;
+	if ((info.have_preview != 0) != (info.preview.xsize != 0)) return error.InvalidArgs;
 	if ((info.intrinsic_xsize == 0) != (info.intrinsic_ysize == 0)) return error.InvalidArgs;
 	if (info.bits_per_sample != 8 or info.exponent_bits_per_sample != 0) return error.Unsupported;
 	if (!(info.intensity_target > 0.0)) return error.InvalidArgs;
@@ -1183,6 +1186,8 @@ fn finalizeSimpleEncode(impl: *EncoderImpl) !void {
 			else
 				null,
 			.orientation = @intCast(@intFromEnum(impl.basic_info.orientation)),
+			.preview_width = impl.basic_info.preview.xsize,
+			.preview_height = impl.basic_info.preview.ysize,
 			.intrinsic_width = impl.basic_info.intrinsic_xsize,
 			.intrinsic_height = impl.basic_info.intrinsic_ysize,
 			.have_animation = impl.basic_info.have_animation != 0,
@@ -1252,6 +1257,8 @@ fn finalizeSimpleEncode(impl: *EncoderImpl) !void {
 		else
 			null,
 		.orientation = @intCast(@intFromEnum(impl.basic_info.orientation)),
+		.preview_width = impl.basic_info.preview.xsize,
+		.preview_height = impl.basic_info.preview.ysize,
 		.intrinsic_width = impl.basic_info.intrinsic_xsize,
 		.intrinsic_height = impl.basic_info.intrinsic_ysize,
 		.animation = .{

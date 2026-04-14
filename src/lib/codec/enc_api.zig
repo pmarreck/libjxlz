@@ -20,6 +20,8 @@ pub const SimpleInterleavedU8Image = struct {
 	num_extra_channels: u32 = 0,
 	alpha_associated: bool = false,
 	orientation: u32 = 1,
+	preview_width: u32 = 0,
+	preview_height: u32 = 0,
 	intrinsic_width: u32 = 0,
 	intrinsic_height: u32 = 0,
 	have_animation: bool = false,
@@ -49,6 +51,8 @@ pub const SimplePackedU8Image = struct {
 	alpha_associated: bool = false,
 	alpha_info: ?image_metadata.ExtraChannelInfo = null,
 	orientation: u32 = 1,
+	preview_width: u32 = 0,
+	preview_height: u32 = 0,
 	intrinsic_width: u32 = 0,
 	intrinsic_height: u32 = 0,
 	have_animation: bool = false,
@@ -76,6 +80,8 @@ pub const SimplePackedU8Animation = struct {
 	alpha_associated: bool = false,
 	alpha_info: ?image_metadata.ExtraChannelInfo = null,
 	orientation: u32 = 1,
+	preview_width: u32 = 0,
+	preview_height: u32 = 0,
 	intrinsic_width: u32 = 0,
 	intrinsic_height: u32 = 0,
 	animation: headers.AnimationHeader,
@@ -90,8 +96,15 @@ fn validateToneMapping(tone_mapping: image_metadata.ToneMapping) !void {
 	if (tone_mapping.relative_to_max_display and tone_mapping.linear_below > 1.0) return error.InvalidArgs;
 }
 
-fn validateOrientationAndIntrinsic(orientation: u32, intrinsic_width: u32, intrinsic_height: u32) !void {
+fn validateMetadataGeometry(
+	orientation: u32,
+	preview_width: u32,
+	preview_height: u32,
+	intrinsic_width: u32,
+	intrinsic_height: u32,
+) !void {
 	if (orientation < 1 or orientation > 8) return error.InvalidArgs;
+	if ((preview_width == 0) != (preview_height == 0)) return error.InvalidArgs;
 	if ((intrinsic_width == 0) != (intrinsic_height == 0)) return error.InvalidArgs;
 }
 
@@ -126,7 +139,7 @@ fn validateSimpleImage(image: SimpleInterleavedU8Image) !void {
 	if (!(num_color_channels == 1 or num_color_channels == 3)) return error.Unsupported;
 	if (image.num_extra_channels == 0 and image.alpha_associated) return error.Unsupported;
 	if (image.extra_channel_info.len != 0 and image.extra_channel_info.len != image.num_extra_channels) return error.InvalidArgs;
-	try validateOrientationAndIntrinsic(image.orientation, image.intrinsic_width, image.intrinsic_height);
+	try validateMetadataGeometry(image.orientation, image.preview_width, image.preview_height, image.intrinsic_width, image.intrinsic_height);
 	try validateAnimation(image.have_animation, image.animation, image.frame_duration, image.frame_timecode);
 	try validateToneMapping(image.tone_mapping);
 
@@ -145,7 +158,7 @@ fn validateSimplePackedImage(image: SimplePackedU8Image) !void {
 	if (!(image.num_color_channels == 1 or image.num_color_channels == 3)) return error.Unsupported;
 	if (image.alpha_pixels.len == 0 and image.alpha_associated) return error.Unsupported;
 	if (image.alpha_pixels.len == 0 and image.alpha_info != null) return error.InvalidArgs;
-	try validateOrientationAndIntrinsic(image.orientation, image.intrinsic_width, image.intrinsic_height);
+	try validateMetadataGeometry(image.orientation, image.preview_width, image.preview_height, image.intrinsic_width, image.intrinsic_height);
 	try validateAnimation(image.have_animation, image.animation, image.frame_duration, image.frame_timecode);
 	try validateToneMapping(image.tone_mapping);
 
@@ -179,7 +192,7 @@ fn validateSimplePackedImage(image: SimplePackedU8Image) !void {
 
 fn validateSimplePackedAnimation(image: SimplePackedU8Animation) !void {
 	if (image.frames.len == 0) return error.InvalidArgs;
-	try validateOrientationAndIntrinsic(image.orientation, image.intrinsic_width, image.intrinsic_height);
+	try validateMetadataGeometry(image.orientation, image.preview_width, image.preview_height, image.intrinsic_width, image.intrinsic_height);
 	try validateAnimation(true, image.animation, 0, 0);
 	try validateToneMapping(image.tone_mapping);
 
@@ -218,6 +231,8 @@ fn buildCodecMetadata(
 	num_extra_channels: u32,
 	alpha_associated: bool,
 	orientation: u32,
+	preview_width: u32,
+	preview_height: u32,
 	intrinsic_width: u32,
 	intrinsic_height: u32,
 	have_animation: bool,
@@ -248,6 +263,15 @@ fn buildCodecMetadata(
 			.ysize_raw = intrinsic_height,
 			.ratio = 0,
 			.xsize_raw = intrinsic_width,
+		};
+	}
+	if (preview_width != 0) {
+		codec_meta.m.have_preview = true;
+		codec_meta.m.preview_size = .{
+			.div8 = false,
+			.ysize_raw = preview_height,
+			.ratio = 0,
+			.xsize_raw = preview_width,
 		};
 	}
 	if (have_animation) {
@@ -514,6 +538,8 @@ pub fn encodeSimplePackedU8(
 		num_extra_channels,
 		image.alpha_associated,
 		image.orientation,
+		image.preview_width,
+		image.preview_height,
 		image.intrinsic_width,
 		image.intrinsic_height,
 		image.have_animation,
@@ -571,6 +597,8 @@ pub fn encodeSimplePackedU8Animation(
 		num_extra_channels,
 		image.alpha_associated,
 		image.orientation,
+		image.preview_width,
+		image.preview_height,
 		image.intrinsic_width,
 		image.intrinsic_height,
 		true,
@@ -601,6 +629,8 @@ pub fn encodeSimplePackedU8Animation(
 			.alpha_associated = image.alpha_associated,
 			.alpha_info = image.alpha_info,
 			.orientation = image.orientation,
+			.preview_width = image.preview_width,
+			.preview_height = image.preview_height,
 			.intrinsic_width = image.intrinsic_width,
 			.intrinsic_height = image.intrinsic_height,
 			.have_animation = true,
@@ -649,6 +679,8 @@ pub fn encodeSimpleInterleavedU8(
 		image.num_extra_channels,
 		image.alpha_associated,
 		image.orientation,
+		image.preview_width,
+		image.preview_height,
 		image.intrinsic_width,
 		image.intrinsic_height,
 		image.have_animation,

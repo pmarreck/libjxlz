@@ -439,7 +439,7 @@ pub fn writeImageMetadata(metadata: *const ImageMetadata, writer: anytype) !void
         metadata.have_animation or
         metadata.have_intrinsic_size or
         !tone_mapping_default;
-    if (metadata.have_preview) {
+    if (metadata.have_preview and (metadata.preview_size.xsize() == 0 or metadata.preview_size.ysize() == 0)) {
 		return error.Unsupported;
 	}
     if (metadata.orientation < 1 or metadata.orientation > 8) return error.Unsupported;
@@ -455,7 +455,10 @@ pub fn writeImageMetadata(metadata: *const ImageMetadata, writer: anytype) !void
 		if (metadata.have_intrinsic_size) {
 			try headers.writeSizeHeader(&metadata.intrinsic_size, writer);
 		}
-		try writer.write(1, 0); // have_preview = false
+		try writer.write(1, @intFromBool(metadata.have_preview));
+		if (metadata.have_preview) {
+			try headers.writePreviewHeader(&metadata.preview_size, writer);
+		}
 		try writer.write(1, @intFromBool(metadata.have_animation));
 		if (metadata.have_animation) {
 			try headers.writeAnimationHeader(&metadata.animation, writer);
@@ -930,6 +933,32 @@ test "writeImageMetadata round-trips non-default orientation and intrinsic size"
 	try testing.expect(roundtrip.have_intrinsic_size);
 	try testing.expectEqual(@as(usize, 9), roundtrip.intrinsic_size.xsize());
 	try testing.expectEqual(@as(usize, 7), roundtrip.intrinsic_size.ysize());
+}
+
+test "writeImageMetadata round-trips non-default preview metadata" {
+	const allocator = testing.allocator;
+	const data = @embedFile("../testdata/lossless_4x4.jxl");
+	const extracted = try extractMetadataBits(data);
+
+	var metadata = extracted.metadata;
+	metadata.have_preview = true;
+	metadata.preview_size = .{
+		.div8 = false,
+		.ysize_raw = 1,
+		.ratio = 0,
+		.xsize_raw = 1,
+	};
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writeImageMetadata(&metadata, &writer);
+	try writer.zeroPadToByte();
+
+	var br = BitReader.init(writer.bytes());
+	const roundtrip = try ImageMetadata.readFromBitStream(&br);
+	try testing.expect(roundtrip.have_preview);
+	try testing.expectEqual(@as(usize, 1), roundtrip.preview_size.xsize());
+	try testing.expectEqual(@as(usize, 1), roundtrip.preview_size.ysize());
 }
 
 test "writeImageMetadata round-trips non-default animation metadata" {

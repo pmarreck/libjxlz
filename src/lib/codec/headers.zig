@@ -178,6 +178,31 @@ pub const PreviewHeader = struct {
     }
 };
 
+/// Writes the compact preview-size encoding used by metadata `preview_size`,
+/// mirroring the decoder's small/div8 and aspect-ratio forms.
+pub fn writePreviewHeader(preview: *const PreviewHeader, writer: anytype) !void {
+	try writer.write(1, @intFromBool(preview.div8));
+
+	if (preview.div8) {
+		const enc = fc.U32Enc.init(fc.val(16), fc.val(32), fc.bitsOffset(5, 1), fc.bitsOffset(9, 33));
+		try fc.U32Coder.write(enc, preview.ysize_div8, writer);
+	} else {
+		const enc = fc.U32Enc.init(fc.bitsOffset(6, 1), fc.bitsOffset(8, 65), fc.bitsOffset(10, 321), fc.bitsOffset(12, 1345));
+		try fc.U32Coder.write(enc, preview.ysize_raw, writer);
+	}
+
+	try writer.write(3, preview.ratio);
+	if (preview.ratio == 0) {
+		if (preview.div8) {
+			const enc = fc.U32Enc.init(fc.val(16), fc.val(32), fc.bitsOffset(5, 1), fc.bitsOffset(9, 33));
+			try fc.U32Coder.write(enc, preview.xsize_div8, writer);
+		} else {
+			const enc = fc.U32Enc.init(fc.bitsOffset(6, 1), fc.bitsOffset(8, 65), fc.bitsOffset(10, 321), fc.bitsOffset(12, 1345));
+			try fc.U32Coder.write(enc, preview.xsize_raw, writer);
+		}
+	}
+}
+
 // ── AnimationHeader ──
 
 pub const AnimationHeader = struct {
