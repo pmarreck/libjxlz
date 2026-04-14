@@ -1122,9 +1122,6 @@ fn finalizeSimpleEncode(impl: *EncoderImpl) !void {
 		return;
 	}
 
-	const has_sidecar_extras = impl.basic_info.num_extra_channels > @as(u32, @intFromBool(impl.basic_info.alpha_bits != 0));
-	if (has_sidecar_extras) return error.Unsupported;
-
 	const prepared_frames = try std.heap.c_allocator.alloc(PreparedSimplePackedInput, impl.queued_frames.items.len);
 	defer {
 		for (prepared_frames) |*prepared| prepared.deinit(std.heap.c_allocator);
@@ -1149,6 +1146,7 @@ fn finalizeSimpleEncode(impl: *EncoderImpl) !void {
 			.color_pixels = prepared_frames[i].color_pixels,
 			.alpha_row_stride = prepared_frames[i].alpha_row_stride,
 			.alpha_pixels = prepared_frames[i].alpha_pixels,
+			.extra_planes = prepared_frames[i].extra_planes,
 			.frame_duration = if (queued_frame.frame_header_set) queued_frame.frame_header.duration else 0,
 			.frame_timecode = if (queued_frame.frame_header_set) queued_frame.frame_header.timecode else 0,
 		};
@@ -3709,6 +3707,275 @@ test "JxlEncoder encodes two animation frames with staged subsampled alpha" {
 		try testing.expectEqual(@as(usize, 4), image.channels.items.len);
 		try testing.expectEqual(@as(usize, 1), image.channels.items[3].h);
 		try testing.expectEqualSlices(i32, expected_row_alpha, image.channels.items[3].row(0));
+
+		frame_offset += frame_bytes;
+	}
+	try testing.expectEqual(encoded.items.len, frame_offset);
+}
+
+test "JxlEncoder encodes two animation frames with a staged selection mask" {
+	const testing = std.testing;
+	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlEncoderDestroy(enc);
+
+	var info: JxlBasicInfo = undefined;
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 2;
+	info.ysize = 2;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 3;
+	info.num_extra_channels = 1;
+	info.have_animation = 1;
+	info.animation.tps_numerator = 100;
+	info.animation.tps_denominator = 1;
+	info.animation.num_loops = 0;
+
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetBasicInfo(enc, &info));
+
+	var color = std.mem.zeroes(JxlColorEncoding);
+	JxlColorEncodingSetToSRGB(&color, 0);
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetColorEncoding(enc, &color));
+
+	var extra = std.mem.zeroes(JxlExtraChannelInfo);
+	JxlEncoderInitExtraChannelInfo(.JXL_CHANNEL_SELECTION_MASK, &extra);
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetExtraChannelInfo(enc, 0, &extra));
+
+	const settings = JxlEncoderFrameSettingsCreate(enc, null) orelse return error.OutOfMemory;
+	var frame_header = std.mem.zeroes(JxlFrameHeader);
+
+	const rgb_pixels0 = [_]u8{
+		0, 10, 20, 30, 40, 50,
+		60, 70, 80, 90, 100, 110,
+	};
+	const rgb_pixels1 = [_]u8{
+		5, 15, 25, 35, 45, 55,
+		65, 75, 85, 95, 105, 115,
+	};
+	const mask_pixels0 = [_]u8{
+		255, 0,
+		64, 32,
+	};
+	const mask_pixels1 = [_]u8{
+		0, 255,
+		32, 64,
+	};
+	const rgb_format = JxlPixelFormat{
+		.num_channels = 3,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	const mask_format = JxlPixelFormat{
+		.num_channels = 1,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+
+	frame_header.duration = 12;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetFrameHeader(settings, &frame_header));
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderAddImageFrame(settings, &rgb_format, &rgb_pixels0, rgb_pixels0.len),
+	);
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderSetExtraChannelBuffer(settings, &mask_format, &mask_pixels0, mask_pixels0.len, 0),
+	);
+
+	frame_header.duration = 24;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetFrameHeader(settings, &frame_header));
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderAddImageFrame(settings, &rgb_format, &rgb_pixels1, rgb_pixels1.len),
+	);
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderSetExtraChannelBuffer(settings, &mask_format, &mask_pixels1, mask_pixels1.len, 0),
+	);
+
+	JxlEncoderCloseFrames(enc);
+
+	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	defer encoded.deinit(testing.allocator);
+	while (true) {
+		var chunk: [48]u8 = undefined;
+		var next_out = chunk[0..].ptr;
+		var avail_out: usize = chunk.len;
+		const status = JxlEncoderProcessOutput(enc, &next_out, &avail_out);
+		const produced = chunk.len - avail_out;
+		try encoded.appendSlice(testing.allocator, chunk[0..produced]);
+		if (status == .JXL_ENC_SUCCESS) break;
+		try testing.expectEqual(JxlEncoderStatus.JXL_ENC_NEED_MORE_OUTPUT, status);
+	}
+
+	var br = BitReader.init(encoded.items[2..]);
+	const size = headers.SizeHeader.readFromBitStream(&br);
+	const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+	const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+	try br.jumpToByteBoundary();
+
+	try testing.expect(metadata.have_animation);
+	try testing.expectEqual(@as(u32, 1), metadata.num_extra_channels);
+	try testing.expectEqual(image_metadata.ExtraChannel.selection_mask, metadata.extra_channel_info[0].type);
+
+	var codec_meta = image_metadata.CodecMetadata{};
+	codec_meta.size = size;
+	codec_meta.m = metadata;
+	codec_meta.transform_data = transform_data;
+
+	var frame_offset = 2 + br.totalBitsConsumed() / 8;
+	const expected_masks = [_][]const i32{
+		&.{ 255, 0, 64, 32 },
+		&.{ 0, 255, 32, 64 },
+	};
+	const expected_durations = [_]u32{ 12, 24 };
+	for (expected_masks, expected_durations, 0..) |expected_mask, duration, i| {
+		const frame_bytes = try dec_frame.frameByteCount(testing.allocator, &codec_meta, encoded.items[frame_offset..]);
+
+		var frame_dec = dec_frame.FrameDecoder.init(testing.allocator, &codec_meta);
+		defer frame_dec.deinit();
+		try frame_dec.decodeFrame(encoded.items[frame_offset .. frame_offset + frame_bytes]);
+
+		try testing.expectEqual(duration, frame_dec.frame_header.animation_frame.duration);
+		try testing.expectEqual(i + 1 == expected_masks.len, frame_dec.frame_header.is_last);
+
+		const image = frame_dec.getDecodedImage();
+		try testing.expectEqual(@as(usize, 4), image.channels.items.len);
+		try testing.expectEqualSlices(i32, expected_mask, image.channels.items[3].data);
+
+		frame_offset += frame_bytes;
+	}
+	try testing.expectEqual(encoded.items.len, frame_offset);
+}
+
+test "JxlEncoder encodes two animation frames with a staged subsampled depth channel" {
+	const testing = std.testing;
+	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlEncoderDestroy(enc);
+
+	var info: JxlBasicInfo = undefined;
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 4;
+	info.ysize = 2;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 3;
+	info.num_extra_channels = 1;
+	info.have_animation = 1;
+	info.animation.tps_numerator = 100;
+	info.animation.tps_denominator = 1;
+	info.animation.num_loops = 0;
+
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetBasicInfo(enc, &info));
+
+	var color = std.mem.zeroes(JxlColorEncoding);
+	JxlColorEncodingSetToSRGB(&color, 0);
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetColorEncoding(enc, &color));
+
+	var extra = std.mem.zeroes(JxlExtraChannelInfo);
+	JxlEncoderInitExtraChannelInfo(.JXL_CHANNEL_DEPTH, &extra);
+	extra.dim_shift = 1;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetExtraChannelInfo(enc, 0, &extra));
+
+	const settings = JxlEncoderFrameSettingsCreate(enc, null) orelse return error.OutOfMemory;
+	var frame_header = std.mem.zeroes(JxlFrameHeader);
+
+	const rgb_pixels0 = [_]u8{
+		4, 8, 12, 6, 10, 14, 8, 12, 16, 10, 14, 18,
+		3, 6, 9, 5, 8, 11, 7, 10, 13, 9, 12, 15,
+	};
+	const rgb_pixels1 = [_]u8{
+		14, 18, 22, 16, 20, 24, 18, 22, 26, 20, 24, 28,
+		13, 16, 19, 15, 18, 21, 17, 20, 23, 19, 22, 25,
+	};
+	const depth_pixels0 = [_]u8{ 10, 20 };
+	const depth_pixels1 = [_]u8{ 30, 40 };
+	const rgb_format = JxlPixelFormat{
+		.num_channels = 3,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	const depth_format = JxlPixelFormat{
+		.num_channels = 1,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+
+	frame_header.duration = 15;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetFrameHeader(settings, &frame_header));
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderAddImageFrame(settings, &rgb_format, &rgb_pixels0, rgb_pixels0.len),
+	);
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderSetExtraChannelBuffer(settings, &depth_format, &depth_pixels0, depth_pixels0.len, 0),
+	);
+
+	frame_header.duration = 35;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetFrameHeader(settings, &frame_header));
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderAddImageFrame(settings, &rgb_format, &rgb_pixels1, rgb_pixels1.len),
+	);
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderSetExtraChannelBuffer(settings, &depth_format, &depth_pixels1, depth_pixels1.len, 0),
+	);
+
+	JxlEncoderCloseFrames(enc);
+
+	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	defer encoded.deinit(testing.allocator);
+	while (true) {
+		var chunk: [48]u8 = undefined;
+		var next_out = chunk[0..].ptr;
+		var avail_out: usize = chunk.len;
+		const status = JxlEncoderProcessOutput(enc, &next_out, &avail_out);
+		const produced = chunk.len - avail_out;
+		try encoded.appendSlice(testing.allocator, chunk[0..produced]);
+		if (status == .JXL_ENC_SUCCESS) break;
+		try testing.expectEqual(JxlEncoderStatus.JXL_ENC_NEED_MORE_OUTPUT, status);
+	}
+
+	var br = BitReader.init(encoded.items[2..]);
+	const size = headers.SizeHeader.readFromBitStream(&br);
+	const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+	const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+	try br.jumpToByteBoundary();
+
+	try testing.expect(metadata.have_animation);
+	try testing.expectEqual(@as(u32, 1), metadata.num_extra_channels);
+	try testing.expectEqual(image_metadata.ExtraChannel.depth, metadata.extra_channel_info[0].type);
+	try testing.expectEqual(@as(u32, 1), metadata.extra_channel_info[0].dim_shift);
+
+	var codec_meta = image_metadata.CodecMetadata{};
+	codec_meta.size = size;
+	codec_meta.m = metadata;
+	codec_meta.transform_data = transform_data;
+
+	var frame_offset = 2 + br.totalBitsConsumed() / 8;
+	const expected_depth = [_][]const i32{
+		&.{ 10, 20 },
+		&.{ 30, 40 },
+	};
+	const expected_durations = [_]u32{ 15, 35 };
+	for (expected_depth, expected_durations, 0..) |expected_plane, duration, i| {
+		const frame_bytes = try dec_frame.frameByteCount(testing.allocator, &codec_meta, encoded.items[frame_offset..]);
+
+		var frame_dec = dec_frame.FrameDecoder.init(testing.allocator, &codec_meta);
+		defer frame_dec.deinit();
+		try frame_dec.decodeFrame(encoded.items[frame_offset .. frame_offset + frame_bytes]);
+
+		try testing.expectEqual(duration, frame_dec.frame_header.animation_frame.duration);
+		try testing.expectEqual(i + 1 == expected_depth.len, frame_dec.frame_header.is_last);
+
+		const image = frame_dec.getDecodedImage();
+		try testing.expectEqual(@as(usize, 4), image.channels.items.len);
+		try testing.expectEqual(@as(usize, 1), image.channels.items[3].h);
+		try testing.expectEqualSlices(i32, expected_plane, image.channels.items[3].row(0));
 
 		frame_offset += frame_bytes;
 	}

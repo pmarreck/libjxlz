@@ -64,6 +64,7 @@ pub const SimplePackedU8AnimationFrame = struct {
 	color_pixels: []const u8,
 	alpha_row_stride: usize = 0,
 	alpha_pixels: []const u8 = &.{},
+	extra_planes: []const SimpleExtraPlaneU8 = &.{},
 	frame_duration: u32 = 0,
 	frame_timecode: u32 = 0,
 };
@@ -182,7 +183,12 @@ fn validateSimplePackedAnimation(image: SimplePackedU8Animation) !void {
 	try validateAnimation(true, image.animation, 0, 0);
 	try validateToneMapping(image.tone_mapping);
 
+	const extra_info = image.frames[0].extra_planes;
 	for (image.frames) |frame| {
+		if (frame.extra_planes.len != extra_info.len) return error.InvalidArgs;
+		for (frame.extra_planes, extra_info) |extra, reference| {
+			if (!std.meta.eql(extra.info, reference.info)) return error.InvalidArgs;
+		}
 		try validateSimplePackedImage(.{
 			.width = image.width,
 			.height = image.height,
@@ -201,6 +207,7 @@ fn validateSimplePackedAnimation(image: SimplePackedU8Animation) !void {
 			.frame_duration = frame.frame_duration,
 			.frame_timecode = frame.frame_timecode,
 			.tone_mapping = image.tone_mapping,
+			.extra_planes = frame.extra_planes,
 		});
 	}
 }
@@ -533,15 +540,23 @@ pub fn encodeSimplePackedU8Animation(
 	try validateSimplePackedAnimation(image);
 
 	const has_alpha = image.frames[0].alpha_pixels.len != 0;
-	const num_extra_channels: u32 = @intFromBool(has_alpha);
-	const extra_info_storage = [_]image_metadata.ExtraChannelInfo{
-		image.alpha_info orelse .{
+	const frame_extra_planes = image.frames[0].extra_planes;
+	const num_extra_channels: u32 = @intCast(@as(usize, @intFromBool(has_alpha)) + frame_extra_planes.len);
+	const extra_info_slice = try allocator.alloc(image_metadata.ExtraChannelInfo, num_extra_channels);
+	defer allocator.free(extra_info_slice);
+	var extra_index: usize = 0;
+	if (has_alpha) {
+		extra_info_slice[extra_index] = image.alpha_info orelse .{
 			.type = .alpha,
 			.bit_depth = .{},
 			.alpha_associated = image.alpha_associated,
-		},
-	};
-	const extra_info_slice: []const image_metadata.ExtraChannelInfo = if (has_alpha) extra_info_storage[0..1] else &.{};
+		};
+		extra_index += 1;
+	}
+	for (frame_extra_planes) |extra| {
+		extra_info_slice[extra_index] = extra.info;
+		extra_index += 1;
+	}
 
 	const effective_color_encoding = color_encoding orelse if (image.num_color_channels == 1)
 		graySrgbColorEncoding()
@@ -593,6 +608,7 @@ pub fn encodeSimplePackedU8Animation(
 			.frame_duration = frame.frame_duration,
 			.frame_timecode = frame.frame_timecode,
 			.tone_mapping = image.tone_mapping,
+			.extra_planes = frame.extra_planes,
 		});
 		defer source.deinit();
 
