@@ -2,15 +2,15 @@
 set -u
 
 SYSTEM="$(nix eval --impure --raw --expr builtins.currentSystem)"
-BUILD_LOG="${TMPDIR}/cjxlz_rendering_intent_build.log"
-RUN_STDERR="${TMPDIR}/cjxlz_rendering_intent_run_stderr.log"
-CHECK_STDOUT="${TMPDIR}/cjxlz_rendering_intent_check_stdout.txt"
-CHECK_STDERR="${TMPDIR}/cjxlz_rendering_intent_check_stderr.txt"
-CHECK_BIN="${TMPDIR}/cjxlz_rendering_intent_check"
-CHECK_BUILD_LOG="${TMPDIR}/cjxlz_rendering_intent_check_build.log"
-INPUT_PPM="${TMPDIR}/cjxlz_rendering_intent_input.ppm"
-ENCODED_JXL="${TMPDIR}/cjxlz_rendering_intent_output.jxl"
-ROUNDTRIP_PPM="${TMPDIR}/cjxlz_rendering_intent_roundtrip.ppm"
+BUILD_LOG="${TMPDIR}/cjxlz_p3_dci_build.log"
+RUN_STDERR="${TMPDIR}/cjxlz_p3_dci_run_stderr.log"
+CHECK_STDOUT="${TMPDIR}/cjxlz_p3_dci_check_stdout.txt"
+CHECK_STDERR="${TMPDIR}/cjxlz_p3_dci_check_stderr.txt"
+CHECK_BIN="${TMPDIR}/cjxlz_p3_dci_check"
+CHECK_BUILD_LOG="${TMPDIR}/cjxlz_p3_dci_check_build.log"
+INPUT_PPM="${TMPDIR}/cjxlz_p3_dci_input.ppm"
+ENCODED_JXL="${TMPDIR}/cjxlz_p3_dci_output.jxl"
+ROUNDTRIP_PPM="${TMPDIR}/cjxlz_p3_dci_roundtrip.ppm"
 
 if ! PACKAGE_OUT="$(nix build --no-link --print-out-paths ".#packages.${SYSTEM}.default" 2>"${BUILD_LOG}")"; then
 	cat "${BUILD_LOG}"
@@ -20,7 +20,7 @@ fi
 printf 'P6\n2 2\n255\n' >"${INPUT_PPM}"
 printf '\x00\x0A\x14\x1E\x28\x32\x3C\x46\x50\x5A\x64\x6E' >>"${INPUT_PPM}"
 
-if ! "${PACKAGE_OUT}/bin/cjxlz" --rendering-intent saturation "${INPUT_PPM}" "${ENCODED_JXL}" >/dev/null 2>"${RUN_STDERR}"; then
+if ! "${PACKAGE_OUT}/bin/cjxlz" --white-point dci --primaries p3 --transfer-function dci "${INPUT_PPM}" "${ENCODED_JXL}" >/dev/null 2>"${RUN_STDERR}"; then
 	cat "${RUN_STDERR}"
 	exit 1
 fi
@@ -52,8 +52,8 @@ if ! "${CHECK_BIN}" "${ENCODED_JXL}" >"${CHECK_STDOUT}" 2>"${CHECK_STDERR}"; the
 	exit 1
 fi
 
-if ! grep -Eq '^0 1 1 13 0\.000000 2$' "${CHECK_STDOUT}"; then
-	echo "unexpected encoded rendering intent"
+if ! grep -Eq '^0 11 11 17 0\.000000 1$' "${CHECK_STDOUT}"; then
+	echo "unexpected encoded color profile"
 	cat "${CHECK_STDOUT}"
 	exit 1
 fi

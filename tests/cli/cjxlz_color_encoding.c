@@ -79,8 +79,9 @@ int main(int argc, char** argv) {
 				fprintf(stderr, "color encoding failed\n");
 				return 1;
 			}
-			printf("%d %d %d %.6f %d\n",
+			printf("%d %d %d %d %.6f %d\n",
 				(int)color.color_space,
+				(int)color.white_point,
 				(int)color.primaries,
 				(int)color.transfer_function,
 				color.gamma,

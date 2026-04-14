@@ -18,13 +18,9 @@ int main(void) {
 	};
 
 	JxlEncoder* enc = JxlEncoderCreate(NULL);
-	if (!enc) {
-		fprintf(stderr, "encoder create failed\n");
-		return 1;
-	}
+	if (!enc) return 1;
 	JxlEncoderFrameSettings* frame_settings = JxlEncoderFrameSettingsCreate(enc, NULL);
 	if (!frame_settings) {
-		fprintf(stderr, "frame settings failed\n");
 		JxlEncoderDestroy(enc);
 		return 1;
 	}
@@ -36,15 +32,15 @@ int main(void) {
 	info.bits_per_sample = 8;
 	info.num_color_channels = 3;
 	if (JxlEncoderSetBasicInfo(enc, &info) != JXL_ENC_SUCCESS) {
-		fprintf(stderr, "set basic info failed\n");
 		JxlEncoderDestroy(enc);
 		return 1;
 	}
 
 	JxlColorEncoding color;
 	JxlColorEncodingSetToSRGB(&color, JXL_FALSE);
+	color.white_point = JXL_WHITE_POINT_DCI;
 	color.primaries = JXL_PRIMARIES_P3;
-	color.transfer_function = JXL_TRANSFER_FUNCTION_HLG;
+	color.transfer_function = JXL_TRANSFER_FUNCTION_DCI;
 	if (JxlEncoderSetColorEncoding(enc, &color) != JXL_ENC_SUCCESS) {
 		fprintf(stderr, "set color encoding failed\n");
 		JxlEncoderDestroy(enc);
@@ -57,7 +53,6 @@ int main(void) {
 	format.data_type = JXL_TYPE_UINT8;
 	format.endianness = JXL_NATIVE_ENDIAN;
 	if (JxlEncoderAddImageFrame(frame_settings, &format, pixels, sizeof(pixels)) != JXL_ENC_SUCCESS) {
-		fprintf(stderr, "add frame failed\n");
 		JxlEncoderDestroy(enc);
 		return 1;
 	}
@@ -70,7 +65,6 @@ int main(void) {
 		JxlEncoderStatus st = JxlEncoderProcessOutput(enc, &next_out, &avail_out);
 		if (st == JXL_ENC_SUCCESS) break;
 		if (st != JXL_ENC_NEED_MORE_OUTPUT) {
-			fprintf(stderr, "process output failed\n");
 			JxlEncoderDestroy(enc);
 			return 1;
 		}
@@ -79,17 +73,12 @@ int main(void) {
 	JxlEncoderDestroy(enc);
 
 	JxlDecoder* dec = JxlDecoderCreate(NULL);
-	if (!dec) {
-		fprintf(stderr, "decoder create failed\n");
-		return 1;
-	}
+	if (!dec) return 1;
 	if (JxlDecoderSubscribeEvents(dec, JXL_DEC_BASIC_INFO | JXL_DEC_COLOR_ENCODING) != JXL_DEC_SUCCESS) {
-		fprintf(stderr, "decoder subscribe failed\n");
 		JxlDecoderDestroy(dec);
 		return 1;
 	}
 	if (JxlDecoderSetInput(dec, encoded, encoded_size) != JXL_DEC_SUCCESS) {
-		fprintf(stderr, "decoder set input failed\n");
 		JxlDecoderDestroy(dec);
 		return 1;
 	}
@@ -102,7 +91,6 @@ int main(void) {
 			JxlColorEncoding decoded;
 			memset(&decoded, 0, sizeof(decoded));
 			if (JxlDecoderGetColorAsEncodedProfile(dec, JXL_COLOR_PROFILE_TARGET_ORIGINAL, &decoded) != JXL_DEC_SUCCESS) {
-				fprintf(stderr, "get encoded profile failed\n");
 				JxlDecoderDestroy(dec);
 				return 1;
 			}
@@ -117,7 +105,6 @@ int main(void) {
 			return 0;
 		}
 		if (status == JXL_DEC_NEED_MORE_INPUT || status == JXL_DEC_ERROR) {
-			fprintf(stderr, "decoder failed before color encoding\n");
 			JxlDecoderDestroy(dec);
 			return 1;
 		}

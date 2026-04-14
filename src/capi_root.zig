@@ -609,8 +609,12 @@ fn toInternalColorEncoding(
 		else => return error.Unsupported,
 	}
 
-	if (color.white_point != .JXL_WHITE_POINT_D65) return error.Unsupported;
-	internal.white_point = .d65;
+	internal.white_point = switch (color.white_point) {
+		.JXL_WHITE_POINT_D65 => .d65,
+		.JXL_WHITE_POINT_E => .e,
+		.JXL_WHITE_POINT_DCI => .dci,
+		else => return error.Unsupported,
+	};
 
 	switch (color.transfer_function) {
 		.JXL_TRANSFER_FUNCTION_709 => internal.tf = .{
@@ -665,6 +669,20 @@ test "toInternalColorEncoding accepts bt2100 pq rgb" {
 	try std.testing.expectEqual(color_encoding_mod.Primaries.bt2100, internal.primaries);
 	try std.testing.expect(!internal.tf.have_gamma);
 	try std.testing.expectEqual(color_encoding_mod.TransferFunction.pq, internal.tf.transfer_function);
+}
+
+test "toInternalColorEncoding accepts p3 dci white point" {
+	var color = defaultJxlColorEncoding(false, false);
+	color.white_point = .JXL_WHITE_POINT_DCI;
+	color.primaries = .JXL_PRIMARIES_P3;
+	color.transfer_function = .JXL_TRANSFER_FUNCTION_DCI;
+
+	const internal = try toInternalColorEncoding(&color, 3);
+	try std.testing.expectEqual(color_encoding_mod.ColorSpace.rgb, internal.color_space);
+	try std.testing.expectEqual(color_encoding_mod.WhitePoint.dci, internal.white_point);
+	try std.testing.expectEqual(color_encoding_mod.Primaries.p3, internal.primaries);
+	try std.testing.expect(!internal.tf.have_gamma);
+	try std.testing.expectEqual(color_encoding_mod.TransferFunction.dci, internal.tf.transfer_function);
 }
 
 fn bytesPerChannel(data_type: JxlDataType) ?usize {

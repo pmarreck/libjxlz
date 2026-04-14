@@ -90,6 +90,7 @@ static void print_help(FILE* out) {
 		"  --premultiplied-alpha     Mark the alpha channel as premultiplied/associated\n"
 		"  --associated-alpha        Alias for --premultiplied-alpha\n"
 		"  --linear-srgb             Use linear sRGB/gray instead of nonlinear sRGB\n"
+		"  --white-point NAME        Set white point: d65, e, or dci\n"
 		"  --primaries NAME          Set RGB primaries: srgb, p3, or 2100\n"
 		"  --transfer-function NAME  Set transfer function: srgb, linear, 709,\n"
 		"                            pq, dci, or hlg\n"
@@ -355,6 +356,23 @@ static int parse_primaries(const char* text, JxlPrimaries* primaries) {
 	}
 	if (strcmp(text, "2100") == 0 || strcmp(text, "bt2100") == 0) {
 		*primaries = JXL_PRIMARIES_2100;
+		return 1;
+	}
+	return 0;
+}
+
+static int parse_white_point(const char* text, JxlWhitePoint* white_point) {
+	if (!text || !white_point) return 0;
+	if (strcmp(text, "d65") == 0) {
+		*white_point = JXL_WHITE_POINT_D65;
+		return 1;
+	}
+	if (strcmp(text, "e") == 0) {
+		*white_point = JXL_WHITE_POINT_E;
+		return 1;
+	}
+	if (strcmp(text, "dci") == 0) {
+		*white_point = JXL_WHITE_POINT_DCI;
 		return 1;
 	}
 	return 0;
@@ -1030,6 +1048,7 @@ static int parse_extra_input(ParsedExtraInput* extra, uint32_t width, uint32_t h
 static int encode_animation(
 	const ParsedAnimation* animation,
 	int alpha_premultiplied,
+	JxlWhitePoint white_point,
 	JxlPrimaries primaries,
 	JxlTransferFunction transfer_function,
 	JxlRenderingIntent rendering_intent,
@@ -1109,6 +1128,7 @@ static int encode_animation(
 
 	JxlColorEncoding color;
 	JxlColorEncodingSetToSRGB(&color, 0);
+	color.white_point = white_point;
 	color.primaries = primaries;
 	color.transfer_function = transfer_function;
 	color.rendering_intent = rendering_intent;
@@ -1218,6 +1238,7 @@ static int encode_image(
 	const ParsedExtraInput* extras,
 	size_t extra_count,
 	int alpha_premultiplied,
+	JxlWhitePoint white_point,
 	JxlPrimaries primaries,
 	JxlTransferFunction transfer_function,
 	JxlRenderingIntent rendering_intent,
@@ -1288,6 +1309,7 @@ static int encode_image(
 
 	JxlColorEncoding color;
 	JxlColorEncodingSetToSRGB(&color, image->num_color_channels == 1 ? 1 : 0);
+	color.white_point = white_point;
 	color.primaries = primaries;
 	color.transfer_function = transfer_function;
 	color.rendering_intent = rendering_intent;
@@ -1455,6 +1477,7 @@ int cjxlz_main(int argc, char** argv) {
 	const char* input_path = NULL;
 	const char* output_path = NULL;
 	int alpha_premultiplied = 0;
+	JxlWhitePoint white_point = JXL_WHITE_POINT_D65;
 	JxlPrimaries primaries = JXL_PRIMARIES_SRGB;
 	JxlTransferFunction transfer_function = JXL_TRANSFER_FUNCTION_SRGB;
 	JxlRenderingIntent rendering_intent = JXL_RENDERING_INTENT_RELATIVE;
@@ -1495,6 +1518,14 @@ int cjxlz_main(int argc, char** argv) {
 		}
 		if (strcmp(argv[i], "--linear-srgb") == 0) {
 			transfer_function = JXL_TRANSFER_FUNCTION_LINEAR;
+			continue;
+		}
+		if (strcmp(argv[i], "--white-point") == 0) {
+			if (i + 1 >= argc || !parse_white_point(argv[i + 1], &white_point)) {
+				fprintf(stderr, "--white-point requires one of: d65, e, dci\n");
+				return 2;
+			}
+			i += 1;
 			continue;
 		}
 		if (strcmp(argv[i], "--primaries") == 0) {
@@ -1706,6 +1737,7 @@ int cjxlz_main(int argc, char** argv) {
 			if (!encode_animation(
 				&animation,
 				alpha_premultiplied,
+				white_point,
 				primaries,
 				transfer_function,
 				rendering_intent,
@@ -1736,6 +1768,7 @@ int cjxlz_main(int argc, char** argv) {
 				extras,
 				0,
 				alpha_premultiplied,
+				white_point,
 				primaries,
 				transfer_function,
 				rendering_intent,
@@ -1796,6 +1829,7 @@ int cjxlz_main(int argc, char** argv) {
 			extras,
 			extra_count,
 			alpha_premultiplied,
+			white_point,
 			primaries,
 			transfer_function,
 			rendering_intent,
