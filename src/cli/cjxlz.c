@@ -94,6 +94,8 @@ static void print_help(FILE* out) {
 		"  --white-point NAME        Set white point: d65, e, or dci\n"
 		"  --white-point-xy X,Y      Set a custom white point and mark it custom\n"
 		"  --primaries NAME          Set RGB primaries: srgb, p3, or 2100\n"
+		"  --primaries-xy Rx,Ry,Gx,Gy,Bx,By\n"
+		"                            Set custom RGB primaries and mark them custom\n"
 		"  --transfer-function NAME  Set transfer function: srgb, linear, 709,\n"
 		"                            pq, dci, hlg, or gamma (requires --gamma)\n"
 		"  --rendering-intent NAME   Set rendering intent: perceptual, relative,\n"
@@ -346,6 +348,37 @@ static int parse_xy_pair(const char* text, double* x, double* y) {
 	*y = strtod(y_text, &end);
 	if (end == y_text || *end != '\0') return 0;
 
+	return 1;
+}
+
+static int parse_primaries_xy(
+	const char* text,
+	double* red_x,
+	double* red_y,
+	double* green_x,
+	double* green_y,
+	double* blue_x,
+	double* blue_y
+) {
+	const char* part = text;
+	double* outputs[6] = { red_x, red_y, green_x, green_y, blue_x, blue_y };
+	for (int i = 0; i < 6; ++i) {
+		const char* comma = strchr(part, ',');
+		size_t len = comma ? (size_t)(comma - part) : strlen(part);
+		char token[64];
+		char* end = NULL;
+		if (len == 0 || len + 1 > sizeof(token)) return 0;
+		memcpy(token, part, len);
+		token[len] = '\0';
+		*outputs[i] = strtod(token, &end);
+		if (end == token || *end != '\0') return 0;
+		if (i < 5) {
+			if (!comma) return 0;
+			part = comma + 1;
+		} else if (comma) {
+			return 0;
+		}
+	}
 	return 1;
 }
 
@@ -1082,6 +1115,12 @@ static int encode_animation(
 	double white_point_x,
 	double white_point_y,
 	JxlPrimaries primaries,
+	double primaries_red_x,
+	double primaries_red_y,
+	double primaries_green_x,
+	double primaries_green_y,
+	double primaries_blue_x,
+	double primaries_blue_y,
 	JxlTransferFunction transfer_function,
 	double gamma,
 	JxlRenderingIntent rendering_intent,
@@ -1170,6 +1209,12 @@ static int encode_animation(
 	color.white_point_xy[0] = white_point_x;
 	color.white_point_xy[1] = white_point_y;
 	color.primaries = primaries;
+	color.primaries_red_xy[0] = primaries_red_x;
+	color.primaries_red_xy[1] = primaries_red_y;
+	color.primaries_green_xy[0] = primaries_green_x;
+	color.primaries_green_xy[1] = primaries_green_y;
+	color.primaries_blue_xy[0] = primaries_blue_x;
+	color.primaries_blue_xy[1] = primaries_blue_y;
 	color.transfer_function = transfer_function;
 	color.gamma = gamma;
 	color.rendering_intent = rendering_intent;
@@ -1283,6 +1328,12 @@ static int encode_image(
 	double white_point_x,
 	double white_point_y,
 	JxlPrimaries primaries,
+	double primaries_red_x,
+	double primaries_red_y,
+	double primaries_green_x,
+	double primaries_green_y,
+	double primaries_blue_x,
+	double primaries_blue_y,
 	JxlTransferFunction transfer_function,
 	double gamma,
 	JxlRenderingIntent rendering_intent,
@@ -1362,6 +1413,12 @@ static int encode_image(
 	color.white_point_xy[0] = white_point_x;
 	color.white_point_xy[1] = white_point_y;
 	color.primaries = primaries;
+	color.primaries_red_xy[0] = primaries_red_x;
+	color.primaries_red_xy[1] = primaries_red_y;
+	color.primaries_green_xy[0] = primaries_green_x;
+	color.primaries_green_xy[1] = primaries_green_y;
+	color.primaries_blue_xy[0] = primaries_blue_x;
+	color.primaries_blue_xy[1] = primaries_blue_y;
 	color.transfer_function = transfer_function;
 	color.gamma = gamma;
 	color.rendering_intent = rendering_intent;
@@ -1533,6 +1590,12 @@ int cjxlz_main(int argc, char** argv) {
 	double white_point_x = 0.3127;
 	double white_point_y = 0.3290;
 	JxlPrimaries primaries = JXL_PRIMARIES_SRGB;
+	double primaries_red_x = 0.639998686;
+	double primaries_red_y = 0.330010138;
+	double primaries_green_x = 0.300003784;
+	double primaries_green_y = 0.600003357;
+	double primaries_blue_x = 0.150002046;
+	double primaries_blue_y = 0.059997204;
 	JxlTransferFunction transfer_function = JXL_TRANSFER_FUNCTION_SRGB;
 	double gamma = 1.0;
 	int gamma_set = 0;
@@ -1612,6 +1675,23 @@ int cjxlz_main(int argc, char** argv) {
 				fprintf(stderr, "--primaries requires one of: srgb, p3, 2100\n");
 				return 2;
 			}
+			i += 1;
+			continue;
+		}
+		if (strcmp(argv[i], "--primaries-xy") == 0) {
+			if (i + 1 >= argc || !parse_primaries_xy(
+				argv[i + 1],
+				&primaries_red_x,
+				&primaries_red_y,
+				&primaries_green_x,
+				&primaries_green_y,
+				&primaries_blue_x,
+				&primaries_blue_y
+			)) {
+				fprintf(stderr, "--primaries-xy requires Rx,Ry,Gx,Gy,Bx,By\n");
+				return 2;
+			}
+			primaries = JXL_PRIMARIES_CUSTOM;
 			i += 1;
 			continue;
 		}
@@ -1832,6 +1912,12 @@ int cjxlz_main(int argc, char** argv) {
 				white_point_x,
 				white_point_y,
 				primaries,
+				primaries_red_x,
+				primaries_red_y,
+				primaries_green_x,
+				primaries_green_y,
+				primaries_blue_x,
+				primaries_blue_y,
 				transfer_function,
 				gamma,
 				rendering_intent,
@@ -1868,6 +1954,12 @@ int cjxlz_main(int argc, char** argv) {
 				white_point_x,
 				white_point_y,
 				primaries,
+				primaries_red_x,
+				primaries_red_y,
+				primaries_green_x,
+				primaries_green_y,
+				primaries_blue_x,
+				primaries_blue_y,
 				transfer_function,
 				gamma,
 				rendering_intent,
@@ -1934,6 +2026,12 @@ int cjxlz_main(int argc, char** argv) {
 			white_point_x,
 			white_point_y,
 			primaries,
+			primaries_red_x,
+			primaries_red_y,
+			primaries_green_x,
+			primaries_green_y,
+			primaries_blue_x,
+			primaries_blue_y,
 			transfer_function,
 			gamma,
 			rendering_intent,

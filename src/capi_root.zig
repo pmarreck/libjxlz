@@ -621,10 +621,15 @@ fn toInternalColorEncoding(
 			internal.color_space = .rgb;
 			internal.primaries = switch (color.primaries) {
 				.JXL_PRIMARIES_SRGB => .srgb,
+				.JXL_PRIMARIES_CUSTOM => .custom,
 				.JXL_PRIMARIES_2100 => .bt2100,
 				.JXL_PRIMARIES_P3 => .p3,
-				else => return error.Unsupported,
 			};
+			if (internal.primaries == .custom) {
+				internal.red = try customXYFromF64Pair(color.primaries_red_xy);
+				internal.green = try customXYFromF64Pair(color.primaries_green_xy);
+				internal.blue = try customXYFromF64Pair(color.primaries_blue_xy);
+			}
 		},
 		else => return error.Unsupported,
 	}
@@ -738,6 +743,24 @@ test "toInternalColorEncoding accepts custom white point" {
 	try std.testing.expectEqual(color_encoding_mod.WhitePoint.custom, internal.white_point);
 	try std.testing.expectEqual(@as(i32, 321000), internal.white.x);
 	try std.testing.expectEqual(@as(i32, 345000), internal.white.y);
+}
+
+test "toInternalColorEncoding accepts custom primaries" {
+	var color = defaultJxlColorEncoding(false, false);
+	color.primaries = .JXL_PRIMARIES_CUSTOM;
+	color.primaries_red_xy = .{ 0.68, 0.32 };
+	color.primaries_green_xy = .{ 0.265, 0.69 };
+	color.primaries_blue_xy = .{ 0.15, 0.045 };
+
+	const internal = try toInternalColorEncoding(&color, 3);
+
+	try std.testing.expectEqual(color_encoding_mod.Primaries.custom, internal.primaries);
+	try std.testing.expectEqual(@as(i32, 680000), internal.red.x);
+	try std.testing.expectEqual(@as(i32, 320000), internal.red.y);
+	try std.testing.expectEqual(@as(i32, 265000), internal.green.x);
+	try std.testing.expectEqual(@as(i32, 690000), internal.green.y);
+	try std.testing.expectEqual(@as(i32, 150000), internal.blue.x);
+	try std.testing.expectEqual(@as(i32, 45000), internal.blue.y);
 }
 
 fn bytesPerChannel(data_type: JxlDataType) ?usize {

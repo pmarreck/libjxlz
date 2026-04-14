@@ -263,8 +263,12 @@ pub fn writeColorEncoding(ce: *const ColorEncoding, writer: anytype) !void {
     }
 
     if (ce.hasPrimaries()) {
-        if (ce.primaries == .custom) return error.Unsupported;
         try fc.writeEnum(@intFromEnum(ce.primaries), writer);
+        if (ce.primaries == .custom) {
+            try writeCustomxy(&ce.red, writer);
+            try writeCustomxy(&ce.green, writer);
+            try writeCustomxy(&ce.blue, writer);
+        }
     }
 
     try writeCustomTransferFunction(&ce.tf, ce.color_space, writer);
@@ -412,6 +416,30 @@ test "writeColorEncoding round-trips custom white point" {
     try testing.expectEqual(@as(i32, 321000), roundtrip.white.x);
     try testing.expectEqual(@as(i32, 345000), roundtrip.white.y);
     try testing.expectEqual(Primaries.srgb, roundtrip.primaries);
+}
+
+test "writeColorEncoding round-trips custom primaries" {
+    const ce = ColorEncoding{
+        .primaries = .custom,
+        .red = .{ .x = 680000, .y = 320000 },
+        .green = .{ .x = 265000, .y = 690000 },
+        .blue = .{ .x = 150000, .y = 45000 },
+    };
+
+    var writer = @import("../base/bit_writer.zig").BitWriter.init(testing.allocator);
+    defer writer.deinit();
+    try writeColorEncoding(&ce, &writer);
+    try writer.zeroPadToByte();
+
+    var br = BitReader.init(writer.bytes());
+    const roundtrip = try ColorEncoding.readFromBitStream(&br);
+    try testing.expectEqual(Primaries.custom, roundtrip.primaries);
+    try testing.expectEqual(@as(i32, 680000), roundtrip.red.x);
+    try testing.expectEqual(@as(i32, 320000), roundtrip.red.y);
+    try testing.expectEqual(@as(i32, 265000), roundtrip.green.x);
+    try testing.expectEqual(@as(i32, 690000), roundtrip.green.y);
+    try testing.expectEqual(@as(i32, 150000), roundtrip.blue.x);
+    try testing.expectEqual(@as(i32, 45000), roundtrip.blue.y);
 }
 
 test "enumFromU32" {
