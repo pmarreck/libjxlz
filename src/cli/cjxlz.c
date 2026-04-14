@@ -90,10 +90,11 @@ static void print_help(FILE* out) {
 		"  --premultiplied-alpha     Mark the alpha channel as premultiplied/associated\n"
 		"  --associated-alpha        Alias for --premultiplied-alpha\n"
 		"  --linear-srgb             Use linear sRGB/gray instead of nonlinear sRGB\n"
+		"  --gamma VALUE             Set explicit gamma transfer (0 < gamma <= 1)\n"
 		"  --white-point NAME        Set white point: d65, e, or dci\n"
 		"  --primaries NAME          Set RGB primaries: srgb, p3, or 2100\n"
 		"  --transfer-function NAME  Set transfer function: srgb, linear, 709,\n"
-		"                            pq, dci, or hlg\n"
+		"                            pq, dci, hlg, or gamma (requires --gamma)\n"
 		"  --rendering-intent NAME   Set rendering intent: perceptual, relative,\n"
 		"                            saturation, or absolute\n"
 		"  --alpha-name NAME         Set the alpha extra-channel name\n"
@@ -402,6 +403,10 @@ static int parse_transfer_function(const char* text, JxlTransferFunction* transf
 	}
 	if (strcmp(text, "hlg") == 0) {
 		*transfer_function = JXL_TRANSFER_FUNCTION_HLG;
+		return 1;
+	}
+	if (strcmp(text, "gamma") == 0) {
+		*transfer_function = JXL_TRANSFER_FUNCTION_GAMMA;
 		return 1;
 	}
 	return 0;
@@ -1051,6 +1056,7 @@ static int encode_animation(
 	JxlWhitePoint white_point,
 	JxlPrimaries primaries,
 	JxlTransferFunction transfer_function,
+	double gamma,
 	JxlRenderingIntent rendering_intent,
 	const char* alpha_name,
 	float intensity_target,
@@ -1131,6 +1137,7 @@ static int encode_animation(
 	color.white_point = white_point;
 	color.primaries = primaries;
 	color.transfer_function = transfer_function;
+	color.gamma = gamma;
 	color.rendering_intent = rendering_intent;
 
 	JxlPixelFormat format = {
@@ -1241,6 +1248,7 @@ static int encode_image(
 	JxlWhitePoint white_point,
 	JxlPrimaries primaries,
 	JxlTransferFunction transfer_function,
+	double gamma,
 	JxlRenderingIntent rendering_intent,
 	const char* alpha_name,
 	float intensity_target,
@@ -1312,6 +1320,7 @@ static int encode_image(
 	color.white_point = white_point;
 	color.primaries = primaries;
 	color.transfer_function = transfer_function;
+	color.gamma = gamma;
 	color.rendering_intent = rendering_intent;
 
 	JxlPixelFormat format = {
@@ -1480,6 +1489,8 @@ int cjxlz_main(int argc, char** argv) {
 	JxlWhitePoint white_point = JXL_WHITE_POINT_D65;
 	JxlPrimaries primaries = JXL_PRIMARIES_SRGB;
 	JxlTransferFunction transfer_function = JXL_TRANSFER_FUNCTION_SRGB;
+	double gamma = 1.0;
+	int gamma_set = 0;
 	JxlRenderingIntent rendering_intent = JXL_RENDERING_INTENT_RELATIVE;
 	const char* alpha_name = NULL;
 	float intensity_target = 255.0f;
@@ -1520,6 +1531,18 @@ int cjxlz_main(int argc, char** argv) {
 			transfer_function = JXL_TRANSFER_FUNCTION_LINEAR;
 			continue;
 		}
+		if (strcmp(argv[i], "--gamma") == 0) {
+			float parsed_gamma = 0.0f;
+			if (i + 1 >= argc || !parse_f32_token(argv[i + 1], &parsed_gamma) || !(parsed_gamma > 0.0f && parsed_gamma <= 1.0f)) {
+				fprintf(stderr, "--gamma requires a value in (0, 1]\n");
+				return 2;
+			}
+			gamma = parsed_gamma;
+			transfer_function = JXL_TRANSFER_FUNCTION_GAMMA;
+			gamma_set = 1;
+			i += 1;
+			continue;
+		}
 		if (strcmp(argv[i], "--white-point") == 0) {
 			if (i + 1 >= argc || !parse_white_point(argv[i + 1], &white_point)) {
 				fprintf(stderr, "--white-point requires one of: d65, e, dci\n");
@@ -1538,7 +1561,7 @@ int cjxlz_main(int argc, char** argv) {
 		}
 		if (strcmp(argv[i], "--transfer-function") == 0) {
 			if (i + 1 >= argc || !parse_transfer_function(argv[i + 1], &transfer_function)) {
-				fprintf(stderr, "--transfer-function requires one of: srgb, linear, 709, pq, dci, hlg\n");
+				fprintf(stderr, "--transfer-function requires one of: srgb, linear, 709, pq, dci, hlg, gamma\n");
 				return 2;
 			}
 			i += 1;
@@ -1681,6 +1704,10 @@ int cjxlz_main(int argc, char** argv) {
 		print_help(stderr);
 		return 2;
 	}
+	if (transfer_function == JXL_TRANSFER_FUNCTION_GAMMA && !gamma_set) {
+		fprintf(stderr, "--transfer-function gamma requires --gamma VALUE\n");
+		return 2;
+	}
 
 	size_t input_size = 0;
 	uint8_t* input = read_path(input_path, &input_size);
@@ -1740,6 +1767,7 @@ int cjxlz_main(int argc, char** argv) {
 				white_point,
 				primaries,
 				transfer_function,
+				gamma,
 				rendering_intent,
 				alpha_name,
 				intensity_target,
@@ -1771,6 +1799,7 @@ int cjxlz_main(int argc, char** argv) {
 				white_point,
 				primaries,
 				transfer_function,
+				gamma,
 				rendering_intent,
 				alpha_name,
 				intensity_target,
@@ -1832,6 +1861,7 @@ int cjxlz_main(int argc, char** argv) {
 			white_point,
 			primaries,
 			transfer_function,
+			gamma,
 			rendering_intent,
 			alpha_name,
 			intensity_target,

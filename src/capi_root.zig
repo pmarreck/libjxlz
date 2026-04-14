@@ -617,6 +617,13 @@ fn toInternalColorEncoding(
 	};
 
 	switch (color.transfer_function) {
+		.JXL_TRANSFER_FUNCTION_GAMMA => {
+			if (!(color.gamma > 0.0 and color.gamma <= 1.0)) return error.Unsupported;
+			internal.tf = .{
+				.have_gamma = true,
+				.gamma = @intFromFloat(@round(color.gamma * 10000000.0)),
+			};
+		},
 		.JXL_TRANSFER_FUNCTION_709 => internal.tf = .{
 			.have_gamma = false,
 			.transfer_function = .bt709,
@@ -683,6 +690,19 @@ test "toInternalColorEncoding accepts p3 dci white point" {
 	try std.testing.expectEqual(color_encoding_mod.Primaries.p3, internal.primaries);
 	try std.testing.expect(!internal.tf.have_gamma);
 	try std.testing.expectEqual(color_encoding_mod.TransferFunction.dci, internal.tf.transfer_function);
+}
+
+test "toInternalColorEncoding accepts explicit gamma" {
+	var color = defaultJxlColorEncoding(false, false);
+	color.transfer_function = .JXL_TRANSFER_FUNCTION_GAMMA;
+	color.gamma = 1.0 / 2.2;
+
+	const internal = try toInternalColorEncoding(&color, 3);
+	try std.testing.expectEqual(color_encoding_mod.ColorSpace.rgb, internal.color_space);
+	try std.testing.expectEqual(color_encoding_mod.WhitePoint.d65, internal.white_point);
+	try std.testing.expectEqual(color_encoding_mod.Primaries.srgb, internal.primaries);
+	try std.testing.expect(internal.tf.have_gamma);
+	try std.testing.expectEqual(@as(u32, 4545455), internal.tf.gamma);
 }
 
 fn bytesPerChannel(data_type: JxlDataType) ?usize {
