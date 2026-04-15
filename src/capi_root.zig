@@ -7,6 +7,7 @@ const JxlError = @import("lib/base/status.zig").JxlError;
 const headers = @import("lib/codec/headers.zig");
 const color_encoding_mod = @import("lib/codec/color_encoding.zig");
 const image_metadata = @import("lib/codec/image_metadata.zig");
+const container_mod = @import("lib/codec/container.zig");
 const frame_header_mod = @import("lib/codec/frame_header.zig");
 const dec_frame = @import("lib/codec/dec_frame.zig");
 const enc_api = @import("lib/codec/enc_api.zig");
@@ -269,6 +270,7 @@ const DecoderImpl = struct {
 	basic_info_emitted: bool = false,
 	color_encoding_emitted: bool = false,
 	basic_info: JxlBasicInfo = std.mem.zeroes(JxlBasicInfo),
+	input_is_container: bool = false,
 	codec_meta: image_metadata.CodecMetadata = .{},
 	frame_data: []const u8 = &.{},
 	frame_offset: usize = 0,
@@ -785,7 +787,7 @@ fn rowStrideBytes(width: usize, format: JxlPixelFormat) ?usize {
 /// plus simple orientation/intrinsic-size, tone-mapping, and animation metadata.
 fn validateBasicInfoForSimpleEncode(info: *const JxlBasicInfo) !void {
 	if (info.xsize == 0 or info.ysize == 0) return error.InvalidArgs;
-	if (info.have_container != 0) return error.Unsupported;
+	if (!(info.have_container == 0 or info.have_container == 1)) return error.InvalidArgs;
 	if (!(info.have_animation == 0 or info.have_animation == 1)) return error.InvalidArgs;
 	if (!(info.have_preview == 0 or info.have_preview == 1)) return error.InvalidArgs;
 	if (@intFromEnum(info.orientation) < 1 or @intFromEnum(info.orientation) > 8) return error.InvalidArgs;
@@ -1232,6 +1234,7 @@ fn finalizeSimpleEncode(impl: *EncoderImpl) !void {
 			.color_pixels = prepared.color_pixels,
 			.alpha_row_stride = prepared.alpha_row_stride,
 			.alpha_pixels = prepared.alpha_pixels,
+			.use_container = impl.basic_info.have_container != 0,
 			.alpha_associated = impl.basic_info.alpha_premultiplied != 0,
 			.alpha_info = if (impl.basic_info.alpha_bits != 0 and impl.pending_extra_channels[0].info_set)
 				try toInternalExtraChannelInfo(&impl.pending_extra_channels[0])
@@ -1303,6 +1306,7 @@ fn finalizeSimpleEncode(impl: *EncoderImpl) !void {
 		.width = impl.basic_info.xsize,
 		.height = impl.basic_info.ysize,
 		.num_color_channels = impl.basic_info.num_color_channels,
+		.use_container = impl.basic_info.have_container != 0,
 		.alpha_associated = impl.basic_info.alpha_premultiplied != 0,
 		.alpha_info = if (impl.basic_info.alpha_bits != 0 and impl.pending_extra_channels[0].info_set)
 			try toInternalExtraChannelInfo(&impl.pending_extra_channels[0])
@@ -1506,9 +1510,9 @@ fn writeImageToOutput(img: *const Image, metadata: *const image_metadata.ImageMe
 	}
 }
 
-fn populateBasicInfo(metadata: *const image_metadata.CodecMetadata) JxlBasicInfo {
+fn populateBasicInfo(metadata: *const image_metadata.CodecMetadata, have_container: bool) JxlBasicInfo {
 	var info = std.mem.zeroes(JxlBasicInfo);
-	info.have_container = 0;
+	info.have_container = @intFromBool(have_container);
 	info.xsize = @intCast(metadata.size.xsize());
 	info.ysize = @intCast(metadata.size.ysize());
 	info.bits_per_sample = metadata.m.bit_depth.bits_per_sample;
@@ -1629,6 +1633,7 @@ fn resetFrameIteration(dec: *DecoderImpl) void {
 	dec.frame_parsed = false;
 	dec.frame_emitted = false;
 	dec.frame_decoded = false;
+	dec.input_is_container = false;
 	dec.output_buffer = null;
 	dec.output_buffer_size = 0;
 	dec.frame_name_len = 0;
@@ -1644,13 +1649,20 @@ fn ensureParsed(dec: *DecoderImpl) JxlDecoderStatus {
 	if (dec.basic_info_available) return .JXL_DEC_SUCCESS;
 
 	const input = dec.inputSlice();
-	switch (JxlSignatureCheck(if (input.len == 0) null else input.ptr, input.len)) {
+	const codestream = switch (JxlSignatureCheck(if (input.len == 0) null else input.ptr, input.len)) {
 		.JXL_SIG_NOT_ENOUGH_BYTES => return if (dec.input_closed) .JXL_DEC_ERROR else .JXL_DEC_NEED_MORE_INPUT,
-		.JXL_SIG_INVALID, .JXL_SIG_CONTAINER => return .JXL_DEC_ERROR,
-		.JXL_SIG_CODESTREAM => {},
-	}
+		.JXL_SIG_INVALID => return .JXL_DEC_ERROR,
+		.JXL_SIG_CONTAINER => blk: {
+			dec.input_is_container = true;
+			break :blk container_mod.extractCodestream(input) catch |err| return statusFromError(err, dec.input_closed);
+		},
+		.JXL_SIG_CODESTREAM => blk: {
+			dec.input_is_container = false;
+			break :blk input;
+		},
+	};
 
-	var br = BitReader.init(input[2..]);
+	var br = BitReader.init(codestream[2..]);
 	const size = headers.SizeHeader.readFromBitStream(&br);
 	const metadata = image_metadata.ImageMetadata.readFromBitStream(&br) catch |err| return statusFromError(err, dec.input_closed);
 	const transform_data = image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded) catch |err| return statusFromError(err, dec.input_closed);
@@ -1665,8 +1677,8 @@ fn ensureParsed(dec: *DecoderImpl) JxlDecoderStatus {
 	br.close() catch |err| return statusFromError(err, dec.input_closed);
 
 	dec.codec_meta = codec_meta;
-	dec.frame_data = input[2 + frame_header_byte_offset ..];
-	dec.basic_info = populateBasicInfo(&codec_meta);
+	dec.frame_data = codestream[2 + frame_header_byte_offset ..];
+	dec.basic_info = populateBasicInfo(&codec_meta, dec.input_is_container);
 	dec.basic_info_available = true;
 	return .JXL_DEC_SUCCESS;
 }

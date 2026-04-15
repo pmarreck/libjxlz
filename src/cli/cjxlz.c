@@ -87,6 +87,7 @@ static void print_help(FILE* out) {
 		"Options:\n"
 		"  -h, --help                Show this help\n"
 		"  --about                   Show version, platform, and architecture\n"
+		"  --container               Wrap output in the BMFF container format\n"
 		"  --premultiplied-alpha     Mark the alpha channel as premultiplied/associated\n"
 		"  --associated-alpha        Alias for --premultiplied-alpha\n"
 		"  --linear-srgb             Use linear sRGB/gray instead of nonlinear sRGB\n"
@@ -1110,6 +1111,7 @@ static int parse_extra_input(ParsedExtraInput* extra, uint32_t width, uint32_t h
 
 static int encode_animation(
 	const ParsedAnimation* animation,
+	int use_container,
 	int alpha_premultiplied,
 	JxlWhitePoint white_point,
 	double white_point_x,
@@ -1166,6 +1168,7 @@ static int encode_animation(
 
 	JxlBasicInfo info;
 	JxlEncoderInitBasicInfo(&info);
+	info.have_container = use_container ? 1 : 0;
 	info.xsize = animation->width;
 	info.ysize = animation->height;
 	info.bits_per_sample = 8;
@@ -1323,6 +1326,7 @@ static int encode_image(
 	const ParsedImage* image,
 	const ParsedExtraInput* extras,
 	size_t extra_count,
+	int use_container,
 	int alpha_premultiplied,
 	JxlWhitePoint white_point,
 	double white_point_x,
@@ -1374,6 +1378,7 @@ static int encode_image(
 
 	JxlBasicInfo info;
 	JxlEncoderInitBasicInfo(&info);
+	info.have_container = use_container ? 1 : 0;
 	info.xsize = image->width;
 	info.ysize = image->height;
 	info.bits_per_sample = 8;
@@ -1585,6 +1590,7 @@ int cjxlz_main(int argc, char** argv) {
 
 	const char* input_path = NULL;
 	const char* output_path = NULL;
+	int use_container = 0;
 	int alpha_premultiplied = 0;
 	JxlWhitePoint white_point = JXL_WHITE_POINT_D65;
 	double white_point_x = 0.3127;
@@ -1632,6 +1638,10 @@ int cjxlz_main(int argc, char** argv) {
 		if (strcmp(argv[i], "--about") == 0) {
 			printf("cjxlz %u %s %s\n", JxlEncoderVersion(), platform_name(), arch_name());
 			return 0;
+		}
+		if (strcmp(argv[i], "--container") == 0) {
+			use_container = 1;
+			continue;
 		}
 		if (strcmp(argv[i], "--premultiplied-alpha") == 0 || strcmp(argv[i], "--associated-alpha") == 0) {
 			alpha_premultiplied = 1;
@@ -1907,6 +1917,7 @@ int cjxlz_main(int argc, char** argv) {
 		) {
 			if (!encode_animation(
 				&animation,
+				use_container,
 				alpha_premultiplied,
 				white_point,
 				white_point_x,
@@ -1949,6 +1960,7 @@ int cjxlz_main(int argc, char** argv) {
 				&animation.frames[0].image,
 				extras,
 				0,
+				use_container,
 				alpha_premultiplied,
 				white_point,
 				white_point_x,
@@ -2021,6 +2033,7 @@ int cjxlz_main(int argc, char** argv) {
 			&image,
 			extras,
 			extra_count,
+			use_container,
 			alpha_premultiplied,
 			white_point,
 			white_point_x,

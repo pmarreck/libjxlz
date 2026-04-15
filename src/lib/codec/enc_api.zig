@@ -4,6 +4,7 @@ const BitReader = @import("../base/bit_reader.zig").BitReader;
 const BitWriter = @import("../base/bit_writer.zig").BitWriter;
 const headers = @import("headers.zig");
 const color_encoding_mod = @import("color_encoding.zig");
+const container = @import("container.zig");
 const image_metadata = @import("image_metadata.zig");
 const frame_header_mod = @import("frame_header.zig");
 const toc = @import("toc.zig");
@@ -18,6 +19,7 @@ pub const SimpleInterleavedU8Image = struct {
 	height: u32,
 	num_channels: u32,
 	num_extra_channels: u32 = 0,
+	use_container: bool = false,
 	alpha_associated: bool = false,
 	orientation: u32 = 1,
 	preview_width: u32 = 0,
@@ -48,6 +50,7 @@ pub const SimplePackedU8Image = struct {
 	color_pixels: []const u8,
 	alpha_row_stride: usize = 0,
 	alpha_pixels: []const u8 = &.{},
+	use_container: bool = false,
 	alpha_associated: bool = false,
 	alpha_info: ?image_metadata.ExtraChannelInfo = null,
 	orientation: u32 = 1,
@@ -78,6 +81,7 @@ pub const SimplePackedU8Animation = struct {
 	height: u32,
 	num_color_channels: u32,
 	alpha_associated: bool = false,
+	use_container: bool = false,
 	alpha_info: ?image_metadata.ExtraChannelInfo = null,
 	orientation: u32 = 1,
 	preview_width: u32 = 0,
@@ -485,6 +489,7 @@ fn encodePreparedSource(
 	codec_meta: image_metadata.CodecMetadata,
 	frame_header: frame_header_mod.FrameHeader,
 	source: *modular_image.Image,
+	use_container: bool,
 ) ![]u8 {
 	const frame_data = try encodePreparedFrameData(allocator, codec_meta, frame_header, source);
 	defer allocator.free(frame_data);
@@ -495,7 +500,7 @@ fn encodePreparedSource(
 	defer codestream.deinit();
 	try enc_codestream.writeCodestreamFrames(&codec_meta, &frame_datas, &codestream);
 	try codestream.zeroPadToByte();
-
+	if (use_container) return container.wrapCodestream(allocator, codestream.bytes());
 	return allocator.dupe(u8, codestream.bytes());
 }
 
@@ -553,7 +558,7 @@ pub fn encodeSimplePackedU8(
 	var source = try buildPackedSourceImage(allocator, image);
 	defer source.deinit();
 
-	return encodePreparedSource(allocator, codec_meta, frame_header, &source);
+	return encodePreparedSource(allocator, codec_meta, frame_header, &source, image.use_container);
 }
 
 /// Encodes a narrow animated lossless modular codestream from same-geometry
@@ -622,6 +627,7 @@ pub fn encodeSimplePackedU8Animation(
 			.width = image.width,
 			.height = image.height,
 			.num_color_channels = image.num_color_channels,
+			.use_container = image.use_container,
 			.color_row_stride = frame.color_row_stride,
 			.color_pixels = frame.color_pixels,
 			.alpha_row_stride = frame.alpha_row_stride,
@@ -651,6 +657,7 @@ pub fn encodeSimplePackedU8Animation(
 	defer codestream.deinit();
 	try enc_codestream.writeCodestreamFrames(&codec_meta, frame_datas, &codestream);
 	try codestream.zeroPadToByte();
+	if (image.use_container) return container.wrapCodestream(allocator, codestream.bytes());
 
 	return allocator.dupe(u8, codestream.bytes());
 }
@@ -698,7 +705,7 @@ pub fn encodeSimpleInterleavedU8(
 	var source = try buildSourceImage(allocator, image);
 	defer source.deinit();
 
-	return encodePreparedSource(allocator, codec_meta, frame_header, &source);
+	return encodePreparedSource(allocator, codec_meta, frame_header, &source, image.use_container);
 }
 
 const testing = std.testing;
