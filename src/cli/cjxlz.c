@@ -88,6 +88,7 @@ static void print_help(FILE* out) {
 		"  -h, --help                Show this help\n"
 		"  --about                   Show version, platform, and architecture\n"
 		"  --container               Wrap output in the BMFF container format\n"
+		"  --xmp PATH                Add an XML/XMP metadata box from PATH\n"
 		"  --premultiplied-alpha     Mark the alpha channel as premultiplied/associated\n"
 		"  --associated-alpha        Alias for --premultiplied-alpha\n"
 		"  --linear-srgb             Use linear sRGB/gray instead of nonlinear sRGB\n"
@@ -1112,6 +1113,8 @@ static int parse_extra_input(ParsedExtraInput* extra, uint32_t width, uint32_t h
 static int encode_animation(
 	const ParsedAnimation* animation,
 	int use_container,
+	const uint8_t* xmp_data,
+	size_t xmp_size,
 	int alpha_premultiplied,
 	JxlWhitePoint white_point,
 	double white_point_x,
@@ -1244,6 +1247,19 @@ static int encode_animation(
 		JxlEncoderDestroy(enc);
 		return 0;
 	}
+	if (xmp_data && xmp_size != 0) {
+		if (JxlEncoderUseBoxes(enc) != JXL_ENC_SUCCESS) {
+			snprintf(err, err_cap, "JxlEncoderUseBoxes failed");
+			JxlEncoderDestroy(enc);
+			return 0;
+		}
+		if (JxlEncoderAddBox(enc, "xml ", xmp_data, xmp_size, JXL_FALSE) != JXL_ENC_SUCCESS) {
+			snprintf(err, err_cap, "JxlEncoderAddBox failed");
+			JxlEncoderDestroy(enc);
+			return 0;
+		}
+		JxlEncoderCloseBoxes(enc);
+	}
 	if (alpha_name) {
 		JxlExtraChannelInfo alpha;
 		JxlEncoderInitExtraChannelInfo(JXL_CHANNEL_ALPHA, &alpha);
@@ -1327,6 +1343,8 @@ static int encode_image(
 	const ParsedExtraInput* extras,
 	size_t extra_count,
 	int use_container,
+	const uint8_t* xmp_data,
+	size_t xmp_size,
 	int alpha_premultiplied,
 	JxlWhitePoint white_point,
 	double white_point_x,
@@ -1468,6 +1486,19 @@ static int encode_image(
 		JxlEncoderDestroy(enc);
 		return 0;
 	}
+	if (xmp_data && xmp_size != 0) {
+		if (JxlEncoderUseBoxes(enc) != JXL_ENC_SUCCESS) {
+			snprintf(err, err_cap, "JxlEncoderUseBoxes failed");
+			JxlEncoderDestroy(enc);
+			return 0;
+		}
+		if (JxlEncoderAddBox(enc, "xml ", xmp_data, xmp_size, JXL_FALSE) != JXL_ENC_SUCCESS) {
+			snprintf(err, err_cap, "JxlEncoderAddBox failed");
+			JxlEncoderDestroy(enc);
+			return 0;
+		}
+		JxlEncoderCloseBoxes(enc);
+	}
 	if (alpha_name) {
 		JxlExtraChannelInfo alpha;
 		JxlEncoderInitExtraChannelInfo(JXL_CHANNEL_ALPHA, &alpha);
@@ -1591,6 +1622,7 @@ int cjxlz_main(int argc, char** argv) {
 	const char* input_path = NULL;
 	const char* output_path = NULL;
 	int use_container = 0;
+	const char* xmp_path = NULL;
 	int alpha_premultiplied = 0;
 	JxlWhitePoint white_point = JXL_WHITE_POINT_D65;
 	double white_point_x = 0.3127;
@@ -1641,6 +1673,15 @@ int cjxlz_main(int argc, char** argv) {
 		}
 		if (strcmp(argv[i], "--container") == 0) {
 			use_container = 1;
+			continue;
+		}
+		if (strcmp(argv[i], "--xmp") == 0) {
+			if (i + 1 >= argc) {
+				fprintf(stderr, "--xmp requires PATH\n");
+				return 2;
+			}
+			xmp_path = argv[i + 1];
+			i += 1;
 			continue;
 		}
 		if (strcmp(argv[i], "--premultiplied-alpha") == 0 || strcmp(argv[i], "--associated-alpha") == 0) {
@@ -1874,23 +1915,36 @@ int cjxlz_main(int argc, char** argv) {
 	err[0] = '\0';
 	uint8_t* encoded = NULL;
 	size_t encoded_size = 0;
+	uint8_t* xmp_data = NULL;
+	size_t xmp_size = 0;
+	if (xmp_path) {
+		xmp_data = read_path(xmp_path, &xmp_size);
+		if (!xmp_data && xmp_size != 0) {
+			fprintf(stderr, "failed to read xmp: %s\n", xmp_path);
+			free(input);
+			return 1;
+		}
+	}
 	if (has_gif_signature(input, input_size)) {
 #ifdef JXLZ_HAVE_GIF_INPUT
 		ParsedAnimation animation;
 		if (!parse_gif_animation(input, input_size, &animation, err, sizeof(err))) {
 			fprintf(stderr, "%s\n", err[0] ? err : "GIF parse failed");
+			free(xmp_data);
 			free(input);
 			return 1;
 		}
 		if (extra_count != 0) {
 			fprintf(stderr, "GIF input does not support --extra yet\n");
 			free_parsed_animation(&animation);
+			free(xmp_data);
 			free(input);
 			return 1;
 		}
 		if (frame_timecode_set) {
 			fprintf(stderr, "--frame-timecode is not supported for GIF input\n");
 			free_parsed_animation(&animation);
+			free(xmp_data);
 			free(input);
 			return 1;
 		}
@@ -1918,6 +1972,8 @@ int cjxlz_main(int argc, char** argv) {
 			if (!encode_animation(
 				&animation,
 				use_container,
+				xmp_data,
+				xmp_size,
 				alpha_premultiplied,
 				white_point,
 				white_point_x,
@@ -1952,6 +2008,7 @@ int cjxlz_main(int argc, char** argv) {
 			)) {
 				fprintf(stderr, "%s\n", err[0] ? err : "animation encode failed");
 				free_parsed_animation(&animation);
+				free(xmp_data);
 				free(input);
 				return 1;
 			}
@@ -1961,6 +2018,8 @@ int cjxlz_main(int argc, char** argv) {
 				extras,
 				0,
 				use_container,
+				xmp_data,
+				xmp_size,
 				alpha_premultiplied,
 				white_point,
 				white_point_x,
@@ -1998,6 +2057,7 @@ int cjxlz_main(int argc, char** argv) {
 			)) {
 				fprintf(stderr, "%s\n", err[0] ? err : "encode failed");
 				free_parsed_animation(&animation);
+				free(xmp_data);
 				free(input);
 				return 1;
 			}
@@ -2005,6 +2065,7 @@ int cjxlz_main(int argc, char** argv) {
 		free_parsed_animation(&animation);
 #else
 		fprintf(stderr, "gif input is not supported in this build\n");
+		free(xmp_data);
 		free(input);
 		return 1;
 #endif
@@ -2012,6 +2073,7 @@ int cjxlz_main(int argc, char** argv) {
 		ParsedImage image;
 		if (!parse_input_image(input, input_size, &image, err, sizeof(err))) {
 			fprintf(stderr, "%s\n", err[0] ? err : "parse failed");
+			free(xmp_data);
 			free(input);
 			return 1;
 		}
@@ -2024,6 +2086,7 @@ int cjxlz_main(int argc, char** argv) {
 					free(extras[j].file_data);
 				}
 				free_parsed_image(&image);
+				free(xmp_data);
 				free(input);
 				return 1;
 			}
@@ -2034,6 +2097,8 @@ int cjxlz_main(int argc, char** argv) {
 			extras,
 			extra_count,
 			use_container,
+			xmp_data,
+			xmp_size,
 			alpha_premultiplied,
 			white_point,
 			white_point_x,
@@ -2075,6 +2140,7 @@ int cjxlz_main(int argc, char** argv) {
 				free(extras[i].file_data);
 			}
 			free_parsed_image(&image);
+			free(xmp_data);
 			free(input);
 			return 1;
 		}
@@ -2090,6 +2156,7 @@ int cjxlz_main(int argc, char** argv) {
 	if (!out) {
 		fprintf(stderr, "failed to open output: %s\n", output_path);
 		free(encoded);
+		free(xmp_data);
 		return 1;
 	}
 
@@ -2097,10 +2164,12 @@ int cjxlz_main(int argc, char** argv) {
 		fprintf(stderr, "failed to write output\n");
 		close_output(output_path, out);
 		free(encoded);
+		free(xmp_data);
 		return 1;
 	}
 
 	close_output(output_path, out);
 	free(encoded);
+	free(xmp_data);
 	return 0;
 }

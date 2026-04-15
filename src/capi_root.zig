@@ -307,6 +307,8 @@ const EncoderImpl = struct {
 	memory_manager: ?JxlMemoryManager = null,
 	basic_info_set: bool = false,
 	color_encoding_set: bool = false,
+	use_boxes: bool = false,
+	boxes_closed: bool = false,
 	added_frame: bool = false,
 	frames_closed: bool = false,
 	input_closed: bool = false,
@@ -317,6 +319,7 @@ const EncoderImpl = struct {
 	output_offset: usize = 0,
 	frame_settings: std.ArrayListUnmanaged(*EncoderFrameSettingsImpl) = .{},
 	queued_frames: std.ArrayListUnmanaged(EncoderQueuedFrame) = .{},
+	staged_boxes: std.ArrayListUnmanaged(EncoderPendingBox) = .{},
 	internal_color_encoding: ?color_encoding_mod.ColorEncoding = null,
 	image_format: JxlPixelFormat = .{
 		.num_channels = 0,
@@ -344,6 +347,16 @@ const EncoderPendingExtraChannel = struct {
 	buffer: []u8 = &.{},
 	row_stride: usize = 0,
 	buffer_set: bool = false,
+};
+
+const EncoderPendingBox = struct {
+	box_type: [4]u8,
+	contents: []u8 = &.{},
+
+	fn deinit(self: *EncoderPendingBox) void {
+		if (self.contents.len != 0) std.heap.c_allocator.free(self.contents);
+		self.contents = &.{};
+	}
 };
 
 const EncoderQueuedPlaneBuffer = struct {
@@ -447,6 +460,11 @@ fn freeEncoderState(enc: *EncoderImpl) void {
 	}
 	enc.queued_frames.deinit(std.heap.c_allocator);
 	enc.queued_frames = .{};
+	for (enc.staged_boxes.items) |*box| {
+		box.deinit();
+	}
+	enc.staged_boxes.deinit(std.heap.c_allocator);
+	enc.staged_boxes = .{};
 	for (enc.frame_settings.items) |settings| {
 		std.heap.c_allocator.destroy(settings);
 	}
@@ -1239,7 +1257,7 @@ fn finalizeSimpleEncode(impl: *EncoderImpl) !void {
 			.color_pixels = prepared.color_pixels,
 			.alpha_row_stride = prepared.alpha_row_stride,
 			.alpha_pixels = prepared.alpha_pixels,
-			.use_container = impl.basic_info.have_container != 0,
+			.use_container = impl.basic_info.have_container != 0 or impl.staged_boxes.items.len != 0,
 			.alpha_associated = impl.basic_info.alpha_premultiplied != 0,
 			.alpha_info = if (impl.basic_info.alpha_bits != 0 and impl.pending_extra_channels[0].info_set)
 				try toInternalExtraChannelInfo(&impl.pending_extra_channels[0])
@@ -1273,6 +1291,7 @@ fn finalizeSimpleEncode(impl: *EncoderImpl) !void {
 			},
 			.extra_planes = prepared.extra_planes,
 		}, impl.internal_color_encoding);
+		try wrapPendingBoxes(impl);
 		impl.output_offset = 0;
 		return;
 	}
@@ -1311,7 +1330,7 @@ fn finalizeSimpleEncode(impl: *EncoderImpl) !void {
 		.width = impl.basic_info.xsize,
 		.height = impl.basic_info.ysize,
 		.num_color_channels = impl.basic_info.num_color_channels,
-		.use_container = impl.basic_info.have_container != 0,
+		.use_container = impl.basic_info.have_container != 0 or impl.staged_boxes.items.len != 0,
 		.alpha_associated = impl.basic_info.alpha_premultiplied != 0,
 		.alpha_info = if (impl.basic_info.alpha_bits != 0 and impl.pending_extra_channels[0].info_set)
 			try toInternalExtraChannelInfo(&impl.pending_extra_channels[0])
@@ -1342,7 +1361,20 @@ fn finalizeSimpleEncode(impl: *EncoderImpl) !void {
 		},
 		.frames = animation_frames,
 	}, impl.internal_color_encoding);
+	try wrapPendingBoxes(impl);
 	impl.output_offset = 0;
+}
+
+fn wrapPendingBoxes(impl: *EncoderImpl) !void {
+	if (impl.staged_boxes.items.len == 0) return;
+	const codestream = impl.encoded_bytes;
+	const boxes = try std.heap.c_allocator.alloc(container_mod.Box, impl.staged_boxes.items.len);
+	defer std.heap.c_allocator.free(boxes);
+	for (impl.staged_boxes.items, 0..) |box, i| {
+		boxes[i] = .{ .box_type = box.box_type, .contents = box.contents };
+	}
+	impl.encoded_bytes = try container_mod.wrapCodestreamWithBoxes(std.heap.c_allocator, codestream, boxes);
+	std.heap.c_allocator.free(codestream);
 }
 
 fn bitDepthMax(bits_per_sample: u32) u32 {
@@ -2096,6 +2128,63 @@ pub export fn JxlEncoderSetColorEncoding(enc_ptr: ?*JxlEncoder, color_ptr: ?*con
 	return .JXL_ENC_SUCCESS;
 }
 
+pub export fn JxlEncoderUseBoxes(enc_ptr: ?*JxlEncoder) JxlEncoderStatus {
+	const enc = enc_ptr orelse return .JXL_ENC_ERROR;
+	const impl: *EncoderImpl = @ptrCast(@alignCast(enc));
+	if (!impl.basic_info_set or impl.started_processing or impl.added_frame or impl.use_boxes) return .JXL_ENC_ERROR;
+	impl.use_boxes = true;
+	impl.boxes_closed = false;
+	return .JXL_ENC_SUCCESS;
+}
+
+pub export fn JxlEncoderAddBox(
+	enc_ptr: ?*JxlEncoder,
+	box_type_ptr: ?[*]const u8,
+	contents_ptr: ?[*]const u8,
+	size: usize,
+	compress_box: JXL_BOOL,
+) JxlEncoderStatus {
+	const enc = enc_ptr orelse return .JXL_ENC_ERROR;
+	const impl: *EncoderImpl = @ptrCast(@alignCast(enc));
+	const box_type = box_type_ptr orelse return .JXL_ENC_ERROR;
+	if (!impl.use_boxes or impl.boxes_closed or impl.started_processing) return .JXL_ENC_ERROR;
+	if (compress_box != 0) return .JXL_ENC_ERROR;
+
+	var box_name: [4]u8 = undefined;
+	@memcpy(&box_name, box_type[0..4]);
+	if (std.mem.eql(u8, &box_name, "JXL ") or std.mem.eql(u8, &box_name, "ftyp") or
+		std.mem.eql(u8, &box_name, "jxlc") or std.mem.eql(u8, &box_name, "jxlp") or
+		std.mem.eql(u8, &box_name, "jxll") or std.mem.eql(u8, &box_name, "jbrd") or
+		std.mem.eql(u8, &box_name, "brob"))
+	{
+		return .JXL_ENC_ERROR;
+	}
+
+	const contents = if (size == 0)
+		&[_]u8{}
+	else blk: {
+		const ptr = contents_ptr orelse return .JXL_ENC_ERROR;
+		break :blk ptr[0..size];
+	};
+
+	const owned = std.heap.c_allocator.dupe(u8, contents) catch return .JXL_ENC_ERROR;
+	impl.staged_boxes.append(std.heap.c_allocator, .{
+		.box_type = box_name,
+		.contents = owned,
+	}) catch {
+		std.heap.c_allocator.free(owned);
+		return .JXL_ENC_ERROR;
+	};
+	return .JXL_ENC_SUCCESS;
+}
+
+pub export fn JxlEncoderCloseBoxes(enc_ptr: ?*JxlEncoder) void {
+	const enc = enc_ptr orelse return;
+	const impl: *EncoderImpl = @ptrCast(@alignCast(enc));
+	if (!impl.use_boxes or impl.started_processing) return;
+	impl.boxes_closed = true;
+}
+
 pub export fn JxlEncoderSetExtraChannelInfo(
 	enc_ptr: ?*JxlEncoder,
 	index: usize,
@@ -2246,6 +2335,7 @@ pub export fn JxlEncoderCloseInput(enc_ptr: ?*JxlEncoder) void {
 	const enc = enc_ptr orelse return;
 	const impl: *EncoderImpl = @ptrCast(@alignCast(enc));
 	queuePendingFrame(impl) catch return;
+	if (impl.use_boxes) impl.boxes_closed = true;
 	impl.frames_closed = true;
 	impl.input_closed = true;
 }
@@ -2258,6 +2348,7 @@ pub export fn JxlEncoderProcessOutput(enc_ptr: ?*JxlEncoder, next_out_ptr: ?*[*]
 	impl.started_processing = true;
 
 	if (!(impl.input_closed or impl.frames_closed) or !impl.added_frame) return .JXL_ENC_ERROR;
+	if (impl.use_boxes and !impl.boxes_closed) return .JXL_ENC_ERROR;
 	if (impl.encoded_bytes.len == 0) {
 		finalizeSimpleEncode(impl) catch return .JXL_ENC_ERROR;
 	}
@@ -2282,6 +2373,43 @@ test "JxlSignatureCheck identifies codestream and container" {
 	try std.testing.expectEqual(JxlSignature.JXL_SIG_CODESTREAM, JxlSignatureCheck(&codestream, codestream.len));
 	try std.testing.expectEqual(JxlSignature.JXL_SIG_CONTAINER, JxlSignatureCheck(&container_signature, container_signature.len));
 	try std.testing.expectEqual(JxlSignature.JXL_SIG_NOT_ENOUGH_BYTES, JxlSignatureCheck(&codestream, 1));
+}
+
+test "JxlEncoderProcessOutput rejects unclosed metadata boxes" {
+	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlEncoderDestroy(enc);
+
+	var info: JxlBasicInfo = std.mem.zeroes(JxlBasicInfo);
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 1;
+	info.ysize = 1;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 1;
+	try std.testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetBasicInfo(enc, &info));
+
+	var color: JxlColorEncoding = undefined;
+	JxlColorEncodingSetToSRGB(&color, 1);
+	try std.testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetColorEncoding(enc, &color));
+	try std.testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderUseBoxes(enc));
+	try std.testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderAddBox(enc, "xml ", "<x/>", 4, 0),
+	);
+
+	const pixels = [_]u8{0x7F};
+	const format = JxlPixelFormat{
+		.num_channels = 1,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	const settings = JxlEncoderFrameSettingsCreate(enc, null) orelse return error.OutOfMemory;
+	try std.testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderAddImageFrame(settings, &format, &pixels, pixels.len));
+
+	var output: [256]u8 = undefined;
+	var next_out: [*]u8 = &output;
+	var avail_out: usize = output.len;
+	try std.testing.expectEqual(JxlEncoderStatus.JXL_ENC_ERROR, JxlEncoderProcessOutput(enc, &next_out, &avail_out));
 }
 
 test "rowStrideBytes respects requested alignment" {

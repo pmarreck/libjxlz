@@ -2,6 +2,10 @@ const std = @import("std");
 
 pub const signature_box = [_]u8{ 0x00, 0x00, 0x00, 0x0C, 0x4A, 0x58, 0x4C, 0x20, 0x0D, 0x0A, 0x87, 0x0A };
 pub const ftyp_payload = [_]u8{ 'j', 'x', 'l', ' ', 0, 0, 0, 0, 'j', 'x', 'l', ' ' };
+pub const Box = struct {
+	box_type: [4]u8,
+	contents: []const u8,
+};
 
 fn appendU32BE(list: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, value: u32) !void {
 	var bytes: [4]u8 = undefined;
@@ -17,14 +21,31 @@ fn appendBox(list: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, co
 	try list.appendSlice(allocator, payload);
 }
 
+fn appendBoxRuntime(list: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, box_type: [4]u8, payload: []const u8) !void {
+	const size = 8 + payload.len;
+	if (size > std.math.maxInt(u32)) return error.Unsupported;
+	try appendU32BE(list, allocator, @intCast(size));
+	try list.appendSlice(allocator, &box_type);
+	try list.appendSlice(allocator, payload);
+}
+
 /// Wraps a raw codestream in the minimal BMFF container layout used by simple
 /// JPEG XL files: signature box, `ftyp`, then a single `jxlc` codestream box.
 pub fn wrapCodestream(allocator: std.mem.Allocator, codestream: []const u8) ![]u8 {
+	return wrapCodestreamWithBoxes(allocator, codestream, &.{});
+}
+
+/// Wraps a raw codestream in the minimal BMFF container plus any already-owned
+/// metadata boxes that should precede the codestream box.
+pub fn wrapCodestreamWithBoxes(allocator: std.mem.Allocator, codestream: []const u8, boxes: []const Box) ![]u8 {
 	var list: std.ArrayListUnmanaged(u8) = .{};
 	defer list.deinit(allocator);
 
 	try list.appendSlice(allocator, &signature_box);
 	try appendBox(&list, allocator, .{ 'f', 't', 'y', 'p' }, &ftyp_payload);
+	for (boxes) |box| {
+		try appendBoxRuntime(&list, allocator, box.box_type, box.contents);
+	}
 	try appendBox(&list, allocator, .{ 'j', 'x', 'l', 'c' }, codestream);
 	return list.toOwnedSlice(allocator);
 }
