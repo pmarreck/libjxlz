@@ -26,6 +26,7 @@ typedef struct {
 } ParsedImage;
 
 #define MAX_EXTRA_INPUTS 16
+#define MAX_BOX_INPUTS 16
 
 typedef struct {
 	JxlExtraChannelType type;
@@ -36,6 +37,13 @@ typedef struct {
 	size_t file_size;
 	ParsedImage image;
 } ParsedExtraInput;
+
+typedef struct {
+	char type[5];
+	const char* path;
+	uint8_t* data;
+	size_t size;
+} ParsedBoxInput;
 
 typedef struct {
 	ParsedImage image;
@@ -89,6 +97,7 @@ static void print_help(FILE* out) {
 		"  --about                   Show version, platform, and architecture\n"
 		"  --container               Wrap output in the BMFF container format\n"
 		"  --xmp PATH                Add an XML/XMP metadata box from PATH\n"
+		"  --box TYPE PATH           Add an uncompressed BMFF metadata box from PATH\n"
 		"  --premultiplied-alpha     Mark the alpha channel as premultiplied/associated\n"
 		"  --associated-alpha        Alias for --premultiplied-alpha\n"
 		"  --linear-srgb             Use linear sRGB/gray instead of nonlinear sRGB\n"
@@ -194,6 +203,36 @@ static void close_output(const char* path, FILE* out) {
 	if (!out) return;
 	if (strcmp(path, "-") == 0 || strcmp(path, "@stdout") == 0 || strcmp(path, "@stderr") == 0) return;
 	fclose(out);
+}
+
+static void free_box_inputs(ParsedBoxInput* boxes, size_t box_count) {
+	for (size_t i = 0; i < box_count; ++i) {
+		free(boxes[i].data);
+		boxes[i].data = NULL;
+		boxes[i].size = 0;
+	}
+}
+
+static int apply_staged_boxes(
+	JxlEncoder* enc,
+	const ParsedBoxInput* boxes,
+	size_t box_count,
+	char* err,
+	size_t err_cap
+) {
+	if (box_count == 0) return 1;
+	if (JxlEncoderUseBoxes(enc) != JXL_ENC_SUCCESS) {
+		snprintf(err, err_cap, "JxlEncoderUseBoxes failed");
+		return 0;
+	}
+	for (size_t i = 0; i < box_count; ++i) {
+		if (JxlEncoderAddBox(enc, boxes[i].type, boxes[i].data, boxes[i].size, JXL_FALSE) != JXL_ENC_SUCCESS) {
+			snprintf(err, err_cap, "JxlEncoderAddBox failed");
+			return 0;
+		}
+	}
+	JxlEncoderCloseBoxes(enc);
+	return 1;
 }
 
 static int append_chunk(uint8_t** out, size_t* size, size_t* cap, const uint8_t* chunk, size_t chunk_size) {
@@ -1113,8 +1152,8 @@ static int parse_extra_input(ParsedExtraInput* extra, uint32_t width, uint32_t h
 static int encode_animation(
 	const ParsedAnimation* animation,
 	int use_container,
-	const uint8_t* xmp_data,
-	size_t xmp_size,
+	const ParsedBoxInput* boxes,
+	size_t box_count,
 	int alpha_premultiplied,
 	JxlWhitePoint white_point,
 	double white_point_x,
@@ -1247,18 +1286,9 @@ static int encode_animation(
 		JxlEncoderDestroy(enc);
 		return 0;
 	}
-	if (xmp_data && xmp_size != 0) {
-		if (JxlEncoderUseBoxes(enc) != JXL_ENC_SUCCESS) {
-			snprintf(err, err_cap, "JxlEncoderUseBoxes failed");
-			JxlEncoderDestroy(enc);
-			return 0;
-		}
-		if (JxlEncoderAddBox(enc, "xml ", xmp_data, xmp_size, JXL_FALSE) != JXL_ENC_SUCCESS) {
-			snprintf(err, err_cap, "JxlEncoderAddBox failed");
-			JxlEncoderDestroy(enc);
-			return 0;
-		}
-		JxlEncoderCloseBoxes(enc);
+	if (!apply_staged_boxes(enc, boxes, box_count, err, err_cap)) {
+		JxlEncoderDestroy(enc);
+		return 0;
 	}
 	if (alpha_name) {
 		JxlExtraChannelInfo alpha;
@@ -1343,8 +1373,8 @@ static int encode_image(
 	const ParsedExtraInput* extras,
 	size_t extra_count,
 	int use_container,
-	const uint8_t* xmp_data,
-	size_t xmp_size,
+	const ParsedBoxInput* boxes,
+	size_t box_count,
 	int alpha_premultiplied,
 	JxlWhitePoint white_point,
 	double white_point_x,
@@ -1486,18 +1516,9 @@ static int encode_image(
 		JxlEncoderDestroy(enc);
 		return 0;
 	}
-	if (xmp_data && xmp_size != 0) {
-		if (JxlEncoderUseBoxes(enc) != JXL_ENC_SUCCESS) {
-			snprintf(err, err_cap, "JxlEncoderUseBoxes failed");
-			JxlEncoderDestroy(enc);
-			return 0;
-		}
-		if (JxlEncoderAddBox(enc, "xml ", xmp_data, xmp_size, JXL_FALSE) != JXL_ENC_SUCCESS) {
-			snprintf(err, err_cap, "JxlEncoderAddBox failed");
-			JxlEncoderDestroy(enc);
-			return 0;
-		}
-		JxlEncoderCloseBoxes(enc);
+	if (!apply_staged_boxes(enc, boxes, box_count, err, err_cap)) {
+		JxlEncoderDestroy(enc);
+		return 0;
 	}
 	if (alpha_name) {
 		JxlExtraChannelInfo alpha;
@@ -1622,7 +1643,6 @@ int cjxlz_main(int argc, char** argv) {
 	const char* input_path = NULL;
 	const char* output_path = NULL;
 	int use_container = 0;
-	const char* xmp_path = NULL;
 	int alpha_premultiplied = 0;
 	JxlWhitePoint white_point = JXL_WHITE_POINT_D65;
 	double white_point_x = 0.3127;
@@ -1661,6 +1681,9 @@ int cjxlz_main(int argc, char** argv) {
 	ParsedExtraInput extras[MAX_EXTRA_INPUTS];
 	memset(extras, 0, sizeof(extras));
 	size_t extra_count = 0;
+	ParsedBoxInput boxes[MAX_BOX_INPUTS];
+	memset(boxes, 0, sizeof(boxes));
+	size_t box_count = 0;
 
 	for (int i = 1; i < argc; ++i) {
 		if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -1680,8 +1703,35 @@ int cjxlz_main(int argc, char** argv) {
 				fprintf(stderr, "--xmp requires PATH\n");
 				return 2;
 			}
-			xmp_path = argv[i + 1];
+			if (box_count >= MAX_BOX_INPUTS) {
+				fprintf(stderr, "too many --xmp/--box arguments\n");
+				return 2;
+			}
+			memcpy(boxes[box_count].type, "xml ", 4);
+			boxes[box_count].type[4] = '\0';
+			boxes[box_count].path = argv[i + 1];
+			box_count += 1;
 			i += 1;
+			continue;
+		}
+		if (strcmp(argv[i], "--box") == 0) {
+			if (i + 2 >= argc) {
+				fprintf(stderr, "--box requires TYPE PATH\n");
+				return 2;
+			}
+			if (strlen(argv[i + 1]) != 4) {
+				fprintf(stderr, "--box TYPE must be exactly 4 bytes\n");
+				return 2;
+			}
+			if (box_count >= MAX_BOX_INPUTS) {
+				fprintf(stderr, "too many --xmp/--box arguments\n");
+				return 2;
+			}
+			memcpy(boxes[box_count].type, argv[i + 1], 4);
+			boxes[box_count].type[4] = '\0';
+			boxes[box_count].path = argv[i + 2];
+			box_count += 1;
+			i += 2;
 			continue;
 		}
 		if (strcmp(argv[i], "--premultiplied-alpha") == 0 || strcmp(argv[i], "--associated-alpha") == 0) {
@@ -1915,13 +1965,12 @@ int cjxlz_main(int argc, char** argv) {
 	err[0] = '\0';
 	uint8_t* encoded = NULL;
 	size_t encoded_size = 0;
-	uint8_t* xmp_data = NULL;
-	size_t xmp_size = 0;
-	if (xmp_path) {
-		xmp_data = read_path(xmp_path, &xmp_size);
-		if (!xmp_data && xmp_size != 0) {
-			fprintf(stderr, "failed to read xmp: %s\n", xmp_path);
+	for (size_t i = 0; i < box_count; ++i) {
+		boxes[i].data = read_path(boxes[i].path, &boxes[i].size);
+		if (!boxes[i].data && boxes[i].size != 0) {
+			fprintf(stderr, "failed to read box payload: %s\n", boxes[i].path);
 			free(input);
+			free_box_inputs(boxes, box_count);
 			return 1;
 		}
 	}
@@ -1930,21 +1979,21 @@ int cjxlz_main(int argc, char** argv) {
 		ParsedAnimation animation;
 		if (!parse_gif_animation(input, input_size, &animation, err, sizeof(err))) {
 			fprintf(stderr, "%s\n", err[0] ? err : "GIF parse failed");
-			free(xmp_data);
+			free_box_inputs(boxes, box_count);
 			free(input);
 			return 1;
 		}
 		if (extra_count != 0) {
 			fprintf(stderr, "GIF input does not support --extra yet\n");
 			free_parsed_animation(&animation);
-			free(xmp_data);
+			free_box_inputs(boxes, box_count);
 			free(input);
 			return 1;
 		}
 		if (frame_timecode_set) {
 			fprintf(stderr, "--frame-timecode is not supported for GIF input\n");
 			free_parsed_animation(&animation);
-			free(xmp_data);
+			free_box_inputs(boxes, box_count);
 			free(input);
 			return 1;
 		}
@@ -1972,8 +2021,8 @@ int cjxlz_main(int argc, char** argv) {
 			if (!encode_animation(
 				&animation,
 				use_container,
-				xmp_data,
-				xmp_size,
+				boxes,
+				box_count,
 				alpha_premultiplied,
 				white_point,
 				white_point_x,
@@ -2008,7 +2057,7 @@ int cjxlz_main(int argc, char** argv) {
 			)) {
 				fprintf(stderr, "%s\n", err[0] ? err : "animation encode failed");
 				free_parsed_animation(&animation);
-				free(xmp_data);
+				free_box_inputs(boxes, box_count);
 				free(input);
 				return 1;
 			}
@@ -2018,8 +2067,8 @@ int cjxlz_main(int argc, char** argv) {
 				extras,
 				0,
 				use_container,
-				xmp_data,
-				xmp_size,
+				boxes,
+				box_count,
 				alpha_premultiplied,
 				white_point,
 				white_point_x,
@@ -2057,7 +2106,7 @@ int cjxlz_main(int argc, char** argv) {
 			)) {
 				fprintf(stderr, "%s\n", err[0] ? err : "encode failed");
 				free_parsed_animation(&animation);
-				free(xmp_data);
+				free_box_inputs(boxes, box_count);
 				free(input);
 				return 1;
 			}
@@ -2065,7 +2114,7 @@ int cjxlz_main(int argc, char** argv) {
 		free_parsed_animation(&animation);
 #else
 		fprintf(stderr, "gif input is not supported in this build\n");
-		free(xmp_data);
+		free_box_inputs(boxes, box_count);
 		free(input);
 		return 1;
 #endif
@@ -2073,7 +2122,7 @@ int cjxlz_main(int argc, char** argv) {
 		ParsedImage image;
 		if (!parse_input_image(input, input_size, &image, err, sizeof(err))) {
 			fprintf(stderr, "%s\n", err[0] ? err : "parse failed");
-			free(xmp_data);
+			free_box_inputs(boxes, box_count);
 			free(input);
 			return 1;
 		}
@@ -2086,7 +2135,7 @@ int cjxlz_main(int argc, char** argv) {
 					free(extras[j].file_data);
 				}
 				free_parsed_image(&image);
-				free(xmp_data);
+				free_box_inputs(boxes, box_count);
 				free(input);
 				return 1;
 			}
@@ -2097,8 +2146,8 @@ int cjxlz_main(int argc, char** argv) {
 			extras,
 			extra_count,
 			use_container,
-			xmp_data,
-			xmp_size,
+			boxes,
+			box_count,
 			alpha_premultiplied,
 			white_point,
 			white_point_x,
@@ -2140,7 +2189,7 @@ int cjxlz_main(int argc, char** argv) {
 				free(extras[i].file_data);
 			}
 			free_parsed_image(&image);
-			free(xmp_data);
+			free_box_inputs(boxes, box_count);
 			free(input);
 			return 1;
 		}
@@ -2156,7 +2205,7 @@ int cjxlz_main(int argc, char** argv) {
 	if (!out) {
 		fprintf(stderr, "failed to open output: %s\n", output_path);
 		free(encoded);
-		free(xmp_data);
+		free_box_inputs(boxes, box_count);
 		return 1;
 	}
 
@@ -2164,12 +2213,12 @@ int cjxlz_main(int argc, char** argv) {
 		fprintf(stderr, "failed to write output\n");
 		close_output(output_path, out);
 		free(encoded);
-		free(xmp_data);
+		free_box_inputs(boxes, box_count);
 		return 1;
 	}
 
 	close_output(output_path, out);
 	free(encoded);
-	free(xmp_data);
+	free_box_inputs(boxes, box_count);
 	return 0;
 }
