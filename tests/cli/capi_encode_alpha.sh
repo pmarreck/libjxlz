@@ -19,6 +19,7 @@ if ! clang \
 	-Ilib/include \
 	tests/cli/capi_encode_alpha.c \
 	"${PACKAGE_OUT}/lib/libjxlz_capi.a" \
+	$(pkg-config --libs libbrotlienc libbrotlidec libbrotlicommon) \
 	-o "${TMP_C}" >"${COMPILE_LOG}" 2>&1; then
 	cat "${COMPILE_LOG}"
 	exit 1

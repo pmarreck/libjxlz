@@ -2,10 +2,9 @@
 set -u
 
 SYSTEM="$(nix eval --impure --raw --expr builtins.currentSystem)"
-BUILD_LOG="${TMPDIR}/capi_encode_p3_dci_build.log"
-RUN_STDOUT="${TMPDIR}/capi_encode_p3_dci_stdout.txt"
-RUN_STDERR="${TMPDIR}/capi_encode_p3_dci_stderr.txt"
-CHECK_BIN="${TMPDIR}/capi_encode_p3_dci"
+BUILD_LOG="${TMPDIR}/capi_encode_brob_box_build.log"
+RUN_STDERR="${TMPDIR}/capi_encode_brob_box_stderr.txt"
+CHECK_BIN="${TMPDIR}/capi_encode_brob_box"
 
 if ! PACKAGE_OUT="$(nix build --no-link --print-out-paths ".#packages.${SYSTEM}.default" 2>"${BUILD_LOG}")"; then
 	cat "${BUILD_LOG}"
@@ -17,7 +16,7 @@ if ! clang \
 	-Wall -Wextra -Werror \
 	-Iinclude \
 	-Ilib/include \
-	tests/cli/capi_encode_p3_dci.c \
+	tests/cli/capi_encode_brob_box.c \
 	"${PACKAGE_OUT}/lib/libjxlz_capi.a" \
 	$(pkg-config --libs libbrotlienc libbrotlidec libbrotlicommon) \
 	-o "${CHECK_BIN}" >"${BUILD_LOG}" 2>&1; then
@@ -25,13 +24,7 @@ if ! clang \
 	exit 1
 fi
 
-if ! "${CHECK_BIN}" >"${RUN_STDOUT}" 2>"${RUN_STDERR}"; then
+if ! "${CHECK_BIN}" >/dev/null 2>"${RUN_STDERR}"; then
 	cat "${RUN_STDERR}"
-	exit 1
-fi
-
-if ! grep -Eq '^0 11 11 17 0\.000000 1$' "${RUN_STDOUT}"; then
-	echo "unexpected encoded color profile"
-	cat "${RUN_STDOUT}"
 	exit 1
 fi

@@ -1,4 +1,5 @@
 const std = @import("std");
+const brotli = @import("../base/brotli.zig");
 
 pub const signature_box = [_]u8{ 0x00, 0x00, 0x00, 0x0C, 0x4A, 0x58, 0x4C, 0x20, 0x0D, 0x0A, 0x87, 0x0A };
 pub const ftyp_payload = [_]u8{ 'j', 'x', 'l', ' ', 0, 0, 0, 0, 'j', 'x', 'l', ' ' };
@@ -11,14 +12,46 @@ pub const OwnedBox = struct {
 	box_type: [4]u8,
 	raw_size: u64,
 	contents: []u8,
+	decompressed_box_type: ?[4]u8 = null,
+	decompressed_contents: ?[]u8 = null,
 
 	pub fn deinit(self: *OwnedBox, allocator: std.mem.Allocator) void {
+		if (self.decompressed_contents) |contents| allocator.free(contents);
 		allocator.free(self.contents);
 		self.* = .{
 			.box_type = undefined,
 			.raw_size = 0,
 			.contents = &.{},
+			.decompressed_box_type = null,
+			.decompressed_contents = null,
 		};
+	}
+
+	/// Returns the box type the public API should report in either raw or
+	/// transparent-brotli mode without forcing the caller to parse `brob`.
+	pub fn effectiveBoxType(self: *const OwnedBox, decompressed: bool) ![4]u8 {
+		if (!decompressed or !std.mem.eql(u8, &self.box_type, "brob")) return self.box_type;
+		if (self.decompressed_box_type) |box_type| return box_type;
+		if (self.contents.len < 4) return error.GenericError;
+		return .{ self.contents[0], self.contents[1], self.contents[2], self.contents[3] };
+	}
+
+	pub fn effectiveContents(self: *const OwnedBox, decompressed: bool) []const u8 {
+		if (decompressed) {
+			if (self.decompressed_contents) |contents| return contents;
+		}
+		return self.contents;
+	}
+
+	/// Lazily expands `brob` payloads so decoder box iteration can stay raw by
+	/// default while still supporting transparent metadata decompression on
+	/// demand.
+	pub fn ensureDecompressed(self: *OwnedBox, allocator: std.mem.Allocator) !void {
+		if (!std.mem.eql(u8, &self.box_type, "brob")) return;
+		if (self.decompressed_contents != null) return;
+		if (self.contents.len < 4) return error.GenericError;
+		self.decompressed_box_type = .{ self.contents[0], self.contents[1], self.contents[2], self.contents[3] };
+		self.decompressed_contents = try brotli.decompress(allocator, self.contents[4..]);
 	}
 };
 

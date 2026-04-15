@@ -15,7 +15,7 @@
           mkZigPackage = optimize: with pkgs; stdenv.mkDerivation {
             inherit pname version;
             src = ./.;
-            nativeBuildInputs = [ zig pkg-config libpng giflib zlib ]
+            nativeBuildInputs = [ zig pkg-config libpng giflib zlib brotli ]
               ++ lib.optionals (stdenv.isDarwin) [
                 darwin.cctools
                 apple-sdk
@@ -62,7 +62,7 @@
               pname = "${pname}-test";
               inherit version;
               src = ./.;
-            nativeBuildInputs = [ zig pkg-config libpng giflib zlib ]
+            nativeBuildInputs = [ zig pkg-config libpng giflib zlib brotli ]
                 ++ lib.optionals (stdenv.isDarwin) [
                   darwin.cctools
                   apple-sdk

@@ -24,6 +24,7 @@ if ! clang \
 	-Ilib/include \
 	tests/cli/capi_decode_animation_controls.c \
 	"${PACKAGE_OUT}/lib/libjxlz_capi.a" \
+	$(pkg-config --libs libbrotlienc libbrotlidec libbrotlicommon) \
 	-o "${CHECK_BIN}" >"${BUILD_LOG}" 2>&1; then
 	cat "${BUILD_LOG}"
 	exit 1

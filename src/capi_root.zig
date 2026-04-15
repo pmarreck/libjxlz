@@ -8,6 +8,7 @@ const headers = @import("lib/codec/headers.zig");
 const color_encoding_mod = @import("lib/codec/color_encoding.zig");
 const image_metadata = @import("lib/codec/image_metadata.zig");
 const container_mod = @import("lib/codec/container.zig");
+const brotli = @import("lib/base/brotli.zig");
 const frame_header_mod = @import("lib/codec/frame_header.zig");
 const dec_frame = @import("lib/codec/dec_frame.zig");
 const enc_api = @import("lib/codec/enc_api.zig");
@@ -1697,6 +1698,18 @@ fn currentBox(dec: *const DecoderImpl) ?*const container_mod.OwnedBox {
 	return &dec.owned_boxes[dec.box_index];
 }
 
+fn currentBoxMut(dec: *DecoderImpl) ?*container_mod.OwnedBox {
+	if (dec.box_index >= dec.owned_boxes.len) return null;
+	return &dec.owned_boxes[dec.box_index];
+}
+
+fn ensureCurrentBoxPrepared(dec: *DecoderImpl) JxlDecoderStatus {
+	if (!dec.decompress_boxes) return .JXL_DEC_SUCCESS;
+	const box = currentBoxMut(dec) orelse return .JXL_DEC_SUCCESS;
+	box.ensureDecompressed(std.heap.c_allocator) catch |err| return statusFromError(err, dec.input_closed);
+	return .JXL_DEC_SUCCESS;
+}
+
 fn advanceCurrentBox(dec: *DecoderImpl) void {
 	dec.box_index += 1;
 	dec.box_header_emitted = false;
@@ -1963,15 +1976,16 @@ pub export fn JxlDecoderSetDecompressBoxes(dec_ptr: ?*JxlDecoder, decompress: JX
 	const dec = dec_ptr orelse return .JXL_DEC_ERROR;
 	const impl: *DecoderImpl = @ptrCast(@alignCast(dec));
 	impl.decompress_boxes = decompress != 0;
-	return if (decompress != 0) .JXL_DEC_ERROR else .JXL_DEC_SUCCESS;
+	return .JXL_DEC_SUCCESS;
 }
 
-pub export fn JxlDecoderGetBoxType(dec_ptr: ?*JxlDecoder, type_ptr: ?[*]u8, _: JXL_BOOL) JxlDecoderStatus {
+pub export fn JxlDecoderGetBoxType(dec_ptr: ?*JxlDecoder, type_ptr: ?[*]u8, decompressed: JXL_BOOL) JxlDecoderStatus {
 	const dec = dec_ptr orelse return .JXL_DEC_ERROR;
 	const impl: *DecoderImpl = @ptrCast(@alignCast(dec));
 	const box_type = type_ptr orelse return .JXL_DEC_ERROR;
 	const box = currentBox(impl) orelse return .JXL_DEC_ERROR;
-	@memcpy(box_type[0..4], &box.box_type);
+	const effective = box.effectiveBoxType(decompressed != 0) catch return .JXL_DEC_ERROR;
+	@memcpy(box_type[0..4], &effective);
 	return .JXL_DEC_SUCCESS;
 }
 
@@ -2116,25 +2130,28 @@ pub export fn JxlDecoderProcessInput(dec_ptr: ?*JxlDecoder) JxlDecoderStatus {
 
 		if ((impl.subscribed_events & @intFromEnum(JxlDecoderStatus.JXL_DEC_BOX)) != 0) {
 			if (currentBox(impl) != null) {
+				const box_status = ensureCurrentBoxPrepared(impl);
+				if (box_status != .JXL_DEC_SUCCESS) return box_status;
 				if (!impl.box_header_emitted) {
 					impl.box_header_emitted = true;
 					return .JXL_DEC_BOX;
 				}
-				if (impl.box_bytes_emitted < currentBox(impl).?.contents.len) {
+				const box = currentBox(impl).?;
+				const contents = box.effectiveContents(impl.decompress_boxes);
+				if (impl.box_bytes_emitted < contents.len) {
 					if (impl.box_buffer == null) {
 						advanceCurrentBox(impl);
 						continue;
 					}
-					const box = currentBox(impl).?;
-					const remaining = box.contents.len - impl.box_bytes_emitted;
+					const remaining = contents.len - impl.box_bytes_emitted;
 					const to_copy = @min(remaining, impl.box_buffer_size);
 					@memcpy(
 						impl.box_buffer.?[0..to_copy],
-						box.contents[impl.box_bytes_emitted .. impl.box_bytes_emitted + to_copy],
+						contents[impl.box_bytes_emitted .. impl.box_bytes_emitted + to_copy],
 					);
 					impl.box_bytes_emitted += to_copy;
 					impl.box_buffer_written = to_copy;
-					if (impl.box_bytes_emitted < box.contents.len) return .JXL_DEC_BOX_NEED_MORE_OUTPUT;
+					if (impl.box_bytes_emitted < contents.len) return .JXL_DEC_BOX_NEED_MORE_OUTPUT;
 				}
 				if (
 					impl.box_buffer != null and
@@ -2300,7 +2317,6 @@ pub export fn JxlEncoderAddBox(
 	const impl: *EncoderImpl = @ptrCast(@alignCast(enc));
 	const box_type = box_type_ptr orelse return .JXL_ENC_ERROR;
 	if (!impl.use_boxes or impl.boxes_closed or impl.started_processing) return .JXL_ENC_ERROR;
-	if (compress_box != 0) return .JXL_ENC_ERROR;
 
 	var box_name: [4]u8 = undefined;
 	@memcpy(&box_name, box_type[0..4]);
@@ -2319,9 +2335,18 @@ pub export fn JxlEncoderAddBox(
 		break :blk ptr[0..size];
 	};
 
-	const owned = std.heap.c_allocator.dupe(u8, contents) catch return .JXL_ENC_ERROR;
+	var stored_box_type = box_name;
+	const owned = if (compress_box != 0) blk: {
+		const compressed = brotli.compress(std.heap.c_allocator, contents) catch return .JXL_ENC_ERROR;
+		defer std.heap.c_allocator.free(compressed);
+		const payload = std.heap.c_allocator.alloc(u8, compressed.len + 4) catch return .JXL_ENC_ERROR;
+		@memcpy(payload[0..4], &box_name);
+		@memcpy(payload[4..], compressed);
+		stored_box_type = .{ 'b', 'r', 'o', 'b' };
+		break :blk payload;
+	} else std.heap.c_allocator.dupe(u8, contents) catch return .JXL_ENC_ERROR;
 	impl.staged_boxes.append(std.heap.c_allocator, .{
-		.box_type = box_name,
+		.box_type = stored_box_type,
 		.contents = owned,
 	}) catch {
 		std.heap.c_allocator.free(owned);

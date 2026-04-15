@@ -18,6 +18,7 @@ if ! clang \
 	-Ilib/include \
 	tests/cli/capi_encode_subsampled_depth.c \
 	"${PACKAGE_OUT}/lib/libjxlz_capi.a" \
+	$(pkg-config --libs libbrotlienc libbrotlidec libbrotlicommon) \
 	-o "${BIN}" >"${BUILD_LOG}" 2>&1; then
 	cat "${BUILD_LOG}"
 	exit 1

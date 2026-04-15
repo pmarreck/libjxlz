@@ -15,6 +15,14 @@ pub fn build(b: *std.Build) void {
 	defer if (gif_include_dir) |path| b.allocator.free(path);
 	defer if (gif_lib_dir) |path| b.allocator.free(path);
 
+	const linkBrotli = struct {
+		fn apply(step: anytype) void {
+			step.linkSystemLibrary("brotlienc");
+			step.linkSystemLibrary("brotlidec");
+			step.linkSystemLibrary("brotlicommon");
+		}
+	}.apply;
+
 	const root_module = b.createModule(.{
 		.root_source_file = b.path("src/root.zig"),
 		.target = target,
@@ -27,6 +35,7 @@ pub fn build(b: *std.Build) void {
 		.root_module = root_module,
 	});
 	lib.linkLibC();
+	linkBrotli(lib);
 
 	const install_lib = b.addInstallArtifact(lib, .{});
 	b.getInstallStep().dependOn(&install_lib.step);
@@ -41,6 +50,7 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	capi_lib.linkLibC();
+	linkBrotli(capi_lib);
 
 	const install_capi = b.addInstallArtifact(capi_lib, .{});
 	b.getInstallStep().dependOn(&install_capi.step);
@@ -67,6 +77,7 @@ pub fn build(b: *std.Build) void {
 	});
 	djxlz.linkLibrary(capi_lib);
 	djxlz.linkLibC();
+	linkBrotli(djxlz);
 	if (gif_output) {
 		djxlz.root_module.addCMacro("JXLZ_HAVE_GIF_OUTPUT", "1");
 		if (gif_include_dir) |path| {
@@ -102,6 +113,7 @@ pub fn build(b: *std.Build) void {
 	});
 	cjxlz.linkLibrary(capi_lib);
 	cjxlz.linkLibC();
+	linkBrotli(cjxlz);
 	if (png_input) {
 		cjxlz.root_module.addCMacro("JXLZ_HAVE_PNG_INPUT", "1");
 		cjxlz.linkSystemLibrary2("libpng", .{ .use_pkg_config = .force });
@@ -162,6 +174,7 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	unit_tests.linkLibC();
+	linkBrotli(unit_tests);
 
 	const run_unit_tests = b.addRunArtifact(unit_tests);
 
@@ -209,6 +222,7 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	capi_tests.linkLibC();
+	linkBrotli(capi_tests);
 
 	const run_capi_tests = b.addRunArtifact(capi_tests);
 	const test_step = b.step("test", "Run unit tests");

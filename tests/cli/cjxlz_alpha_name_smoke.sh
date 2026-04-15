@@ -44,6 +44,7 @@ if ! clang \
 	-Ilib/include \
 	tests/cli/cjxlz_extra_channel_name.c \
 	"${PACKAGE_OUT}/lib/libjxlz_capi.a" \
+	$(pkg-config --libs libbrotlienc libbrotlidec libbrotlicommon) \
 	-o "${CHECK_BIN}" >"${CHECK_BUILD_LOG}" 2>&1; then
 	cat "${CHECK_BUILD_LOG}"
 	exit 1
