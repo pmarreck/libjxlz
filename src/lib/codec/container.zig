@@ -29,13 +29,19 @@ pub fn wrapCodestream(allocator: std.mem.Allocator, codestream: []const u8) ![]u
 	return list.toOwnedSlice(allocator);
 }
 
-/// Extracts the first complete `jxlc` payload from a minimal JPEG XL container.
-/// This intentionally rejects `jxlp`, large-size boxes, and open-ended boxes.
-pub fn extractCodestream(container_bytes: []const u8) ![]const u8 {
+/// Extracts the first complete codestream payload from a minimal JPEG XL
+/// container, accepting either a single `jxlc` box or a sequential `jxlp`
+/// series with the high-bit "last fragment" marker.
+pub fn extractCodestream(allocator: std.mem.Allocator, container_bytes: []const u8) ![]u8 {
 	if (container_bytes.len < signature_box.len) return error.GenericError;
 	if (!std.mem.eql(u8, container_bytes[0..signature_box.len], &signature_box)) return error.GenericError;
 
 	var offset: usize = signature_box.len;
+	var partial: std.ArrayListUnmanaged(u8) = .{};
+	defer partial.deinit(allocator);
+	var saw_jxlp = false;
+	var saw_last_jxlp = false;
+	var next_jxlp_index: u32 = 0;
 	while (offset + 8 <= container_bytes.len) {
 		const size = std.mem.readInt(u32, @ptrCast(container_bytes[offset .. offset + 4]), .big);
 		if (size < 8) return error.GenericError;
@@ -45,12 +51,27 @@ pub fn extractCodestream(container_bytes: []const u8) ![]const u8 {
 		const box_type = container_bytes[offset + 4 .. offset + 8];
 		const payload = container_bytes[offset + 8 .. end];
 
-		if (std.mem.eql(u8, box_type, "jxlc")) return payload;
-		if (std.mem.eql(u8, box_type, "jxlp")) return error.Unsupported;
+		if (std.mem.eql(u8, box_type, "jxlc")) {
+			if (saw_jxlp) return error.GenericError;
+			return allocator.dupe(u8, payload);
+		}
+		if (std.mem.eql(u8, box_type, "jxlp")) {
+			if (saw_last_jxlp) return error.GenericError;
+			if (payload.len < 4) return error.GenericError;
+			var index = std.mem.readInt(u32, @ptrCast(payload[0..4]), .big);
+			const is_last = (index & 0x8000_0000) != 0;
+			index &= 0x7FFF_FFFF;
+			if (index != next_jxlp_index) return error.GenericError;
+			next_jxlp_index += 1;
+			saw_jxlp = true;
+			if (is_last) saw_last_jxlp = true;
+			try partial.appendSlice(allocator, payload[4..]);
+		}
 
 		offset = end;
 	}
 
+	if (saw_jxlp and saw_last_jxlp) return partial.toOwnedSlice(allocator);
 	return error.GenericError;
 }
 
@@ -62,6 +83,33 @@ test "wrapCodestream and extractCodestream round-trip" {
 	defer testing.allocator.free(wrapped);
 
 	try testing.expect(std.mem.eql(u8, wrapped[0..signature_box.len], &signature_box));
-	const extracted = try extractCodestream(wrapped);
+	const extracted = try extractCodestream(testing.allocator, wrapped);
+	defer testing.allocator.free(extracted);
 	try testing.expectEqualSlices(u8, &codestream, extracted);
+}
+
+test "extractCodestream reconstructs split jxlp payloads" {
+	var wrapped: [56]u8 = undefined;
+	@memcpy(wrapped[0..12], &signature_box);
+	@memcpy(wrapped[12..32], &[_]u8{
+		0x00, 0x00, 0x00, 0x14,
+		'f', 't', 'y', 'p',
+		'j', 'x', 'l', ' ',
+		0x00, 0x00, 0x00, 0x00,
+		'j', 'x', 'l', ' ',
+	});
+	@memcpy(wrapped[32..44], &[_]u8{
+		0x00, 0x00, 0x00, 0x0C,
+		'j', 'x', 'l', 'p',
+		0x00, 0x00, 0x00, 0x00,
+	});
+	@memcpy(wrapped[44..56], &[_]u8{
+		0x00, 0x00, 0x00, 0x0C,
+		'j', 'x', 'l', 'p',
+		0x80, 0x00, 0x00, 0x01,
+	});
+
+	const extracted = try extractCodestream(testing.allocator, &wrapped);
+	defer testing.allocator.free(extracted);
+	try testing.expectEqualSlices(u8, &.{}, extracted);
 }

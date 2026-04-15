@@ -271,6 +271,7 @@ const DecoderImpl = struct {
 	color_encoding_emitted: bool = false,
 	basic_info: JxlBasicInfo = std.mem.zeroes(JxlBasicInfo),
 	input_is_container: bool = false,
+	owned_codestream: []u8 = &.{},
 	codec_meta: image_metadata.CodecMetadata = .{},
 	frame_data: []const u8 = &.{},
 	frame_offset: usize = 0,
@@ -409,6 +410,10 @@ fn allocDecoder(mm: ?*const JxlMemoryManager) ?*DecoderImpl {
 }
 
 fn freeDecoder(dec: *DecoderImpl) void {
+	if (dec.owned_codestream.len != 0) {
+		std.heap.c_allocator.free(dec.owned_codestream);
+		dec.owned_codestream = &.{};
+	}
 	if (dec.memory_manager) |manager| {
 		if (manager.alloc != null and manager.free != null) {
 			manager.free.?(manager.@"opaque", dec);
@@ -1654,7 +1659,12 @@ fn ensureParsed(dec: *DecoderImpl) JxlDecoderStatus {
 		.JXL_SIG_INVALID => return .JXL_DEC_ERROR,
 		.JXL_SIG_CONTAINER => blk: {
 			dec.input_is_container = true;
-			break :blk container_mod.extractCodestream(input) catch |err| return statusFromError(err, dec.input_closed);
+			if (dec.owned_codestream.len != 0) {
+				std.heap.c_allocator.free(dec.owned_codestream);
+				dec.owned_codestream = &.{};
+			}
+			dec.owned_codestream = container_mod.extractCodestream(std.heap.c_allocator, input) catch |err| return statusFromError(err, dec.input_closed);
+			break :blk dec.owned_codestream;
 		},
 		.JXL_SIG_CODESTREAM => blk: {
 			dec.input_is_container = false;
@@ -1722,6 +1732,7 @@ pub export fn JxlDecoderReset(dec_ptr: ?*JxlDecoder) void {
 	const dec = dec_ptr orelse return;
 	const impl: *DecoderImpl = @ptrCast(@alignCast(dec));
 	const mm = impl.memory_manager;
+	if (impl.owned_codestream.len != 0) std.heap.c_allocator.free(impl.owned_codestream);
 	impl.* = .{};
 	impl.memory_manager = mm;
 }
