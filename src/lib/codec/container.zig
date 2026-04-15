@@ -7,6 +7,36 @@ pub const Box = struct {
 	contents: []const u8,
 };
 
+pub const OwnedBox = struct {
+	box_type: [4]u8,
+	raw_size: u64,
+	contents: []u8,
+
+	pub fn deinit(self: *OwnedBox, allocator: std.mem.Allocator) void {
+		allocator.free(self.contents);
+		self.* = .{
+			.box_type = undefined,
+			.raw_size = 0,
+			.contents = &.{},
+		};
+	}
+};
+
+pub const ParsedContainer = struct {
+	codestream: []u8,
+	boxes: []OwnedBox,
+
+	pub fn deinit(self: *ParsedContainer, allocator: std.mem.Allocator) void {
+		allocator.free(self.codestream);
+		for (self.boxes) |*box| box.deinit(allocator);
+		allocator.free(self.boxes);
+		self.* = .{
+			.codestream = &.{},
+			.boxes = &.{},
+		};
+	}
+};
+
 fn appendU32BE(list: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, value: u32) !void {
 	var bytes: [4]u8 = undefined;
 	std.mem.writeInt(u32, &bytes, value, .big);
@@ -54,12 +84,26 @@ pub fn wrapCodestreamWithBoxes(allocator: std.mem.Allocator, codestream: []const
 /// container, accepting either a single `jxlc` box or a sequential `jxlp`
 /// series with the high-bit "last fragment" marker.
 pub fn extractCodestream(allocator: std.mem.Allocator, container_bytes: []const u8) ![]u8 {
+	var parsed = try extractCodestreamAndBoxes(allocator, container_bytes);
+	defer parsed.deinit(allocator);
+	return allocator.dupe(u8, parsed.codestream);
+}
+
+/// Extracts the codestream plus any already-owned non-codestream BMFF boxes
+/// from the current minimal container surface.
+pub fn extractCodestreamAndBoxes(allocator: std.mem.Allocator, container_bytes: []const u8) !ParsedContainer {
 	if (container_bytes.len < signature_box.len) return error.GenericError;
 	if (!std.mem.eql(u8, container_bytes[0..signature_box.len], &signature_box)) return error.GenericError;
 
 	var offset: usize = signature_box.len;
 	var partial: std.ArrayListUnmanaged(u8) = .{};
 	defer partial.deinit(allocator);
+	var owned_boxes: std.ArrayListUnmanaged(OwnedBox) = .{};
+	defer {
+		for (owned_boxes.items) |*box| box.deinit(allocator);
+		owned_boxes.deinit(allocator);
+	}
+	var codestream: ?[]u8 = null;
 	var saw_jxlp = false;
 	var saw_last_jxlp = false;
 	var next_jxlp_index: u32 = 0;
@@ -74,9 +118,9 @@ pub fn extractCodestream(allocator: std.mem.Allocator, container_bytes: []const 
 
 		if (std.mem.eql(u8, box_type, "jxlc")) {
 			if (saw_jxlp) return error.GenericError;
-			return allocator.dupe(u8, payload);
-		}
-		if (std.mem.eql(u8, box_type, "jxlp")) {
+			if (codestream != null) return error.GenericError;
+			codestream = try allocator.dupe(u8, payload);
+		} else if (std.mem.eql(u8, box_type, "jxlp")) {
 			if (saw_last_jxlp) return error.GenericError;
 			if (payload.len < 4) return error.GenericError;
 			var index = std.mem.readInt(u32, @ptrCast(payload[0..4]), .big);
@@ -87,13 +131,27 @@ pub fn extractCodestream(allocator: std.mem.Allocator, container_bytes: []const 
 			saw_jxlp = true;
 			if (is_last) saw_last_jxlp = true;
 			try partial.appendSlice(allocator, payload[4..]);
+		} else if (!std.mem.eql(u8, box_type, "ftyp")) {
+			try owned_boxes.append(allocator, .{
+				.box_type = .{ box_type[0], box_type[1], box_type[2], box_type[3] },
+				.raw_size = size,
+				.contents = try allocator.dupe(u8, payload),
+			});
 		}
 
 		offset = end;
 	}
 
-	if (saw_jxlp and saw_last_jxlp) return partial.toOwnedSlice(allocator);
-	return error.GenericError;
+	if (codestream == null and saw_jxlp and saw_last_jxlp) {
+		codestream = try partial.toOwnedSlice(allocator);
+	}
+	if (codestream == null) return error.GenericError;
+
+	const result = ParsedContainer{
+		.codestream = codestream.?,
+		.boxes = try owned_boxes.toOwnedSlice(allocator),
+	};
+	return result;
 }
 
 const testing = std.testing;
@@ -133,4 +191,25 @@ test "extractCodestream reconstructs split jxlp payloads" {
 	const extracted = try extractCodestream(testing.allocator, &wrapped);
 	defer testing.allocator.free(extracted);
 	try testing.expectEqualSlices(u8, &.{}, extracted);
+}
+
+test "extractCodestreamAndBoxes preserves metadata boxes" {
+	const codestream = [_]u8{ 0xFF, 0x0A, 0x01, 0x02 };
+	const wrapped = try wrapCodestreamWithBoxes(testing.allocator, &codestream, &.{
+		.{ .box_type = .{ 'x', 'm', 'l', ' ' }, .contents = "<x/>" },
+		.{ .box_type = .{ 'E', 'x', 'i', 'f' }, .contents = "abcd" },
+	});
+	defer testing.allocator.free(wrapped);
+
+	var parsed = try extractCodestreamAndBoxes(testing.allocator, wrapped);
+	defer parsed.deinit(testing.allocator);
+
+	try testing.expectEqualSlices(u8, &codestream, parsed.codestream);
+	try testing.expectEqual(@as(usize, 2), parsed.boxes.len);
+	try testing.expectEqualSlices(u8, "xml ", &parsed.boxes[0].box_type);
+	try testing.expectEqualSlices(u8, "<x/>", parsed.boxes[0].contents);
+	try testing.expectEqual(@as(u64, 12), parsed.boxes[0].raw_size);
+	try testing.expectEqualSlices(u8, "Exif", &parsed.boxes[1].box_type);
+	try testing.expectEqualSlices(u8, "abcd", parsed.boxes[1].contents);
+	try testing.expectEqual(@as(u64, 12), parsed.boxes[1].raw_size);
 }

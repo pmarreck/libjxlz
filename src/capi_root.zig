@@ -168,7 +168,11 @@ pub const JxlDecoderStatus = enum(c_int) {
 	JXL_DEC_PREVIEW_IMAGE = 0x200,
 	JXL_DEC_FRAME = 0x400,
 	JXL_DEC_FULL_IMAGE = 0x1000,
+	JXL_DEC_BOX = 0x4000,
+	JXL_DEC_BOX_COMPLETE = 0x10000,
 };
+
+pub const JxlBoxType = [4]u8;
 
 pub const JxlColorProfileTarget = enum(c_int) {
 	JXL_COLOR_PROFILE_TARGET_ORIGINAL = 0,
@@ -272,6 +276,15 @@ const DecoderImpl = struct {
 	basic_info: JxlBasicInfo = std.mem.zeroes(JxlBasicInfo),
 	input_is_container: bool = false,
 	owned_codestream: []u8 = &.{},
+	owned_boxes: []container_mod.OwnedBox = &.{},
+	box_index: usize = 0,
+	box_header_emitted: bool = false,
+	box_bytes_emitted: usize = 0,
+	box_complete_emitted: bool = false,
+	decompress_boxes: bool = false,
+	box_buffer: ?[*]u8 = null,
+	box_buffer_size: usize = 0,
+	box_buffer_written: usize = 0,
 	codec_meta: image_metadata.CodecMetadata = .{},
 	frame_data: []const u8 = &.{},
 	frame_offset: usize = 0,
@@ -426,6 +439,11 @@ fn freeDecoder(dec: *DecoderImpl) void {
 	if (dec.owned_codestream.len != 0) {
 		std.heap.c_allocator.free(dec.owned_codestream);
 		dec.owned_codestream = &.{};
+	}
+	if (dec.owned_boxes.len != 0) {
+		for (dec.owned_boxes) |*box| box.deinit(std.heap.c_allocator);
+		std.heap.c_allocator.free(dec.owned_boxes);
+		dec.owned_boxes = &.{};
 	}
 	if (dec.memory_manager) |manager| {
 		if (manager.alloc != null and manager.free != null) {
@@ -1257,7 +1275,7 @@ fn finalizeSimpleEncode(impl: *EncoderImpl) !void {
 			.color_pixels = prepared.color_pixels,
 			.alpha_row_stride = prepared.alpha_row_stride,
 			.alpha_pixels = prepared.alpha_pixels,
-			.use_container = impl.basic_info.have_container != 0 or impl.staged_boxes.items.len != 0,
+			.use_container = impl.basic_info.have_container != 0 and impl.staged_boxes.items.len == 0,
 			.alpha_associated = impl.basic_info.alpha_premultiplied != 0,
 			.alpha_info = if (impl.basic_info.alpha_bits != 0 and impl.pending_extra_channels[0].info_set)
 				try toInternalExtraChannelInfo(&impl.pending_extra_channels[0])
@@ -1330,7 +1348,7 @@ fn finalizeSimpleEncode(impl: *EncoderImpl) !void {
 		.width = impl.basic_info.xsize,
 		.height = impl.basic_info.ysize,
 		.num_color_channels = impl.basic_info.num_color_channels,
-		.use_container = impl.basic_info.have_container != 0 or impl.staged_boxes.items.len != 0,
+		.use_container = impl.basic_info.have_container != 0 and impl.staged_boxes.items.len == 0,
 		.alpha_associated = impl.basic_info.alpha_premultiplied != 0,
 		.alpha_info = if (impl.basic_info.alpha_bits != 0 and impl.pending_extra_channels[0].info_set)
 			try toInternalExtraChannelInfo(&impl.pending_extra_channels[0])
@@ -1664,6 +1682,31 @@ fn advanceCurrentFrame(dec: *DecoderImpl) void {
 	}
 }
 
+fn resetBoxIteration(dec: *DecoderImpl) void {
+	dec.box_index = 0;
+	dec.box_header_emitted = false;
+	dec.box_bytes_emitted = 0;
+	dec.box_complete_emitted = false;
+	dec.box_buffer = null;
+	dec.box_buffer_size = 0;
+	dec.box_buffer_written = 0;
+}
+
+fn currentBox(dec: *const DecoderImpl) ?*const container_mod.OwnedBox {
+	if (dec.box_index >= dec.owned_boxes.len) return null;
+	return &dec.owned_boxes[dec.box_index];
+}
+
+fn advanceCurrentBox(dec: *DecoderImpl) void {
+	dec.box_index += 1;
+	dec.box_header_emitted = false;
+	dec.box_bytes_emitted = 0;
+	dec.box_complete_emitted = false;
+	dec.box_buffer = null;
+	dec.box_buffer_size = 0;
+	dec.box_buffer_written = 0;
+}
+
 fn resetFrameIteration(dec: *DecoderImpl) void {
 	dec.frame_offset = 0;
 	dec.frame_size = 0;
@@ -1677,6 +1720,7 @@ fn resetFrameIteration(dec: *DecoderImpl) void {
 	dec.frame_header = std.mem.zeroes(JxlFrameHeader);
 	dec.full_image_emitted = false;
 	dec.decode_complete = false;
+	resetBoxIteration(dec);
 }
 
 /// Parses the codestream headers once and caches the frame slice so the
@@ -1695,7 +1739,14 @@ fn ensureParsed(dec: *DecoderImpl) JxlDecoderStatus {
 				std.heap.c_allocator.free(dec.owned_codestream);
 				dec.owned_codestream = &.{};
 			}
-			dec.owned_codestream = container_mod.extractCodestream(std.heap.c_allocator, input) catch |err| return statusFromError(err, dec.input_closed);
+			if (dec.owned_boxes.len != 0) {
+				for (dec.owned_boxes) |*box| box.deinit(std.heap.c_allocator);
+				std.heap.c_allocator.free(dec.owned_boxes);
+				dec.owned_boxes = &.{};
+			}
+			const parsed = container_mod.extractCodestreamAndBoxes(std.heap.c_allocator, input) catch |err| return statusFromError(err, dec.input_closed);
+			dec.owned_codestream = parsed.codestream;
+			dec.owned_boxes = parsed.boxes;
 			break :blk dec.owned_codestream;
 		},
 		.JXL_SIG_CODESTREAM => blk: {
@@ -1765,6 +1816,10 @@ pub export fn JxlDecoderReset(dec_ptr: ?*JxlDecoder) void {
 	const impl: *DecoderImpl = @ptrCast(@alignCast(dec));
 	const mm = impl.memory_manager;
 	if (impl.owned_codestream.len != 0) std.heap.c_allocator.free(impl.owned_codestream);
+	if (impl.owned_boxes.len != 0) {
+		for (impl.owned_boxes) |*box| box.deinit(std.heap.c_allocator);
+		std.heap.c_allocator.free(impl.owned_boxes);
+	}
 	impl.* = .{};
 	impl.memory_manager = mm;
 }
@@ -1880,6 +1935,62 @@ pub export fn JxlDecoderCloseInput(dec_ptr: ?*JxlDecoder) void {
 	const dec = dec_ptr orelse return;
 	const impl: *DecoderImpl = @ptrCast(@alignCast(dec));
 	impl.input_closed = true;
+}
+
+pub export fn JxlDecoderSetBoxBuffer(dec_ptr: ?*JxlDecoder, data: ?[*]u8, size: usize) JxlDecoderStatus {
+	const dec = dec_ptr orelse return .JXL_DEC_ERROR;
+	const impl: *DecoderImpl = @ptrCast(@alignCast(dec));
+	if (impl.box_buffer != null) return .JXL_DEC_ERROR;
+	if (size != 0 and data == null) return .JXL_DEC_ERROR;
+	impl.box_buffer = data;
+	impl.box_buffer_size = size;
+	impl.box_buffer_written = 0;
+	return .JXL_DEC_SUCCESS;
+}
+
+pub export fn JxlDecoderReleaseBoxBuffer(dec_ptr: ?*JxlDecoder) usize {
+	const dec = dec_ptr orelse return 0;
+	const impl: *DecoderImpl = @ptrCast(@alignCast(dec));
+	if (impl.box_buffer == null) return 0;
+	const remaining = impl.box_buffer_size - impl.box_buffer_written;
+	impl.box_buffer = null;
+	impl.box_buffer_size = 0;
+	impl.box_buffer_written = 0;
+	return remaining;
+}
+
+pub export fn JxlDecoderSetDecompressBoxes(dec_ptr: ?*JxlDecoder, decompress: JXL_BOOL) JxlDecoderStatus {
+	const dec = dec_ptr orelse return .JXL_DEC_ERROR;
+	const impl: *DecoderImpl = @ptrCast(@alignCast(dec));
+	impl.decompress_boxes = decompress != 0;
+	return if (decompress != 0) .JXL_DEC_ERROR else .JXL_DEC_SUCCESS;
+}
+
+pub export fn JxlDecoderGetBoxType(dec_ptr: ?*JxlDecoder, type_ptr: ?[*]u8, _: JXL_BOOL) JxlDecoderStatus {
+	const dec = dec_ptr orelse return .JXL_DEC_ERROR;
+	const impl: *DecoderImpl = @ptrCast(@alignCast(dec));
+	const box_type = type_ptr orelse return .JXL_DEC_ERROR;
+	const box = currentBox(impl) orelse return .JXL_DEC_ERROR;
+	@memcpy(box_type[0..4], &box.box_type);
+	return .JXL_DEC_SUCCESS;
+}
+
+pub export fn JxlDecoderGetBoxSizeRaw(dec_ptr: ?*const JxlDecoder, size_ptr: ?*u64) JxlDecoderStatus {
+	const dec = dec_ptr orelse return .JXL_DEC_ERROR;
+	const impl: *const DecoderImpl = @ptrCast(@alignCast(dec));
+	const size = size_ptr orelse return .JXL_DEC_ERROR;
+	const box = currentBox(impl) orelse return .JXL_DEC_ERROR;
+	size.* = box.raw_size;
+	return .JXL_DEC_SUCCESS;
+}
+
+pub export fn JxlDecoderGetBoxSizeContents(dec_ptr: ?*const JxlDecoder, size_ptr: ?*u64) JxlDecoderStatus {
+	const dec = dec_ptr orelse return .JXL_DEC_ERROR;
+	const impl: *const DecoderImpl = @ptrCast(@alignCast(dec));
+	const size = size_ptr orelse return .JXL_DEC_ERROR;
+	const box = currentBox(impl) orelse return .JXL_DEC_ERROR;
+	size.* = box.contents.len;
+	return .JXL_DEC_SUCCESS;
 }
 
 pub export fn JxlDecoderGetBasicInfo(dec_ptr: ?*const JxlDecoder, info: ?*JxlBasicInfo) JxlDecoderStatus {
@@ -2003,6 +2114,41 @@ pub export fn JxlDecoderProcessInput(dec_ptr: ?*JxlDecoder) JxlDecoderStatus {
 		const parse_status = ensureParsed(impl);
 		if (parse_status != .JXL_DEC_SUCCESS) return parse_status;
 
+		if ((impl.subscribed_events & @intFromEnum(JxlDecoderStatus.JXL_DEC_BOX)) != 0) {
+			if (currentBox(impl) != null) {
+				if (!impl.box_header_emitted) {
+					impl.box_header_emitted = true;
+					return .JXL_DEC_BOX;
+				}
+				if (impl.box_bytes_emitted < currentBox(impl).?.contents.len) {
+					if (impl.box_buffer == null) {
+						advanceCurrentBox(impl);
+						continue;
+					}
+					const box = currentBox(impl).?;
+					const remaining = box.contents.len - impl.box_bytes_emitted;
+					const to_copy = @min(remaining, impl.box_buffer_size);
+					@memcpy(
+						impl.box_buffer.?[0..to_copy],
+						box.contents[impl.box_bytes_emitted .. impl.box_bytes_emitted + to_copy],
+					);
+					impl.box_bytes_emitted += to_copy;
+					impl.box_buffer_written = to_copy;
+					if (impl.box_bytes_emitted < box.contents.len) return .JXL_DEC_BOX_NEED_MORE_OUTPUT;
+				}
+				if (
+					impl.box_buffer != null and
+					(impl.subscribed_events & @intFromEnum(JxlDecoderStatus.JXL_DEC_BOX_COMPLETE)) != 0 and
+					!impl.box_complete_emitted
+				) {
+					impl.box_complete_emitted = true;
+					return .JXL_DEC_BOX_COMPLETE;
+				}
+				advanceCurrentBox(impl);
+				continue;
+			}
+		}
+
 		if ((impl.subscribed_events & @intFromEnum(JxlDecoderStatus.JXL_DEC_BASIC_INFO)) != 0 and !impl.basic_info_emitted) {
 			impl.basic_info_emitted = true;
 			return .JXL_DEC_BASIC_INFO;
@@ -2027,7 +2173,13 @@ pub export fn JxlDecoderProcessInput(dec_ptr: ?*JxlDecoder) JxlDecoderStatus {
 			return .JXL_DEC_FRAME;
 		}
 
-		if (impl.output_buffer == null) return .JXL_DEC_NEED_IMAGE_OUT_BUFFER;
+		if (impl.output_buffer == null) {
+			if ((impl.subscribed_events & @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)) == 0) {
+				advanceCurrentFrame(impl);
+				continue;
+			}
+			return .JXL_DEC_NEED_IMAGE_OUT_BUFFER;
+		}
 
 		const decode_status = ensureDecoded(impl);
 		if (decode_status != .JXL_DEC_SUCCESS) return decode_status;
