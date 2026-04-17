@@ -77,8 +77,8 @@ const ParsedBoxHeader = struct {
 	next_offset: usize,
 };
 
-/// Parses one BMFF box header, including the `size == 1` extended-size form,
-/// so higher-level container logic can stay agnostic to 32-bit vs 64-bit box lengths.
+/// Parses one BMFF box header, including the `size == 0` open-ended and
+/// `size == 1` extended-size forms, so container logic can stay size-form agnostic.
 fn parseBoxHeader(container_bytes: []const u8, offset: usize) !ParsedBoxHeader {
 	if (offset + 8 > container_bytes.len) return error.GenericError;
 
@@ -92,8 +92,9 @@ fn parseBoxHeader(container_bytes: []const u8, offset: usize) !ParsedBoxHeader {
 
 	var raw_size: u64 = size32;
 	var payload_offset = offset + 8;
-	if (size32 == 0) return error.Unsupported;
-	if (size32 == 1) {
+	if (size32 == 0) {
+		raw_size = container_bytes.len - offset;
+	} else if (size32 == 1) {
 		if (offset + 16 > container_bytes.len) return error.GenericError;
 		raw_size = std.mem.readInt(u64, @ptrCast(container_bytes[offset + 8 .. offset + 16]), .big);
 		payload_offset = offset + 16;
@@ -240,6 +241,22 @@ test "wrapCodestream and extractCodestream round-trip" {
 	try testing.expectEqualSlices(u8, &codestream, extracted);
 }
 
+test "extractCodestream accepts final open-ended jxlc box" {
+	const codestream = [_]u8{ 0xFF, 0x0A, 0x11, 0x22, 0x33 };
+	var wrapped: std.ArrayListUnmanaged(u8) = .{};
+	defer wrapped.deinit(testing.allocator);
+
+	try wrapped.appendSlice(testing.allocator, &signature_box);
+	try appendBox(&wrapped, testing.allocator, .{ 'f', 't', 'y', 'p' }, &ftyp_payload);
+	try appendU32BE(&wrapped, testing.allocator, 0);
+	try wrapped.appendSlice(testing.allocator, "jxlc");
+	try wrapped.appendSlice(testing.allocator, &codestream);
+
+	const extracted = try extractCodestream(testing.allocator, wrapped.items);
+	defer testing.allocator.free(extracted);
+	try testing.expectEqualSlices(u8, &codestream, extracted);
+}
+
 test "extractCodestream reconstructs split jxlp payloads" {
 	var wrapped: [56]u8 = undefined;
 	@memcpy(wrapped[0..12], &signature_box);
@@ -288,17 +305,21 @@ test "extractCodestreamAndBoxes preserves metadata boxes" {
 }
 
 test "extractCodestream handles extended-size BMFF boxes" {
-	const fixture = try std.fs.cwd().readFileAlloc(
-		testing.allocator,
-		"testdata/jxl/boxes/square-extended-size-container.jxl",
-		std.math.maxInt(usize),
-	);
-	defer testing.allocator.free(fixture);
+	const codestream = [_]u8{ 0xFF, 0x0A, 0x44, 0x55 };
+	var wrapped: std.ArrayListUnmanaged(u8) = .{};
+	defer wrapped.deinit(testing.allocator);
 
-	var parsed = try extractCodestreamAndBoxes(testing.allocator, fixture);
+	try wrapped.appendSlice(testing.allocator, &signature_box);
+	try appendBox(&wrapped, testing.allocator, .{ 'f', 't', 'y', 'p' }, &ftyp_payload);
+	try appendU32BE(&wrapped, testing.allocator, 1);
+	try wrapped.appendSlice(testing.allocator, "jxlc");
+	var extended_size: [8]u8 = undefined;
+	std.mem.writeInt(u64, &extended_size, 16 + codestream.len, .big);
+	try wrapped.appendSlice(testing.allocator, &extended_size);
+	try wrapped.appendSlice(testing.allocator, &codestream);
+
+	var parsed = try extractCodestreamAndBoxes(testing.allocator, wrapped.items);
 	defer parsed.deinit(testing.allocator);
 
-	try testing.expect(parsed.codestream.len > 2);
-	try testing.expectEqual(@as(u8, 0xFF), parsed.codestream[0]);
-	try testing.expectEqual(@as(u8, 0x0A), parsed.codestream[1]);
+	try testing.expectEqualSlices(u8, &codestream, parsed.codestream);
 }

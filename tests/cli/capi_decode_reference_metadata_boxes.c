@@ -96,8 +96,12 @@ int main(int argc, char** argv) {
 			continue;
 		}
 		if (st == JXL_DEC_BOX_NEED_MORE_OUTPUT) {
-			fprintf(stderr, "reference metadata box larger than test buffer\n");
-			goto fail;
+			(void)JxlDecoderReleaseBoxBuffer(dec);
+			if (JxlDecoderSetBoxBuffer(dec, box_buffer, sizeof(box_buffer)) != JXL_DEC_SUCCESS) {
+				fprintf(stderr, "SetBoxBuffer repeat failed\n");
+				goto fail;
+			}
+			continue;
 		}
 		if (st == JXL_DEC_BOX_COMPLETE) {
 			(void)JxlDecoderReleaseBoxBuffer(dec);

@@ -15,8 +15,10 @@ pub fn build(b: *std.Build) void {
 	defer if (gif_include_dir) |path| b.allocator.free(path);
 	defer if (gif_lib_dir) |path| b.allocator.free(path);
 
+	const can_link_brotli = target.result.os.tag != .windows;
 	const linkBrotli = struct {
-		fn apply(step: anytype) void {
+		fn apply(step: anytype, enabled: bool) void {
+			if (!enabled) return;
 			step.linkSystemLibrary("brotlienc");
 			step.linkSystemLibrary("brotlidec");
 			step.linkSystemLibrary("brotlicommon");
@@ -35,7 +37,7 @@ pub fn build(b: *std.Build) void {
 		.root_module = root_module,
 	});
 	lib.linkLibC();
-	linkBrotli(lib);
+	linkBrotli(lib, can_link_brotli);
 
 	const install_lib = b.addInstallArtifact(lib, .{});
 	b.getInstallStep().dependOn(&install_lib.step);
@@ -50,7 +52,7 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	capi_lib.linkLibC();
-	linkBrotli(capi_lib);
+	linkBrotli(capi_lib, can_link_brotli);
 
 	const install_capi = b.addInstallArtifact(capi_lib, .{});
 	b.getInstallStep().dependOn(&install_capi.step);
@@ -77,7 +79,7 @@ pub fn build(b: *std.Build) void {
 	});
 	djxlz.linkLibrary(capi_lib);
 	djxlz.linkLibC();
-	linkBrotli(djxlz);
+	linkBrotli(djxlz, can_link_brotli);
 	if (gif_output) {
 		djxlz.root_module.addCMacro("JXLZ_HAVE_GIF_OUTPUT", "1");
 		if (gif_include_dir) |path| {
@@ -113,7 +115,7 @@ pub fn build(b: *std.Build) void {
 	});
 	cjxlz.linkLibrary(capi_lib);
 	cjxlz.linkLibC();
-	linkBrotli(cjxlz);
+	linkBrotli(cjxlz, can_link_brotli);
 	if (png_input) {
 		cjxlz.root_module.addCMacro("JXLZ_HAVE_PNG_INPUT", "1");
 		cjxlz.linkSystemLibrary2("libpng", .{ .use_pkg_config = .force });
@@ -174,7 +176,7 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	unit_tests.linkLibC();
-	linkBrotli(unit_tests);
+	linkBrotli(unit_tests, can_link_brotli);
 
 	const run_unit_tests = b.addRunArtifact(unit_tests);
 
@@ -222,7 +224,7 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	capi_tests.linkLibC();
-	linkBrotli(capi_tests);
+	linkBrotli(capi_tests, can_link_brotli);
 
 	const run_capi_tests = b.addRunArtifact(capi_tests);
 	const test_step = b.step("test", "Run unit tests");

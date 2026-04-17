@@ -1,14 +1,24 @@
 const std = @import("std");
 const JxlError = @import("status.zig").JxlError;
+const builtin = @import("builtin");
 
-const c = @cImport({
+const have_c_brotli = builtin.target.os.tag != .windows;
+const c = if (have_c_brotli) @cImport({
 	@cInclude("brotli/decode.h");
 	@cInclude("brotli/encode.h");
-});
+}) else struct {};
 
 /// Compresses metadata payloads with the same low Brotli effort upstream uses
 /// for `brob` boxes so encoded metadata stays compact without becoming a hot path.
 pub fn compress(allocator: std.mem.Allocator, input: []const u8) JxlError![]u8 {
+	if (comptime have_c_brotli) {
+		return compressWithC(allocator, input);
+	} else {
+		return error.Unsupported;
+	}
+}
+
+fn compressWithC(allocator: std.mem.Allocator, input: []const u8) JxlError![]u8 {
 	const max_size = c.BrotliEncoderMaxCompressedSize(input.len);
 	var encoded = try allocator.alloc(u8, max_size);
 	errdefer allocator.free(encoded);
@@ -34,6 +44,14 @@ pub fn compress(allocator: std.mem.Allocator, input: []const u8) JxlError![]u8 {
 /// Decompresses a Brotli payload of unknown final size by streaming into a
 /// growable buffer, which is exactly what `brob` metadata boxes require.
 pub fn decompress(allocator: std.mem.Allocator, compressed: []const u8) JxlError![]u8 {
+	if (comptime have_c_brotli) {
+		return decompressWithC(allocator, compressed);
+	} else {
+		return error.Unsupported;
+	}
+}
+
+fn decompressWithC(allocator: std.mem.Allocator, compressed: []const u8) JxlError![]u8 {
 	var out: std.ArrayListUnmanaged(u8) = .{};
 	errdefer out.deinit(allocator);
 
