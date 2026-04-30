@@ -6,6 +6,7 @@ const BitReader = @import("lib/base/bit_reader.zig").BitReader;
 const JxlError = @import("lib/base/status.zig").JxlError;
 const headers = @import("lib/codec/headers.zig");
 const color_encoding_mod = @import("lib/codec/color_encoding.zig");
+const icc_profiles = @import("lib/codec/icc_profiles.zig");
 const image_metadata = @import("lib/codec/image_metadata.zig");
 const container_mod = @import("lib/codec/container.zig");
 const brotli = @import("lib/base/brotli.zig");
@@ -2064,6 +2065,45 @@ pub export fn JxlDecoderGetColorAsEncodedProfile(
 	const color = &impl.codec_meta.m.color_encoding;
 	if (color.want_icc) return .JXL_DEC_ERROR;
 	if (color_ptr) |dst| populateColorEncoding(dst, color);
+	return .JXL_DEC_SUCCESS;
+}
+
+pub export fn JxlDecoderGetICCProfileSize(
+	dec_ptr: ?*const JxlDecoder,
+	target: JxlColorProfileTarget,
+	size_ptr: ?*usize,
+) JxlDecoderStatus {
+	const dec = dec_ptr orelse return .JXL_DEC_ERROR;
+	const impl: *const DecoderImpl = @ptrCast(@alignCast(dec));
+	if (!impl.basic_info_available) return .JXL_DEC_NEED_MORE_INPUT;
+
+	switch (target) {
+		.JXL_COLOR_PROFILE_TARGET_ORIGINAL, .JXL_COLOR_PROFILE_TARGET_DATA => {},
+	}
+
+	const profile = icc_profiles.originalProfile(&impl.codec_meta.m.color_encoding) orelse return .JXL_DEC_ERROR;
+	if (size_ptr) |dst| dst.* = profile.len;
+	return .JXL_DEC_SUCCESS;
+}
+
+pub export fn JxlDecoderGetColorAsICCProfile(
+	dec_ptr: ?*const JxlDecoder,
+	target: JxlColorProfileTarget,
+	icc_profile: ?[*]u8,
+	size: usize,
+) JxlDecoderStatus {
+	const dec = dec_ptr orelse return .JXL_DEC_ERROR;
+	const impl: *const DecoderImpl = @ptrCast(@alignCast(dec));
+	if (!impl.basic_info_available) return .JXL_DEC_NEED_MORE_INPUT;
+
+	switch (target) {
+		.JXL_COLOR_PROFILE_TARGET_ORIGINAL, .JXL_COLOR_PROFILE_TARGET_DATA => {},
+	}
+
+	const profile = icc_profiles.originalProfile(&impl.codec_meta.m.color_encoding) orelse return .JXL_DEC_ERROR;
+	if (size < profile.len) return .JXL_DEC_ERROR;
+	const dst = icc_profile orelse return .JXL_DEC_ERROR;
+	@memcpy(dst[0..profile.len], profile);
 	return .JXL_DEC_SUCCESS;
 }
 
