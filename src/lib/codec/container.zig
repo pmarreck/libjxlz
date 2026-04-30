@@ -138,6 +138,14 @@ fn appendBoxRuntime(list: *std.ArrayListUnmanaged(u8), allocator: std.mem.Alloca
 	try list.appendSlice(allocator, payload);
 }
 
+fn appendOwnedBox(list: *std.ArrayListUnmanaged(OwnedBox), allocator: std.mem.Allocator, box_type: [4]u8, raw_size: u64, payload: []const u8) !void {
+	try list.append(allocator, .{
+		.box_type = box_type,
+		.raw_size = raw_size,
+		.contents = try allocator.dupe(u8, payload),
+	});
+}
+
 /// Wraps a raw codestream in the minimal BMFF container layout used by simple
 /// JPEG XL files: signature box, `ftyp`, then a single `jxlc` codestream box.
 pub fn wrapCodestream(allocator: std.mem.Allocator, codestream: []const u8) ![]u8 {
@@ -168,8 +176,8 @@ pub fn extractCodestream(allocator: std.mem.Allocator, container_bytes: []const 
 	return allocator.dupe(u8, parsed.codestream);
 }
 
-/// Extracts the codestream plus any already-owned non-codestream BMFF boxes
-/// from the current minimal container surface.
+/// Extracts the codestream plus the current public BMFF box stream in original
+/// order so the C API can emit `JXL_DEC_BOX` for both metadata and core boxes.
 pub fn extractCodestreamAndBoxes(allocator: std.mem.Allocator, container_bytes: []const u8) !ParsedContainer {
 	if (container_bytes.len < signature_box.len) return error.GenericError;
 	if (!std.mem.eql(u8, container_bytes[0..signature_box.len], &signature_box)) return error.GenericError;
@@ -186,6 +194,7 @@ pub fn extractCodestreamAndBoxes(allocator: std.mem.Allocator, container_bytes: 
 	var saw_jxlp = false;
 	var saw_last_jxlp = false;
 	var next_jxlp_index: u32 = 0;
+	try appendOwnedBox(&owned_boxes, allocator, .{ 'J', 'X', 'L', ' ' }, signature_box.len, signature_box[8..12]);
 	while (offset + 8 <= container_bytes.len) {
 		const header = try parseBoxHeader(container_bytes, offset);
 		const payload = header.payload;
@@ -194,6 +203,7 @@ pub fn extractCodestreamAndBoxes(allocator: std.mem.Allocator, container_bytes: 
 			if (saw_jxlp) return error.GenericError;
 			if (codestream != null) return error.GenericError;
 			codestream = try allocator.dupe(u8, payload);
+			try appendOwnedBox(&owned_boxes, allocator, header.box_type, header.raw_size, payload);
 		} else if (std.mem.eql(u8, &header.box_type, "jxlp")) {
 			if (saw_last_jxlp) return error.GenericError;
 			if (payload.len < 4) return error.GenericError;
@@ -204,13 +214,10 @@ pub fn extractCodestreamAndBoxes(allocator: std.mem.Allocator, container_bytes: 
 			next_jxlp_index += 1;
 			saw_jxlp = true;
 			if (is_last) saw_last_jxlp = true;
+			try appendOwnedBox(&owned_boxes, allocator, header.box_type, header.raw_size, payload);
 			try partial.appendSlice(allocator, payload[4..]);
-		} else if (!std.mem.eql(u8, &header.box_type, "ftyp")) {
-			try owned_boxes.append(allocator, .{
-				.box_type = header.box_type,
-				.raw_size = header.raw_size,
-				.contents = try allocator.dupe(u8, payload),
-			});
+		} else {
+			try appendOwnedBox(&owned_boxes, allocator, header.box_type, header.raw_size, payload);
 		}
 
 		offset = header.next_offset;
@@ -283,7 +290,7 @@ test "extractCodestream reconstructs split jxlp payloads" {
 	try testing.expectEqualSlices(u8, &.{}, extracted);
 }
 
-test "extractCodestreamAndBoxes preserves metadata boxes" {
+test "extractCodestreamAndBoxes preserves core and metadata boxes in order" {
 	const codestream = [_]u8{ 0xFF, 0x0A, 0x01, 0x02 };
 	const wrapped = try wrapCodestreamWithBoxes(testing.allocator, &codestream, &.{
 		.{ .box_type = .{ 'x', 'm', 'l', ' ' }, .contents = "<x/>" },
@@ -295,13 +302,22 @@ test "extractCodestreamAndBoxes preserves metadata boxes" {
 	defer parsed.deinit(testing.allocator);
 
 	try testing.expectEqualSlices(u8, &codestream, parsed.codestream);
-	try testing.expectEqual(@as(usize, 2), parsed.boxes.len);
-	try testing.expectEqualSlices(u8, "xml ", &parsed.boxes[0].box_type);
-	try testing.expectEqualSlices(u8, "<x/>", parsed.boxes[0].contents);
+	try testing.expectEqual(@as(usize, 5), parsed.boxes.len);
+	try testing.expectEqualSlices(u8, "JXL ", &parsed.boxes[0].box_type);
+	try testing.expectEqualSlices(u8, signature_box[8..12], parsed.boxes[0].contents);
 	try testing.expectEqual(@as(u64, 12), parsed.boxes[0].raw_size);
-	try testing.expectEqualSlices(u8, "Exif", &parsed.boxes[1].box_type);
-	try testing.expectEqualSlices(u8, "abcd", parsed.boxes[1].contents);
-	try testing.expectEqual(@as(u64, 12), parsed.boxes[1].raw_size);
+	try testing.expectEqualSlices(u8, "ftyp", &parsed.boxes[1].box_type);
+	try testing.expectEqualSlices(u8, &ftyp_payload, parsed.boxes[1].contents);
+	try testing.expectEqual(@as(u64, 20), parsed.boxes[1].raw_size);
+	try testing.expectEqualSlices(u8, "xml ", &parsed.boxes[2].box_type);
+	try testing.expectEqualSlices(u8, "<x/>", parsed.boxes[2].contents);
+	try testing.expectEqual(@as(u64, 12), parsed.boxes[2].raw_size);
+	try testing.expectEqualSlices(u8, "Exif", &parsed.boxes[3].box_type);
+	try testing.expectEqualSlices(u8, "abcd", parsed.boxes[3].contents);
+	try testing.expectEqual(@as(u64, 12), parsed.boxes[3].raw_size);
+	try testing.expectEqualSlices(u8, "jxlc", &parsed.boxes[4].box_type);
+	try testing.expectEqualSlices(u8, &codestream, parsed.boxes[4].contents);
+	try testing.expectEqual(@as(u64, 12), parsed.boxes[4].raw_size);
 }
 
 test "extractCodestream handles extended-size BMFF boxes" {

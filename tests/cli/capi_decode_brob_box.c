@@ -71,9 +71,10 @@ static int decode_once(
 	size_t collected_cap = 0;
 	uint64_t raw_size = 0;
 	uint64_t contents_size = 0;
-	int saw_box = 0;
-	int saw_complete = 0;
+	int saw_brob_box = 0;
+	int saw_brob_complete = 0;
 	int saw_basic = 0;
+	int collecting_brob = 0;
 
 	if (!dec) return 0;
 	if (JxlDecoderSubscribeEvents(dec, JXL_DEC_BOX | JXL_DEC_BOX_COMPLETE | JXL_DEC_BASIC_INFO) != JXL_DEC_SUCCESS) {
@@ -100,7 +101,6 @@ static int decode_once(
 			continue;
 		}
 		if (st == JXL_DEC_BOX) {
-			saw_box = 1;
 			if (JxlDecoderGetBoxType(dec, type_raw, JXL_FALSE) != JXL_DEC_SUCCESS) {
 				fprintf(stderr, "GetBoxType raw failed\n");
 				goto fail;
@@ -117,25 +117,30 @@ static int decode_once(
 				fprintf(stderr, "GetBoxSizeContents failed\n");
 				goto fail;
 			}
-			if (memcmp(type_raw, "brob", 4) != 0) {
-				fprintf(stderr, "unexpected raw box type: %.4s\n", type_raw);
-				goto fail;
-			}
-			if (memcmp(type_dec, "xml ", 4) != 0) {
-				fprintf(stderr, "unexpected decompressed box type: %.4s\n", type_dec);
-				goto fail;
-			}
-			if (raw_size < 8 || contents_size != expected_raw_size) {
-				fprintf(stderr, "unexpected box size metadata\n");
-				goto fail;
-			}
-			if (JxlDecoderSetBoxBuffer(dec, box_buffer, sizeof(box_buffer)) != JXL_DEC_SUCCESS) {
-				fprintf(stderr, "SetBoxBuffer failed\n");
-				goto fail;
+			collecting_brob = 0;
+			if (memcmp(type_raw, "brob", 4) == 0) {
+				saw_brob_box = 1;
+				collecting_brob = 1;
+				if (memcmp(type_dec, "xml ", 4) != 0) {
+					fprintf(stderr, "unexpected decompressed box type: %.4s\n", type_dec);
+					goto fail;
+				}
+				if (raw_size < 8 || contents_size != expected_raw_size) {
+					fprintf(stderr, "unexpected box size metadata\n");
+					goto fail;
+				}
+				if (JxlDecoderSetBoxBuffer(dec, box_buffer, sizeof(box_buffer)) != JXL_DEC_SUCCESS) {
+					fprintf(stderr, "SetBoxBuffer failed\n");
+					goto fail;
+				}
 			}
 			continue;
 		}
 		if (st == JXL_DEC_BOX_NEED_MORE_OUTPUT || st == JXL_DEC_BOX_COMPLETE) {
+			if (!collecting_brob) {
+				fprintf(stderr, "unexpected box output event without targeted brob box\n");
+				goto fail;
+			}
 			size_t unused = JxlDecoderReleaseBoxBuffer(dec);
 			size_t produced = sizeof(box_buffer) - unused;
 			if (!append_bytes(&collected, &collected_used, &collected_cap, box_buffer, produced)) {
@@ -143,7 +148,8 @@ static int decode_once(
 				goto fail;
 			}
 			if (st == JXL_DEC_BOX_COMPLETE) {
-				saw_complete = 1;
+				saw_brob_complete = 1;
+				collecting_brob = 0;
 				continue;
 			}
 			if (JxlDecoderSetBoxBuffer(dec, box_buffer, sizeof(box_buffer)) != JXL_DEC_SUCCESS) {
@@ -156,7 +162,7 @@ static int decode_once(
 		goto fail;
 	}
 
-	if (!saw_box || !saw_complete || !saw_basic) {
+	if (!saw_brob_box || !saw_brob_complete || !saw_basic) {
 		fprintf(stderr, "missing expected decoder events\n");
 		goto fail;
 	}
