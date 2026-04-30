@@ -28,6 +28,8 @@
               rm -rf zig-out
               mkdir -p zig-out
               ${lib.optionalString stdenv.isDarwin "unset NIX_CFLAGS_COMPILE NIX_LDFLAGS"}
+              export BROTLI_INCLUDE_DIR=${brotli.dev}/include
+              export BROTLI_LIB_DIR=${brotli.lib}/lib
               export GIF_INCLUDE_DIR=${giflib}/include
               export GIF_LIB_DIR=${giflib}/lib
               export CPATH=${giflib}/include''${CPATH:+:$CPATH}
@@ -73,6 +75,8 @@
                 export HOME=$TMPDIR
                 export XDG_CACHE_HOME=$TMPDIR/cache
                 ${lib.optionalString stdenv.isDarwin "unset NIX_CFLAGS_COMPILE NIX_LDFLAGS"}
+                export BROTLI_INCLUDE_DIR=${brotli.dev}/include
+                export BROTLI_LIB_DIR=${brotli.lib}/lib
                 export GIF_INCLUDE_DIR=${giflib}/include
                 export GIF_LIB_DIR=${giflib}/lib
                 export CPATH=${giflib}/include''${CPATH:+:$CPATH}
@@ -85,16 +89,20 @@
               '';
             };
           } // lib.optionalAttrs (stdenv.isLinux && stdenv.hostPlatform.isx86_64) {
-            windows-x86_64-cross = stdenv.mkDerivation {
+            windows-x86_64-cross = let
+              mingwBrotli = pkgs.pkgsCross.mingwW64.brotli;
+            in stdenv.mkDerivation {
               pname = "${pname}-windows-x86_64-cross";
               inherit version;
               src = ./.;
-              nativeBuildInputs = [ bash zig ];
+              nativeBuildInputs = [ bash zig mingwBrotli ];
               dontConfigure = true;
               dontFixup = true;
               buildPhase = ''
                 export HOME=$TMPDIR
                 export XDG_CACHE_HOME=$TMPDIR/cache
+                export BROTLI_INCLUDE_DIR=${mingwBrotli.dev}/include
+                export BROTLI_LIB_DIR=${mingwBrotli.lib}/lib
                 bash tests/cli/windows_cross_compile_smoke.sh
               '';
               installPhase = ''

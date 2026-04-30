@@ -10,15 +10,23 @@ pub fn build(b: *std.Build) void {
 	const png_input = b.option(bool, "png_input", "Enable PNG input support in cjxlz (default: true)") orelse true;
 	const gif_input = b.option(bool, "gif_input", "Enable GIF input support in cjxlz (default: true)") orelse true;
 	const gif_output = b.option(bool, "gif_output", "Enable GIF output support in djxlz (default: true)") orelse true;
+	const brotli_include_dir = std.process.getEnvVarOwned(b.allocator, "BROTLI_INCLUDE_DIR") catch null;
+	const brotli_lib_dir = std.process.getEnvVarOwned(b.allocator, "BROTLI_LIB_DIR") catch null;
 	const gif_include_dir = std.process.getEnvVarOwned(b.allocator, "GIF_INCLUDE_DIR") catch null;
 	const gif_lib_dir = std.process.getEnvVarOwned(b.allocator, "GIF_LIB_DIR") catch null;
+	defer if (brotli_include_dir) |path| b.allocator.free(path);
+	defer if (brotli_lib_dir) |path| b.allocator.free(path);
 	defer if (gif_include_dir) |path| b.allocator.free(path);
 	defer if (gif_lib_dir) |path| b.allocator.free(path);
 
-	const can_link_brotli = target.result.os.tag != .windows;
 	const linkBrotli = struct {
-		fn apply(step: anytype, enabled: bool) void {
-			if (!enabled) return;
+		fn apply(step: anytype, include_dir: ?[]const u8, lib_dir: ?[]const u8) void {
+			if (include_dir) |path| {
+				step.addIncludePath(.{ .cwd_relative = path });
+			}
+			if (lib_dir) |path| {
+				step.root_module.addLibraryPath(.{ .cwd_relative = path });
+			}
 			step.linkSystemLibrary("brotlienc");
 			step.linkSystemLibrary("brotlidec");
 			step.linkSystemLibrary("brotlicommon");
@@ -37,7 +45,7 @@ pub fn build(b: *std.Build) void {
 		.root_module = root_module,
 	});
 	lib.linkLibC();
-	linkBrotli(lib, can_link_brotli);
+	linkBrotli(lib, brotli_include_dir, brotli_lib_dir);
 
 	const install_lib = b.addInstallArtifact(lib, .{});
 	b.getInstallStep().dependOn(&install_lib.step);
@@ -52,7 +60,7 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	capi_lib.linkLibC();
-	linkBrotli(capi_lib, can_link_brotli);
+	linkBrotli(capi_lib, brotli_include_dir, brotli_lib_dir);
 
 	const install_capi = b.addInstallArtifact(capi_lib, .{});
 	b.getInstallStep().dependOn(&install_capi.step);
@@ -79,7 +87,7 @@ pub fn build(b: *std.Build) void {
 	});
 	djxlz.linkLibrary(capi_lib);
 	djxlz.linkLibC();
-	linkBrotli(djxlz, can_link_brotli);
+	linkBrotli(djxlz, brotli_include_dir, brotli_lib_dir);
 	if (gif_output) {
 		djxlz.root_module.addCMacro("JXLZ_HAVE_GIF_OUTPUT", "1");
 		if (gif_include_dir) |path| {
@@ -115,7 +123,7 @@ pub fn build(b: *std.Build) void {
 	});
 	cjxlz.linkLibrary(capi_lib);
 	cjxlz.linkLibC();
-	linkBrotli(cjxlz, can_link_brotli);
+	linkBrotli(cjxlz, brotli_include_dir, brotli_lib_dir);
 	if (png_input) {
 		cjxlz.root_module.addCMacro("JXLZ_HAVE_PNG_INPUT", "1");
 		cjxlz.linkSystemLibrary2("libpng", .{ .use_pkg_config = .force });
@@ -176,7 +184,7 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	unit_tests.linkLibC();
-	linkBrotli(unit_tests, can_link_brotli);
+	linkBrotli(unit_tests, brotli_include_dir, brotli_lib_dir);
 
 	const run_unit_tests = b.addRunArtifact(unit_tests);
 
@@ -224,7 +232,7 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	capi_tests.linkLibC();
-	linkBrotli(capi_tests, can_link_brotli);
+	linkBrotli(capi_tests, brotli_include_dir, brotli_lib_dir);
 
 	const run_capi_tests = b.addRunArtifact(capi_tests);
 	const test_step = b.step("test", "Run unit tests");

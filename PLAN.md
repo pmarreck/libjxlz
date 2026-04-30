@@ -7,6 +7,10 @@
 - [x] BMFF/CI status: the pure Zig container parser now accepts both `size == 1` extended-size boxes and final `size == 0` open-ended boxes via self-contained unit fixtures, the real-reference metadata-box smoke now handles streaming box output larger than its first buffer, and Windows cross-compile smoke is green again by target-gating the current C Brotli backend instead of trying to link host Brotli libraries into Windows artifacts — 2026-04-17 ~estimated EDT
 - [ ] Nearest parity gaps: broader GIF/JXL animation dogfooding in the public decoder path, iterative histogram refinement / re-seeding, broader upstream `enc_palette.cc` heuristics, more-general modular/frame encoding, broader encode API/CLI coverage beyond the current one-shot and now narrow multi-frame uint8 gray/RGB(+staged alpha/extras) slice, richer input/container formats beyond raw PNM/PAM plus PNG plus GIF, fuller BMFF parity beyond the current metadata/`brob`/extended-size/open-ended subset (for example box ordering/core box visibility), the first real ICC-profile surface, and later lossy / VarDCT with broader conformance coverage
 - [ ] Near-term direction: keep porting upstream lossless modular encode structure in narrow tested slices, prefer real roundtrip coverage first, and only keep performance changes that survive `./bm`
+- [ ] Current step checklist:
+- [x] Windows/Nix Brotli parity: replace the temporary Windows `error.Unsupported` Brotli gate with a deterministic Nix-provided cross-target Brotli package wired through `flake.nix` + `build.zig`, and prove it with a failing-then-passing Windows cross smoke that asserts the Brotli backend is available — 2026-04-30 ~estimated EDT
+- [ ] BMFF parity follow-up: after Brotli is real on Windows again, tighten the next smallest container gap around decoder-side BMFF box visibility/ordering/core-box filtering with a failing test first
+- [ ] ICC first slice: after the BMFF follow-up, start the first real ICC profile surface with the smallest honest public API slice and reference-backed tests
 
 ## Phase 1: Foundation (complete)
 - [x] build.zig + build.zig.zon — 2026-03-06 ~3:00 PM EST
