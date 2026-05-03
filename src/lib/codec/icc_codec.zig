@@ -61,14 +61,36 @@ pub fn checkPreamble(data: []const u8, enc_size: usize) !void {
 /// The current slice proves the shared predictor path and broadens beyond the
 /// header by using a legal insert-only fallback for all post-header bytes.
 pub fn predictICC(allocator: std.mem.Allocator, icc: []const u8) ![]u8 {
-	return predictICCImpl(allocator, icc, true);
+	return predictICCImpl(allocator, icc, .{
+		.model_tag_list = true,
+		.model_type_starts = true,
+		.model_xyz = true,
+	});
 }
 
 fn predictICCInsertOnlyFallback(allocator: std.mem.Allocator, icc: []const u8) ![]u8 {
-	return predictICCImpl(allocator, icc, false);
+	return predictICCImpl(allocator, icc, .{
+		.model_tag_list = false,
+		.model_type_starts = false,
+		.model_xyz = false,
+	});
 }
 
-fn predictICCImpl(allocator: std.mem.Allocator, icc: []const u8, model_tag_list: bool) ![]u8 {
+fn predictICCTagTableFallback(allocator: std.mem.Allocator, icc: []const u8) ![]u8 {
+	return predictICCImpl(allocator, icc, .{
+		.model_tag_list = true,
+		.model_type_starts = false,
+		.model_xyz = false,
+	});
+}
+
+const PredictOptions = struct {
+	model_tag_list: bool,
+	model_type_starts: bool,
+	model_xyz: bool,
+};
+
+fn predictICCImpl(allocator: std.mem.Allocator, icc: []const u8, options: PredictOptions) ![]u8 {
 	if (icc.len > kSizeLimit) return error.ProfileTooLarge;
 
 	var result: std.ArrayList(u8) = .{};
@@ -87,7 +109,7 @@ fn predictICCImpl(allocator: std.mem.Allocator, icc: []const u8, model_tag_list:
 
 	var tail_pos = common.kICCHeaderSize;
 	if (icc.len > common.kICCHeaderSize) {
-		if (model_tag_list and tail_pos + 4 <= icc.len) {
+		if (options.model_tag_list and tail_pos + 4 <= icc.len) {
 			const numtags = common.decodeUint32(icc, tail_pos);
 			tail_pos += 4;
 			try encodeVarInt(&commands, allocator, @as(u64, numtags) + 1);
@@ -154,10 +176,50 @@ fn predictICCImpl(allocator: std.mem.Allocator, icc: []const u8, model_tag_list:
 			try encodeVarInt(&commands, allocator, 0);
 		}
 
-		if (tail_pos < icc.len) {
+		var insert_start = tail_pos;
+		var pos = tail_pos;
+		while (pos < icc.len) {
+			if (options.model_xyz and pos + 20 <= icc.len) {
+				const sub_tag = common.decodeKeyword(icc, pos);
+				if (std.mem.eql(u8, &sub_tag, &common.kXyz_Tag) and common.decodeUint32(icc, pos + 4) == 0) {
+					if (insert_start < pos) {
+						try commands.append(allocator, common.kCommandInsert);
+						try encodeVarInt(&commands, allocator, pos - insert_start);
+						try data.appendSlice(allocator, icc[insert_start..pos]);
+					}
+					try commands.append(allocator, common.kCommandXYZ);
+					try data.appendSlice(allocator, icc[pos + 8 .. pos + 20]);
+					pos += 20;
+					insert_start = pos;
+					continue;
+				}
+			}
+
+			if (options.model_type_starts and pos + 8 <= icc.len and common.decodeUint32(icc, pos + 4) == 0) {
+				const sub_tag = common.decodeKeyword(icc, pos);
+				for (common.kTypeStrings, 0..) |known, i| {
+					if (std.mem.eql(u8, &sub_tag, &known)) {
+						if (insert_start < pos) {
+							try commands.append(allocator, common.kCommandInsert);
+							try encodeVarInt(&commands, allocator, pos - insert_start);
+							try data.appendSlice(allocator, icc[insert_start..pos]);
+						}
+						try commands.append(allocator, @intCast(common.kCommandTypeStartFirst + i));
+						pos += 8;
+						insert_start = pos;
+						break;
+					}
+				}
+				if (insert_start == pos) continue;
+			}
+
+			pos += 1;
+		}
+
+		if (insert_start < icc.len) {
 			try commands.append(allocator, common.kCommandInsert);
-			try encodeVarInt(&commands, allocator, icc.len - tail_pos);
-			try data.appendSlice(allocator, icc[tail_pos..]);
+			try encodeVarInt(&commands, allocator, icc.len - insert_start);
+			try data.appendSlice(allocator, icc[insert_start..]);
 		}
 	}
 
@@ -290,7 +352,22 @@ pub fn unpredictICC(allocator: std.mem.Allocator, enc: []const u8) ![]u8 {
 				try result.appendSlice(allocator, enc[pos .. pos + @as(usize, @intCast(num))]);
 				pos += @as(usize, @intCast(num));
 			},
-			else => return error.Unsupported,
+			common.kCommandXYZ => {
+				try common.appendKeyword(&result, allocator, common.kXyz_Tag);
+				try common.appendUint32(&result, allocator, 0);
+				try common.checkOutOfBounds(pos, 12, enc.len);
+				try result.appendSlice(allocator, enc[pos .. pos + 12]);
+				pos += 12;
+			},
+			else => {
+				if (command >= common.kCommandTypeStartFirst and command < common.kCommandTypeStartFirst + common.kTypeStrings.len) {
+					const index = command - common.kCommandTypeStartFirst;
+					try common.appendKeyword(&result, allocator, common.kTypeStrings[index]);
+					try common.appendUint32(&result, allocator, 0);
+				} else {
+					return error.Unsupported;
+				}
+			},
 		}
 	}
 
@@ -332,6 +409,14 @@ test "predictICC models builtin sRGB tag table more compactly than insert-only f
 	const modeled = try predictICC(testing.allocator, icc_profiles.srgb_builtin_profile[0..]);
 	defer testing.allocator.free(modeled);
 	try testing.expect(modeled.len < insert_only.len);
+}
+
+test "predictICC models builtin sRGB body more compactly than tag-table-only fallback" {
+	const tag_only = try predictICCTagTableFallback(testing.allocator, icc_profiles.srgb_builtin_profile[0..]);
+	defer testing.allocator.free(tag_only);
+	const modeled = try predictICC(testing.allocator, icc_profiles.srgb_builtin_profile[0..]);
+	defer testing.allocator.free(modeled);
+	try testing.expect(modeled.len < tag_only.len);
 }
 
 test "checkPreamble rejects truncated command/data spans" {
