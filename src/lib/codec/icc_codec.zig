@@ -25,6 +25,23 @@ fn decodeVarInt(input: []const u8, pos: *usize) u64 {
 	return ret;
 }
 
+fn isPredictedTagSize20(tag: common.Tag) bool {
+	return std.mem.eql(u8, &tag, &common.kRxyzTag) or
+		std.mem.eql(u8, &tag, &common.kGxyzTag) or
+		std.mem.eql(u8, &tag, &common.kBxyzTag) or
+		std.mem.eql(u8, &tag, &common.kKxyzTag) or
+		std.mem.eql(u8, &tag, &common.kWtptTag) or
+		std.mem.eql(u8, &tag, &common.kBkptTag) or
+		std.mem.eql(u8, &tag, &common.kLumiTag);
+}
+
+fn tagCode(tag: common.Tag) u8 {
+	for (common.kTagStrings, 0..) |known, i| {
+		if (std.mem.eql(u8, &tag, &known)) return @intCast(i + common.kCommandTagStringFirst);
+	}
+	return @intCast(common.kCommandTagUnknown);
+}
+
 /// Validates the ICC codec preamble enough to reject obvious truncation and
 /// bogus output sizes before any command/data reconstruction begins.
 pub fn checkPreamble(data: []const u8, enc_size: usize) !void {
@@ -44,6 +61,14 @@ pub fn checkPreamble(data: []const u8, enc_size: usize) !void {
 /// The current slice proves the shared predictor path and broadens beyond the
 /// header by using a legal insert-only fallback for all post-header bytes.
 pub fn predictICC(allocator: std.mem.Allocator, icc: []const u8) ![]u8 {
+	return predictICCImpl(allocator, icc, true);
+}
+
+fn predictICCInsertOnlyFallback(allocator: std.mem.Allocator, icc: []const u8) ![]u8 {
+	return predictICCImpl(allocator, icc, false);
+}
+
+fn predictICCImpl(allocator: std.mem.Allocator, icc: []const u8, model_tag_list: bool) ![]u8 {
 	if (icc.len > kSizeLimit) return error.ProfileTooLarge;
 
 	var result: std.ArrayList(u8) = .{};
@@ -60,11 +85,80 @@ pub fn predictICC(allocator: std.mem.Allocator, icc: []const u8) ![]u8 {
 		try data.append(allocator, icc[i] -% header[i]);
 	}
 
+	var tail_pos = common.kICCHeaderSize;
 	if (icc.len > common.kICCHeaderSize) {
-		try encodeVarInt(&commands, allocator, 0);
-		try commands.append(allocator, common.kCommandInsert);
-		try encodeVarInt(&commands, allocator, icc.len - common.kICCHeaderSize);
-		try data.appendSlice(allocator, icc[common.kICCHeaderSize..]);
+		if (model_tag_list and tail_pos + 4 <= icc.len) {
+			const numtags = common.decodeUint32(icc, tail_pos);
+			tail_pos += 4;
+			try encodeVarInt(&commands, allocator, @as(u64, numtags) + 1);
+			var prevtagstart: u64 = common.kICCHeaderSize + @as(u64, numtags) * 12;
+			var prevtagsize: u32 = 0;
+			var i: u32 = 0;
+			while (i < numtags and tail_pos + 12 <= icc.len) : (i += 1) {
+				const tag = common.decodeKeyword(icc, tail_pos);
+				const tagstart = common.decodeUint32(icc, tail_pos + 4);
+				const tagsize = common.decodeUint32(icc, tail_pos + 8);
+				tail_pos += 12;
+
+				var code = tagCode(tag);
+				if (std.mem.eql(u8, &tag, &common.kRtrcTag) and tail_pos + 24 < icc.len) {
+					var ok = true;
+					ok = ok and std.mem.eql(u8, &common.decodeKeyword(icc, tail_pos), &common.kGtrcTag);
+					ok = ok and std.mem.eql(u8, &common.decodeKeyword(icc, tail_pos + 12), &common.kBtrcTag);
+					if (ok) {
+						for (0..8) |kk| {
+							if (icc[tail_pos - 8 + kk] != icc[tail_pos + 4 + kk]) ok = false;
+							if (icc[tail_pos - 8 + kk] != icc[tail_pos + 16 + kk]) ok = false;
+						}
+					}
+					if (ok) {
+						code = @intCast(common.kCommandTagTRC);
+						tail_pos += 24;
+						i += 2;
+					}
+				}
+				if (std.mem.eql(u8, &tag, &common.kRxyzTag) and tail_pos + 24 < icc.len) {
+					var ok = true;
+					ok = ok and std.mem.eql(u8, &common.decodeKeyword(icc, tail_pos), &common.kGxyzTag);
+					ok = ok and std.mem.eql(u8, &common.decodeKeyword(icc, tail_pos + 12), &common.kBxyzTag);
+					const offsetr = tagstart;
+					const offsetg = common.decodeUint32(icc, tail_pos + 4);
+					const offsetb = common.decodeUint32(icc, tail_pos + 16);
+					const sizer = tagsize;
+					const sizeg = common.decodeUint32(icc, tail_pos + 8);
+					const sizeb = common.decodeUint32(icc, tail_pos + 20);
+					ok = ok and sizer == 20 and sizeg == 20 and sizeb == 20;
+					ok = ok and offsetg == offsetr + 20 and offsetb == offsetr + 40;
+					if (ok) {
+						code = @intCast(common.kCommandTagXYZ);
+						tail_pos += 24;
+						i += 2;
+					}
+				}
+
+				var command = code;
+				const predicted_tagstart = prevtagstart + prevtagsize;
+				if (predicted_tagstart != tagstart) command |= @intCast(common.kFlagBitOffset);
+				var predicted_tagsize: u32 = prevtagsize;
+				if (isPredictedTagSize20(tag)) predicted_tagsize = 20;
+				if (predicted_tagsize != tagsize) command |= @intCast(common.kFlagBitSize);
+				try commands.append(allocator, command);
+				if (code == common.kCommandTagUnknown) try common.appendKeyword(&data, allocator, tag);
+				if ((command & common.kFlagBitOffset) != 0) try encodeVarInt(&commands, allocator, tagstart);
+				if ((command & common.kFlagBitSize) != 0) try encodeVarInt(&commands, allocator, tagsize);
+				prevtagstart = tagstart;
+				prevtagsize = tagsize;
+			}
+			try commands.append(allocator, 0);
+		} else {
+			try encodeVarInt(&commands, allocator, 0);
+		}
+
+		if (tail_pos < icc.len) {
+			try commands.append(allocator, common.kCommandInsert);
+			try encodeVarInt(&commands, allocator, icc.len - tail_pos);
+			try data.appendSlice(allocator, icc[tail_pos..]);
+		}
 	}
 
 	try encodeVarInt(&result, allocator, commands.items.len);
@@ -108,8 +202,79 @@ pub fn unpredictICC(allocator: std.mem.Allocator, enc: []const u8) ![]u8 {
 	}
 
 	if (cpos >= commands_end) return error.OutOfBounds;
-	const numtags = decodeVarInt(enc, &cpos);
-	if (numtags != 0) return error.Unsupported;
+	var numtags = decodeVarInt(enc, &cpos);
+	if (numtags != 0) {
+		numtags -= 1;
+		try common.checkIs32Bit(numtags);
+		try common.appendUint32(&result, allocator, @intCast(numtags));
+		var prevtagstart: u64 = common.kICCHeaderSize + numtags * 12;
+		var prevtagsize: u64 = 0;
+		while (true) {
+			if (result.items.len > osize) return error.InvalidResultSize;
+			if (cpos > commands_end) return error.OutOfBounds;
+			if (cpos == commands_end) break;
+			const command = enc[cpos];
+			cpos += 1;
+			const code = command & 63;
+			var tag: common.Tag = undefined;
+			if (code == 0) break;
+			if (code == common.kCommandTagUnknown) {
+				try common.checkOutOfBounds(pos, 4, enc.len);
+				tag = common.decodeKeyword(enc, pos);
+				pos += 4;
+			} else if (code == common.kCommandTagTRC) {
+				tag = common.kRtrcTag;
+			} else if (code == common.kCommandTagXYZ) {
+				tag = common.kRxyzTag;
+			} else {
+				const index = code - common.kCommandTagStringFirst;
+				if (index >= common.kTagStrings.len) return error.UnknownTagCode;
+				tag = common.kTagStrings[index];
+			}
+			try common.appendKeyword(&result, allocator, tag);
+
+			var tagstart: u64 = undefined;
+			var tagsize: u64 = prevtagsize;
+			if (isPredictedTagSize20(tag)) tagsize = 20;
+
+			if ((command & common.kFlagBitOffset) != 0) {
+				if (cpos >= commands_end) return error.OutOfBounds;
+				tagstart = decodeVarInt(enc, &cpos);
+			} else {
+				try common.checkIs32Bit(prevtagstart);
+				tagstart = prevtagstart + prevtagsize;
+			}
+			try common.checkIs32Bit(tagstart);
+			try common.appendUint32(&result, allocator, @intCast(tagstart));
+
+			if ((command & common.kFlagBitSize) != 0) {
+				if (cpos >= commands_end) return error.OutOfBounds;
+				tagsize = decodeVarInt(enc, &cpos);
+			}
+			try common.checkIs32Bit(tagsize);
+			try common.appendUint32(&result, allocator, @intCast(tagsize));
+			prevtagstart = tagstart;
+			prevtagsize = tagsize;
+
+			if (code == common.kCommandTagTRC) {
+				try common.appendKeyword(&result, allocator, common.kGtrcTag);
+				try common.appendUint32(&result, allocator, @intCast(tagstart));
+				try common.appendUint32(&result, allocator, @intCast(tagsize));
+				try common.appendKeyword(&result, allocator, common.kBtrcTag);
+				try common.appendUint32(&result, allocator, @intCast(tagstart));
+				try common.appendUint32(&result, allocator, @intCast(tagsize));
+			}
+			if (code == common.kCommandTagXYZ) {
+				try common.checkIs32Bit(tagstart + tagsize * 2);
+				try common.appendKeyword(&result, allocator, common.kGxyzTag);
+				try common.appendUint32(&result, allocator, @intCast(tagstart + tagsize));
+				try common.appendUint32(&result, allocator, @intCast(tagsize));
+				try common.appendKeyword(&result, allocator, common.kBxyzTag);
+				try common.appendUint32(&result, allocator, @intCast(tagstart + tagsize * 2));
+				try common.appendUint32(&result, allocator, @intCast(tagsize));
+			}
+		}
+	}
 
 	while (true) {
 		if (result.items.len > osize) return error.InvalidResultSize;
@@ -159,6 +324,14 @@ test "predictICC and unpredictICC round-trip builtin sRGB ICC via insert fallbac
 	const decoded = try unpredictICC(testing.allocator, encoded);
 	defer testing.allocator.free(decoded);
 	try testing.expectEqualSlices(u8, icc_profiles.srgb_builtin_profile[0..], decoded);
+}
+
+test "predictICC models builtin sRGB tag table more compactly than insert-only fallback" {
+	const insert_only = try predictICCInsertOnlyFallback(testing.allocator, icc_profiles.srgb_builtin_profile[0..]);
+	defer testing.allocator.free(insert_only);
+	const modeled = try predictICC(testing.allocator, icc_profiles.srgb_builtin_profile[0..]);
+	defer testing.allocator.free(modeled);
+	try testing.expect(modeled.len < insert_only.len);
 }
 
 test "checkPreamble rejects truncated command/data spans" {
