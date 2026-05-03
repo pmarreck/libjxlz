@@ -14,6 +14,7 @@
 - [x] ICC structured-profile follow-up: broaden the deterministic decoder-side ICC bridge from default sRGB to the next two upstream-shaped structured cases (`linear sRGB` and `gray sRGB`) with failing helper/API smokes first, then keep the full suite green — 2026-05-02 ~estimated EDT
 - [x] ICC target-parity follow-up: tighten the structured decoder-side ICC oracle so `JXL_COLOR_PROFILE_TARGET_DATA` is exercised alongside `TARGET_ORIGINAL` for built-in `{sRGB, linear sRGB, gray sRGB}` public smokes — 2026-05-03 ~estimated EDT
 - [x] ICC codec groundwork: port the first upstream `icc_codec_common` helpers into Zig with direct unit coverage for endian helpers, keyword helpers, header prediction, linear predictors, and ANS context selection, so embedded-ICC work can build on tested shared primitives instead of open-coded byte math — 2026-05-03 09:56 AM EDT
+- [x] ICC codec header-only slice: add the first pure-Zig `icc_codec` module with varint preamble validation plus `PredictICC`/`UnpredictICC` support for zero-command header-only streams (`<= 128` bytes), proving the shared predictor path before wider tag/content command support — 2026-05-03 10:05 AM EDT
 
 ## Phase 1: Foundation (complete)
 - [x] build.zig + build.zig.zon — 2026-03-06 ~3:00 PM EST

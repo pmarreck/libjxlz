@@ -21,9 +21,16 @@ if [[ "$optimize" != "ReleaseFast" ]]; then
   # Non-release builds use zig directly (local dev, no need for Nix reproducibility)
   run zig build "-Doptimize=$optimize" "$@"
 elif command -v nix >/dev/null 2>&1; then
-  run nix build "$@"
+  out="$(nix build --print-out-paths "$@")" || {
+    echo "FAILED: nix build $*" >&2
+    exit 1
+  }
   mkdir -p zig-out/bin
-  run install -m755 result/bin/* zig-out/bin/
+  if [[ ! -d "$out/bin" ]]; then
+    echo "FAILED: expected $out/bin to exist" >&2
+    exit 1
+  fi
+  run cp -R "$out/bin/." zig-out/bin/
 else
   run zig build "-Doptimize=$optimize" "$@"
 fi

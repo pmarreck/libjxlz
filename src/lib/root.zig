@@ -31,6 +31,7 @@ pub const codec = struct {
 	pub const image_metadata = @import("codec/image_metadata.zig");
 	pub const color_encoding = @import("codec/color_encoding.zig");
 	pub const icc_codec_common = @import("codec/icc_codec_common.zig");
+	pub const icc_codec = @import("codec/icc_codec.zig");
 	pub const icc_profiles = @import("codec/icc_profiles.zig");
 	pub const container = @import("codec/container.zig");
 	pub const frame_header = @import("codec/frame_header.zig");
@@ -93,6 +94,7 @@ test {
 	_ = @import("codec/image_metadata.zig");
 	_ = @import("codec/color_encoding.zig");
 	_ = @import("codec/icc_codec_common.zig");
+	_ = @import("codec/icc_codec.zig");
 	_ = @import("codec/icc_profiles.zig");
 	_ = @import("codec/container.zig");
 	_ = @import("codec/frame_header.zig");
