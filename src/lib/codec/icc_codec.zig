@@ -1,5 +1,6 @@
 const std = @import("std");
 const common = @import("icc_codec_common.zig");
+const icc_profiles = @import("icc_profiles.zig");
 
 const kSizeLimit: usize = std.math.maxInt(u32) >> 2;
 const kOutputLimit: usize = 1 << 28;
@@ -40,8 +41,8 @@ pub fn checkPreamble(data: []const u8, enc_size: usize) !void {
 }
 
 /// Transforms raw ICC bytes into the JPEG XL compressed-ICC intermediate form.
-/// This first slice only targets header-only streams so the shared predictor
-/// path can be proven before tag/content commands are added.
+/// The current slice proves the shared predictor path and broadens beyond the
+/// header by using a legal insert-only fallback for all post-header bytes.
 pub fn predictICC(allocator: std.mem.Allocator, icc: []const u8) ![]u8 {
 	if (icc.len > kSizeLimit) return error.ProfileTooLarge;
 
@@ -49,6 +50,8 @@ pub fn predictICC(allocator: std.mem.Allocator, icc: []const u8) ![]u8 {
 	errdefer result.deinit(allocator);
 	try encodeVarInt(&result, allocator, icc.len);
 
+	var commands: std.ArrayList(u8) = .{};
+	defer commands.deinit(allocator);
 	var header = common.initialHeaderPrediction(@intCast(icc.len));
 	var data: std.ArrayList(u8) = .{};
 	defer data.deinit(allocator);
@@ -57,17 +60,21 @@ pub fn predictICC(allocator: std.mem.Allocator, icc: []const u8) ![]u8 {
 		try data.append(allocator, icc[i] -% header[i]);
 	}
 
-	if (icc.len <= common.kICCHeaderSize) {
-		try encodeVarInt(&result, allocator, 0);
-		try result.appendSlice(allocator, data.items);
-		return result.toOwnedSlice(allocator);
+	if (icc.len > common.kICCHeaderSize) {
+		try encodeVarInt(&commands, allocator, 0);
+		try commands.append(allocator, common.kCommandInsert);
+		try encodeVarInt(&commands, allocator, icc.len - common.kICCHeaderSize);
+		try data.appendSlice(allocator, icc[common.kICCHeaderSize..]);
 	}
 
-	return error.Unsupported;
+	try encodeVarInt(&result, allocator, commands.items.len);
+	try result.appendSlice(allocator, commands.items);
+	try result.appendSlice(allocator, data.items);
+	return result.toOwnedSlice(allocator);
 }
 
 /// Reconstructs raw ICC bytes from the JPEG XL compressed-ICC intermediate
-/// form. This first slice only supports the zero-command header-only subset.
+/// form. The current slice supports the zero-tag path plus raw insert commands.
 pub fn unpredictICC(allocator: std.mem.Allocator, enc: []const u8) ![]u8 {
 	var pos: usize = 0;
 	if (pos >= enc.len) return error.OutOfBounds;
@@ -77,7 +84,7 @@ pub fn unpredictICC(allocator: std.mem.Allocator, enc: []const u8) ![]u8 {
 	if (pos >= enc.len) return error.OutOfBounds;
 	const csize = decodeVarInt(enc, &pos);
 	try common.checkIs32Bit(csize);
-	const cpos = pos;
+	var cpos = pos;
 	try common.checkOutOfBounds(pos, csize, enc.len);
 	const commands_end = cpos + @as(usize, @intCast(csize));
 	pos = commands_end;
@@ -100,7 +107,31 @@ pub fn unpredictICC(allocator: std.mem.Allocator, enc: []const u8) ![]u8 {
 		pos += 1;
 	}
 
-	return error.Unsupported;
+	if (cpos >= commands_end) return error.OutOfBounds;
+	const numtags = decodeVarInt(enc, &cpos);
+	if (numtags != 0) return error.Unsupported;
+
+	while (true) {
+		if (result.items.len > osize) return error.InvalidResultSize;
+		if (cpos > commands_end) return error.OutOfBounds;
+		if (cpos == commands_end) break;
+		const command = enc[cpos];
+		cpos += 1;
+		switch (command) {
+			common.kCommandInsert => {
+				if (cpos >= commands_end) return error.OutOfBounds;
+				const num = decodeVarInt(enc, &cpos);
+				try common.checkOutOfBounds(pos, num, enc.len);
+				try result.appendSlice(allocator, enc[pos .. pos + @as(usize, @intCast(num))]);
+				pos += @as(usize, @intCast(num));
+			},
+			else => return error.Unsupported,
+		}
+	}
+
+	if (pos != enc.len) return error.NotAllDataUsed;
+	if (result.items.len != osize) return error.InvalidResultSize;
+	return result.toOwnedSlice(allocator);
 }
 
 const testing = std.testing;
@@ -118,6 +149,16 @@ test "predictICC and unpredictICC round-trip header-only byte streams" {
 	const decoded = try unpredictICC(testing.allocator, encoded);
 	defer testing.allocator.free(decoded);
 	try testing.expectEqualSlices(u8, source[0..], decoded);
+}
+
+test "predictICC and unpredictICC round-trip builtin sRGB ICC via insert fallback" {
+	const encoded = try predictICC(testing.allocator, icc_profiles.srgb_builtin_profile[0..]);
+	defer testing.allocator.free(encoded);
+	try checkPreamble(encoded, encoded.len);
+
+	const decoded = try unpredictICC(testing.allocator, encoded);
+	defer testing.allocator.free(decoded);
+	try testing.expectEqualSlices(u8, icc_profiles.srgb_builtin_profile[0..], decoded);
 }
 
 test "checkPreamble rejects truncated command/data spans" {
