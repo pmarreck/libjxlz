@@ -65,6 +65,7 @@ pub fn predictICC(allocator: std.mem.Allocator, icc: []const u8) ![]u8 {
 		.model_tag_list = true,
 		.model_type_starts = true,
 		.model_xyz = true,
+		.model_mluc_shuffle = true,
 	});
 }
 
@@ -73,6 +74,7 @@ fn predictICCInsertOnlyFallback(allocator: std.mem.Allocator, icc: []const u8) !
 		.model_tag_list = false,
 		.model_type_starts = false,
 		.model_xyz = false,
+		.model_mluc_shuffle = false,
 	});
 }
 
@@ -81,6 +83,16 @@ fn predictICCTagTableFallback(allocator: std.mem.Allocator, icc: []const u8) ![]
 		.model_tag_list = true,
 		.model_type_starts = false,
 		.model_xyz = false,
+		.model_mluc_shuffle = false,
+	});
+}
+
+fn predictICCBodyStructureFallback(allocator: std.mem.Allocator, icc: []const u8) ![]u8 {
+	return predictICCImpl(allocator, icc, .{
+		.model_tag_list = true,
+		.model_type_starts = true,
+		.model_xyz = true,
+		.model_mluc_shuffle = false,
 	});
 }
 
@@ -88,7 +100,85 @@ const PredictOptions = struct {
 	model_tag_list: bool,
 	model_type_starts: bool,
 	model_xyz: bool,
+	model_mluc_shuffle: bool,
 };
+
+fn unshuffle(data: []u8, width: usize) void {
+	const height = (data.len + width - 1) / width;
+	var result = std.heap.stackFallback(4096, std.heap.page_allocator);
+	const allocator = result.get();
+	const tmp = allocator.alloc(u8, data.len) catch @panic("oom");
+	defer allocator.free(tmp);
+
+	var s: usize = 0;
+	var j: usize = 0;
+	for (data, 0..) |b, i| {
+		tmp[j] = b;
+		_ = i;
+		j += height;
+		if (j >= data.len) {
+			s += 1;
+			j = s;
+		}
+	}
+	@memcpy(data, tmp);
+}
+
+fn shuffle(data: []u8, width: usize) void {
+	const height = (data.len + width - 1) / width;
+	var result = std.heap.stackFallback(4096, std.heap.page_allocator);
+	const allocator = result.get();
+	const tmp = allocator.alloc(u8, data.len) catch @panic("oom");
+	defer allocator.free(tmp);
+
+	var s: usize = 0;
+	var j: usize = 0;
+	for (0..data.len) |i| {
+		tmp[i] = data[j];
+		j += height;
+		if (j >= data.len) {
+			s += 1;
+			j = s;
+		}
+	}
+	@memcpy(data, tmp);
+}
+
+fn commandStream(encoded: []const u8) []const u8 {
+	var pos: usize = 0;
+	_ = decodeVarInt(encoded, &pos);
+	const csize = decodeVarInt(encoded, &pos);
+	return encoded[pos .. pos + @as(usize, @intCast(csize))];
+}
+
+fn bodyCommandsContain(encoded: []const u8, opcode: u8) bool {
+	const commands = commandStream(encoded);
+	var pos: usize = 0;
+	_ = decodeVarInt(commands, &pos);
+	while (pos < commands.len) {
+		const command = commands[pos];
+		pos += 1;
+		const code = command & 63;
+		if (code == 0) break;
+		if ((command & common.kFlagBitOffset) != 0) _ = decodeVarInt(commands, &pos);
+		if ((command & common.kFlagBitSize) != 0) _ = decodeVarInt(commands, &pos);
+	}
+	while (pos < commands.len) {
+		const command = commands[pos];
+		pos += 1;
+		if (command == opcode) return true;
+		switch (command) {
+			common.kCommandInsert, common.kCommandShuffle2, common.kCommandShuffle4 => {
+				_ = decodeVarInt(commands, &pos);
+			},
+			common.kCommandXYZ => {},
+			else => {
+				if (!(command >= common.kCommandTypeStartFirst and command < common.kCommandTypeStartFirst + common.kTypeStrings.len)) return false;
+			},
+		}
+	}
+	return false;
+}
 
 fn predictICCImpl(allocator: std.mem.Allocator, icc: []const u8, options: PredictOptions) ![]u8 {
 	if (icc.len > kSizeLimit) return error.ProfileTooLarge;
@@ -99,6 +189,8 @@ fn predictICCImpl(allocator: std.mem.Allocator, icc: []const u8, options: Predic
 
 	var commands: std.ArrayList(u8) = .{};
 	defer commands.deinit(allocator);
+	var tag_sizes = std.AutoHashMap(usize, usize).init(allocator);
+	defer tag_sizes.deinit();
 	var header = common.initialHeaderPrediction(@intCast(icc.len));
 	var data: std.ArrayList(u8) = .{};
 	defer data.deinit(allocator);
@@ -121,6 +213,7 @@ fn predictICCImpl(allocator: std.mem.Allocator, icc: []const u8, options: Predic
 				const tagstart = common.decodeUint32(icc, tail_pos + 4);
 				const tagsize = common.decodeUint32(icc, tail_pos + 8);
 				tail_pos += 12;
+				try tag_sizes.put(@intCast(tagstart), @intCast(tagsize));
 
 				var code = tagCode(tag);
 				if (std.mem.eql(u8, &tag, &common.kRtrcTag) and tail_pos + 24 < icc.len) {
@@ -179,6 +272,34 @@ fn predictICCImpl(allocator: std.mem.Allocator, icc: []const u8, options: Predic
 		var insert_start = tail_pos;
 		var pos = tail_pos;
 		while (pos < icc.len) {
+			if (options.model_mluc_shuffle and pos + 8 <= icc.len) {
+				const sub_tag = common.decodeKeyword(icc, pos);
+				const maybe_tag_size = tag_sizes.get(pos);
+				if (std.mem.eql(u8, &sub_tag, &common.kMlucTag) and
+					common.decodeUint32(icc, pos + 4) == 0 and
+					maybe_tag_size != null)
+				{
+					const tag_size = maybe_tag_size.?;
+					const num = tag_size - 8;
+					if (tag_size >= 8 and pos + tag_size <= icc.len and (num & 1) == 0) {
+						if (insert_start < pos) {
+							try commands.append(allocator, common.kCommandInsert);
+							try encodeVarInt(&commands, allocator, pos - insert_start);
+							try data.appendSlice(allocator, icc[insert_start..pos]);
+						}
+						try commands.append(allocator, @intCast(common.kCommandTypeStartFirst + 3));
+						try commands.append(allocator, common.kCommandShuffle2);
+						try encodeVarInt(&commands, allocator, num);
+						const start = data.items.len;
+						try data.appendSlice(allocator, icc[pos + 8 .. pos + tag_size]);
+						unshuffle(data.items[start..], 2);
+						pos += tag_size;
+						insert_start = pos;
+						continue;
+					}
+				}
+			}
+
 			if (options.model_xyz and pos + 20 <= icc.len) {
 				const sub_tag = common.decodeKeyword(icc, pos);
 				if (std.mem.eql(u8, &sub_tag, &common.kXyz_Tag) and common.decodeUint32(icc, pos + 4) == 0) {
@@ -352,6 +473,21 @@ pub fn unpredictICC(allocator: std.mem.Allocator, enc: []const u8) ![]u8 {
 				try result.appendSlice(allocator, enc[pos .. pos + @as(usize, @intCast(num))]);
 				pos += @as(usize, @intCast(num));
 			},
+			common.kCommandShuffle2, common.kCommandShuffle4 => {
+				if (cpos >= commands_end) return error.OutOfBounds;
+				const num = decodeVarInt(enc, &cpos);
+				try common.checkOutOfBounds(pos, num, enc.len);
+				const shuffled = try allocator.alloc(u8, @intCast(num));
+				defer allocator.free(shuffled);
+				@memcpy(shuffled, enc[pos .. pos + @as(usize, @intCast(num))]);
+				if (command == common.kCommandShuffle2) {
+					shuffle(shuffled, 2);
+				} else {
+					shuffle(shuffled, 4);
+				}
+				try result.appendSlice(allocator, shuffled);
+				pos += @as(usize, @intCast(num));
+			},
 			common.kCommandXYZ => {
 				try common.appendKeyword(&result, allocator, common.kXyz_Tag);
 				try common.appendUint32(&result, allocator, 0);
@@ -417,6 +553,15 @@ test "predictICC models builtin sRGB body more compactly than tag-table-only fal
 	const modeled = try predictICC(testing.allocator, icc_profiles.srgb_builtin_profile[0..]);
 	defer testing.allocator.free(modeled);
 	try testing.expect(modeled.len < tag_only.len);
+}
+
+test "predictICC models builtin sRGB mluc payload with shuffle2" {
+	const body_only = try predictICCBodyStructureFallback(testing.allocator, icc_profiles.srgb_builtin_profile[0..]);
+	defer testing.allocator.free(body_only);
+	const modeled = try predictICC(testing.allocator, icc_profiles.srgb_builtin_profile[0..]);
+	defer testing.allocator.free(modeled);
+	try testing.expect(!bodyCommandsContain(body_only, common.kCommandShuffle2));
+	try testing.expect(bodyCommandsContain(modeled, common.kCommandShuffle2));
 }
 
 test "checkPreamble rejects truncated command/data spans" {

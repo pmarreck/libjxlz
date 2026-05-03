@@ -18,6 +18,7 @@
 - [x] ICC codec insert fallback slice: broaden `PredictICC`/`UnpredictICC` from header-only data to full real profiles by supporting the zero-tag + `insert` command path, proving exact roundtrip on the built-in sRGB ICC before smarter tag/type/predict command compaction — 2026-05-03 10:17 AM EDT
 - [x] ICC codec tag-table slice: model and reconstruct the built-in sRGB tag table through real tag commands (`known`, `unknown`, `TRC`, `XYZ`) while still falling back to raw `insert` for the remaining body, and prove this shrinks the encoded stream versus pure insert fallback without losing exact roundtrip — 2026-05-03 10:29 AM EDT
 - [x] ICC codec body-structure slice: add generic main-body `type-start` and `XYZ` command modeling/reconstruction on top of the tag-table work, and prove the built-in sRGB profile shrinks again versus tag-table-only fallback while preserving exact roundtrip — 2026-05-03 10:36 AM EDT
+- [x] ICC codec `mluc` slice: add the first payload-specific body transform by emitting and decoding `shuffle2` for tagged `mluc` UTF-16 payloads, and prove the modeled stream now contains a real shuffle command where the body-structure fallback did not — 2026-05-03 10:44 AM EDT
 
 ## Phase 1: Foundation (complete)
 - [x] build.zig + build.zig.zon — 2026-03-06 ~3:00 PM EST
