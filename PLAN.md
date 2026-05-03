@@ -12,6 +12,7 @@
 - [x] BMFF parity follow-up: after Brotli is real on Windows again, tighten the next smallest container gap around decoder-side BMFF box visibility/ordering/core-box filtering with a failing test first — 2026-04-30 ~estimated EDT
 - [x] ICC first slice: after the BMFF follow-up, start the first real ICC profile surface with the smallest honest public API slice and reference-backed tests — 2026-04-30 ~estimated EDT
 - [x] ICC structured-profile follow-up: broaden the deterministic decoder-side ICC bridge from default sRGB to the next two upstream-shaped structured cases (`linear sRGB` and `gray sRGB`) with failing helper/API smokes first, then keep the full suite green — 2026-05-02 ~estimated EDT
+- [x] ICC target-parity follow-up: tighten the structured decoder-side ICC oracle so `JXL_COLOR_PROFILE_TARGET_DATA` is exercised alongside `TARGET_ORIGINAL` for built-in `{sRGB, linear sRGB, gray sRGB}` public smokes — 2026-05-03 ~estimated EDT
 
 ## Phase 1: Foundation (complete)
 - [x] build.zig + build.zig.zon — 2026-03-06 ~3:00 PM EST

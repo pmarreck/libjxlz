@@ -10,6 +10,36 @@
 #include <jxl/decode.h>
 #include <jxl/encode.h>
 
+static int expect_icc_target(JxlDecoder* dec, JxlColorProfileTarget target) {
+	size_t icc_size = 0;
+	uint8_t* icc = NULL;
+	if (JxlDecoderGetICCProfileSize(dec, target, &icc_size) != JXL_DEC_SUCCESS) {
+		fprintf(stderr, "get icc profile size failed for target %d\n", (int)target);
+		return 1;
+	}
+	if (icc_size != 348) {
+		fprintf(stderr, "unexpected gray icc size %zu for target %d\n", icc_size, (int)target);
+		return 1;
+	}
+	icc = (uint8_t*)malloc(icc_size);
+	if (!icc) return 1;
+	if (JxlDecoderGetColorAsICCProfile(dec, target, icc, icc_size) != JXL_DEC_SUCCESS) {
+		fprintf(stderr, "get icc profile failed for target %d\n", (int)target);
+		free(icc);
+		return 1;
+	}
+	if (
+		memcmp(icc + 16, "GRAYXYZ ", 8) != 0 ||
+		memcmp(icc + 36, "acsp", 4) != 0
+	) {
+		fprintf(stderr, "unexpected gray icc contents for target %d\n", (int)target);
+		free(icc);
+		return 1;
+	}
+	free(icc);
+	return 0;
+}
+
 int main(void) {
 	const uint8_t pixels[] = {
 		0x00, 0x40,
@@ -54,32 +84,8 @@ int main(void) {
 		JxlDecoderStatus status = JxlDecoderProcessInput(dec);
 		if (status == JXL_DEC_BASIC_INFO) continue;
 		if (status == JXL_DEC_COLOR_ENCODING) {
-			size_t icc_size = 0;
-			uint8_t* icc = NULL;
-			if (JxlDecoderGetICCProfileSize(dec, JXL_COLOR_PROFILE_TARGET_ORIGINAL, &icc_size) != JXL_DEC_SUCCESS) {
-				fprintf(stderr, "get icc profile size failed\n");
-				return 1;
-			}
-			if (icc_size < 128) {
-				fprintf(stderr, "unexpected gray icc size %zu\n", icc_size);
-				return 1;
-			}
-			icc = (uint8_t*)malloc(icc_size);
-			if (!icc) return 1;
-			if (JxlDecoderGetColorAsICCProfile(dec, JXL_COLOR_PROFILE_TARGET_ORIGINAL, icc, icc_size) != JXL_DEC_SUCCESS) {
-				fprintf(stderr, "get icc profile failed\n");
-				free(icc);
-				return 1;
-			}
-			if (
-				memcmp(icc + 16, "GRAYXYZ ", 8) != 0 ||
-				memcmp(icc + 36, "acsp", 4) != 0
-			) {
-				fprintf(stderr, "unexpected gray icc contents\n");
-				free(icc);
-				return 1;
-			}
-			free(icc);
+			if (expect_icc_target(dec, JXL_COLOR_PROFILE_TARGET_ORIGINAL) != 0) return 1;
+			if (expect_icc_target(dec, JXL_COLOR_PROFILE_TARGET_DATA) != 0) return 1;
 			JxlDecoderDestroy(dec);
 			return 0;
 		}
