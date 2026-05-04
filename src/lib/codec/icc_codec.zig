@@ -67,6 +67,7 @@ pub fn predictICC(allocator: std.mem.Allocator, icc: []const u8) ![]u8 {
 		.model_xyz = true,
 		.model_mluc_shuffle = true,
 		.model_sf32_shuffle = true,
+		.model_curv_predict = true,
 	});
 }
 
@@ -77,6 +78,7 @@ fn predictICCInsertOnlyFallback(allocator: std.mem.Allocator, icc: []const u8) !
 		.model_xyz = false,
 		.model_mluc_shuffle = false,
 		.model_sf32_shuffle = false,
+		.model_curv_predict = false,
 	});
 }
 
@@ -87,6 +89,7 @@ fn predictICCTagTableFallback(allocator: std.mem.Allocator, icc: []const u8) ![]
 		.model_xyz = false,
 		.model_mluc_shuffle = false,
 		.model_sf32_shuffle = false,
+		.model_curv_predict = false,
 	});
 }
 
@@ -97,6 +100,7 @@ fn predictICCBodyStructureFallback(allocator: std.mem.Allocator, icc: []const u8
 		.model_xyz = true,
 		.model_mluc_shuffle = false,
 		.model_sf32_shuffle = false,
+		.model_curv_predict = false,
 	});
 }
 
@@ -106,6 +110,7 @@ const PredictOptions = struct {
 	model_xyz: bool,
 	model_mluc_shuffle: bool,
 	model_sf32_shuffle: bool,
+	model_curv_predict: bool,
 };
 
 fn unshuffle(data: []u8, width: usize) void {
@@ -174,6 +179,13 @@ fn bodyCommandsContain(encoded: []const u8, opcode: u8) bool {
 		if (command == opcode) return true;
 		switch (command) {
 			common.kCommandInsert, common.kCommandShuffle2, common.kCommandShuffle4 => {
+				_ = decodeVarInt(commands, &pos);
+			},
+			common.kCommandPredict => {
+				if (pos >= commands.len) return false;
+				const flags = commands[pos];
+				pos += 1;
+				if ((flags & 16) != 0) _ = decodeVarInt(commands, &pos);
 				_ = decodeVarInt(commands, &pos);
 			},
 			common.kCommandXYZ => {},
@@ -277,6 +289,40 @@ fn predictICCImpl(allocator: std.mem.Allocator, icc: []const u8, options: Predic
 		var insert_start = tail_pos;
 		var pos = tail_pos;
 		while (pos < icc.len) {
+			if (options.model_curv_predict and pos + 8 <= icc.len) {
+				const sub_tag = common.decodeKeyword(icc, pos);
+				const maybe_tag_size = tag_sizes.get(pos);
+				if (std.mem.eql(u8, &sub_tag, &common.kCurvTag) and
+					common.decodeUint32(icc, pos + 4) == 0 and
+					maybe_tag_size != null)
+				{
+					const tag_size = maybe_tag_size.?;
+					const num = tag_size - 8;
+					if (tag_size >= 8 and pos + tag_size <= icc.len and (num & 1) == 0 and num > 16 and pos > 0) {
+						if (insert_start < pos) {
+							try commands.append(allocator, common.kCommandInsert);
+							try encodeVarInt(&commands, allocator, pos - insert_start);
+							try data.appendSlice(allocator, icc[insert_start..pos]);
+						}
+						try commands.append(allocator, @intCast(common.kCommandTypeStartFirst + 5));
+						try commands.append(allocator, common.kCommandPredict);
+						try commands.append(allocator, (1 << 2) | (2 - 1));
+						try encodeVarInt(&commands, allocator, num);
+						const payload_start = pos + 8;
+						const start = data.items.len;
+						try data.resize(allocator, start + num);
+						for (0..num) |i| {
+							const predicted = common.linearPredictValue(icc, payload_start, i, 2, 2, 1);
+							data.items[start + i] = icc[payload_start + i] -% predicted;
+						}
+						unshuffle(data.items[start .. start + num], 2);
+						pos += tag_size;
+						insert_start = pos;
+						continue;
+					}
+				}
+			}
+
 			if (options.model_mluc_shuffle and pos + 8 <= icc.len) {
 				const sub_tag = common.decodeKeyword(icc, pos);
 				const maybe_tag_size = tag_sizes.get(pos);
@@ -521,6 +567,40 @@ pub fn unpredictICC(allocator: std.mem.Allocator, enc: []const u8) ![]u8 {
 				try result.appendSlice(allocator, shuffled);
 				pos += @as(usize, @intCast(num));
 			},
+			common.kCommandPredict => {
+				try common.checkOutOfBounds(cpos, 2, commands_end);
+				const flags = enc[cpos];
+				cpos += 1;
+
+				const width = (flags & 3) + 1;
+				if (width == 3) return error.InvalidWidth;
+				const order = (flags & 12) >> 2;
+				if (order == 3) return error.InvalidOrder;
+
+				var stride: u64 = width;
+				if ((flags & 16) != 0) {
+					if (cpos >= commands_end) return error.OutOfBounds;
+					stride = decodeVarInt(enc, &cpos);
+					if (stride < width) return error.InvalidStride;
+				}
+				if (result.items.len == 0 or ((result.items.len - 1) >> 2) < stride) return error.InvalidStride;
+
+				if (cpos >= commands_end) return error.OutOfBounds;
+				const num = decodeVarInt(enc, &cpos);
+				try common.checkOutOfBounds(pos, num, enc.len);
+
+				const shuffled = try allocator.alloc(u8, @intCast(num));
+				defer allocator.free(shuffled);
+				@memcpy(shuffled, enc[pos .. pos + @as(usize, @intCast(num))]);
+				if (width > 1) shuffle(shuffled, width);
+
+				const start = result.items.len;
+				for (0..@as(usize, @intCast(num))) |idx| {
+					const predicted = common.linearPredictValue(result.items, start, idx, @intCast(stride), width, order);
+					try result.append(allocator, predicted +% shuffled[idx]);
+				}
+				pos += @as(usize, @intCast(num));
+			},
 			common.kCommandXYZ => {
 				try common.appendKeyword(&result, allocator, common.kXyz_Tag);
 				try common.appendUint32(&result, allocator, 0);
@@ -546,6 +626,25 @@ pub fn unpredictICC(allocator: std.mem.Allocator, enc: []const u8) ![]u8 {
 }
 
 const testing = std.testing;
+
+fn makeSyntheticCurvPredictProfile(allocator: std.mem.Allocator) ![]u8 {
+	var bytes: std.ArrayList(u8) = .{};
+	errdefer bytes.deinit(allocator);
+	const total_size: u32 = 128 + 4 + 12 + 28;
+	try bytes.appendSlice(allocator, &common.initialHeaderPrediction(total_size));
+	try common.appendUint32(&bytes, allocator, 1);
+	try common.appendKeyword(&bytes, allocator, common.kRtrcTag);
+	try common.appendUint32(&bytes, allocator, 144);
+	try common.appendUint32(&bytes, allocator, 28);
+	try common.appendKeyword(&bytes, allocator, common.kCurvTag);
+	try common.appendUint32(&bytes, allocator, 0);
+	const payload = [_]u8{
+		0x00, 0x10, 0x00, 0x20, 0x00, 0x35, 0x00, 0x50, 0x00, 0x70,
+		0x00, 0x95, 0x00, 0xBF, 0x00, 0xEE, 0x01, 0x22, 0x01, 0x5B,
+	};
+	try bytes.appendSlice(allocator, payload[0..]);
+	return bytes.toOwnedSlice(allocator);
+}
 
 test "predictICC and unpredictICC round-trip header-only byte streams" {
 	var source: [48]u8 = undefined;
@@ -604,6 +703,22 @@ test "predictICC models builtin sRGB sf32 payload with shuffle4" {
 	defer testing.allocator.free(modeled);
 	try testing.expect(!bodyCommandsContain(body_only, common.kCommandShuffle4));
 	try testing.expect(bodyCommandsContain(modeled, common.kCommandShuffle4));
+}
+
+test "predictICC emits first predict command for synthetic curv payload and round-trips exactly" {
+	const profile = try makeSyntheticCurvPredictProfile(testing.allocator);
+	defer testing.allocator.free(profile);
+
+	const body_only = try predictICCBodyStructureFallback(testing.allocator, profile);
+	defer testing.allocator.free(body_only);
+	const modeled = try predictICC(testing.allocator, profile);
+	defer testing.allocator.free(modeled);
+	try testing.expect(!bodyCommandsContain(body_only, common.kCommandPredict));
+	try testing.expect(bodyCommandsContain(modeled, common.kCommandPredict));
+
+	const decoded = try unpredictICC(testing.allocator, modeled);
+	defer testing.allocator.free(decoded);
+	try testing.expectEqualSlices(u8, profile, decoded);
 }
 
 test "checkPreamble rejects truncated command/data spans" {
