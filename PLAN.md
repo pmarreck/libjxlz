@@ -21,6 +21,7 @@
 - [x] ICC codec `mluc` slice: add the first payload-specific body transform by emitting and decoding `shuffle2` for tagged `mluc` UTF-16 payloads, and prove the modeled stream now contains a real shuffle command where the body-structure fallback did not — 2026-05-03 10:44 AM EDT
 - [x] ICC codec `sf32` slice: add the next payload-specific body transform by emitting and decoding `shuffle4` for tagged `sf32` payloads, and prove the modeled stream now contains a real `shuffle4` command where the prior fallback did not — 2026-05-04 12:07 AM EDT
 - [x] ICC codec first `predict` slice: add the first predictive body transform by emitting and decoding `predict` for a synthetic tagged `curv` payload, and prove the modeled stream gains a real `predict` command and still round-trips exactly — 2026-05-04 ~11:40 AM EDT
+- [x] ICC codec `gbd` predict slice: add the next predictive body transform by emitting `predict` for a synthetic tagged `gbd ` payload after the existing generic type-start, and prove exact roundtrip through the shared decoder path — 2026-05-04 ~12:05 PM EDT
 
 ## Phase 1: Foundation (complete)
 - [x] build.zig + build.zig.zon — 2026-03-06 ~3:00 PM EST

@@ -68,6 +68,7 @@ pub fn predictICC(allocator: std.mem.Allocator, icc: []const u8) ![]u8 {
 		.model_mluc_shuffle = true,
 		.model_sf32_shuffle = true,
 		.model_curv_predict = true,
+		.model_gbd_predict = true,
 	});
 }
 
@@ -79,6 +80,7 @@ fn predictICCInsertOnlyFallback(allocator: std.mem.Allocator, icc: []const u8) !
 		.model_mluc_shuffle = false,
 		.model_sf32_shuffle = false,
 		.model_curv_predict = false,
+		.model_gbd_predict = false,
 	});
 }
 
@@ -90,6 +92,7 @@ fn predictICCTagTableFallback(allocator: std.mem.Allocator, icc: []const u8) ![]
 		.model_mluc_shuffle = false,
 		.model_sf32_shuffle = false,
 		.model_curv_predict = false,
+		.model_gbd_predict = false,
 	});
 }
 
@@ -101,6 +104,7 @@ fn predictICCBodyStructureFallback(allocator: std.mem.Allocator, icc: []const u8
 		.model_mluc_shuffle = false,
 		.model_sf32_shuffle = false,
 		.model_curv_predict = false,
+		.model_gbd_predict = false,
 	});
 }
 
@@ -111,6 +115,7 @@ const PredictOptions = struct {
 	model_mluc_shuffle: bool,
 	model_sf32_shuffle: bool,
 	model_curv_predict: bool,
+	model_gbd_predict: bool,
 };
 
 fn unshuffle(data: []u8, width: usize) void {
@@ -289,6 +294,38 @@ fn predictICCImpl(allocator: std.mem.Allocator, icc: []const u8, options: Predic
 		var insert_start = tail_pos;
 		var pos = tail_pos;
 		while (pos < icc.len) {
+			if (options.model_gbd_predict and pos >= 8) {
+				const sub_tag = common.decodeKeyword(icc, pos - 8);
+				const maybe_tag_size = tag_sizes.get(pos - 8);
+				if (std.mem.eql(u8, &sub_tag, &common.kGbd_Tag) and
+					common.decodeUint32(icc, pos - 4) == 0 and
+					maybe_tag_size != null)
+				{
+					const tag_size = maybe_tag_size.?;
+					const num = tag_size - 8;
+					if (tag_size >= 8 and pos - 8 + tag_size <= icc.len and pos > 16) {
+						if (insert_start < pos) {
+							try commands.append(allocator, common.kCommandInsert);
+							try encodeVarInt(&commands, allocator, pos - insert_start);
+							try data.appendSlice(allocator, icc[insert_start..pos]);
+						}
+						try commands.append(allocator, common.kCommandPredict);
+						try commands.append(allocator, 4 - 1);
+						try encodeVarInt(&commands, allocator, num);
+						const start = data.items.len;
+						try data.resize(allocator, start + num);
+						for (0..num) |i| {
+							const predicted = common.linearPredictValue(icc, pos, i, 4, 4, 0);
+							data.items[start + i] = icc[pos + i] -% predicted;
+						}
+						unshuffle(data.items[start .. start + num], 4);
+						pos += num;
+						insert_start = pos;
+						continue;
+					}
+				}
+			}
+
 			if (options.model_curv_predict and pos + 8 <= icc.len) {
 				const sub_tag = common.decodeKeyword(icc, pos);
 				const maybe_tag_size = tag_sizes.get(pos);
@@ -646,6 +683,29 @@ fn makeSyntheticCurvPredictProfile(allocator: std.mem.Allocator) ![]u8 {
 	return bytes.toOwnedSlice(allocator);
 }
 
+fn makeSyntheticGbdPredictProfile(allocator: std.mem.Allocator) ![]u8 {
+	var bytes: std.ArrayList(u8) = .{};
+	errdefer bytes.deinit(allocator);
+	const total_size: u32 = 128 + 4 + 12 + 32;
+	try bytes.appendSlice(allocator, &common.initialHeaderPrediction(total_size));
+	try common.appendUint32(&bytes, allocator, 1);
+	try common.appendKeyword(&bytes, allocator, common.kGbd_Tag);
+	try common.appendUint32(&bytes, allocator, 144);
+	try common.appendUint32(&bytes, allocator, 32);
+	try common.appendKeyword(&bytes, allocator, common.kGbd_Tag);
+	try common.appendUint32(&bytes, allocator, 0);
+	const payload = [_]u8{
+		0x00, 0x10, 0x20, 0x30,
+		0x00, 0x10, 0x20, 0x34,
+		0x00, 0x10, 0x20, 0x38,
+		0x00, 0x10, 0x20, 0x3C,
+		0x00, 0x10, 0x20, 0x40,
+		0x00, 0x10, 0x20, 0x44,
+	};
+	try bytes.appendSlice(allocator, payload[0..]);
+	return bytes.toOwnedSlice(allocator);
+}
+
 test "predictICC and unpredictICC round-trip header-only byte streams" {
 	var source: [48]u8 = undefined;
 	for (&source, 0..) |*b, i| b.* = @intCast((i * 37 + 11) & 0xFF);
@@ -707,6 +767,22 @@ test "predictICC models builtin sRGB sf32 payload with shuffle4" {
 
 test "predictICC emits first predict command for synthetic curv payload and round-trips exactly" {
 	const profile = try makeSyntheticCurvPredictProfile(testing.allocator);
+	defer testing.allocator.free(profile);
+
+	const body_only = try predictICCBodyStructureFallback(testing.allocator, profile);
+	defer testing.allocator.free(body_only);
+	const modeled = try predictICC(testing.allocator, profile);
+	defer testing.allocator.free(modeled);
+	try testing.expect(!bodyCommandsContain(body_only, common.kCommandPredict));
+	try testing.expect(bodyCommandsContain(modeled, common.kCommandPredict));
+
+	const decoded = try unpredictICC(testing.allocator, modeled);
+	defer testing.allocator.free(decoded);
+	try testing.expectEqualSlices(u8, profile, decoded);
+}
+
+test "predictICC emits predict for synthetic gbd payload and round-trips exactly" {
+	const profile = try makeSyntheticGbdPredictProfile(testing.allocator);
 	defer testing.allocator.free(profile);
 
 	const body_only = try predictICCBodyStructureFallback(testing.allocator, profile);
