@@ -69,6 +69,8 @@ pub fn predictICC(allocator: std.mem.Allocator, icc: []const u8) ![]u8 {
 		.model_sf32_shuffle = true,
 		.model_curv_predict = true,
 		.model_gbd_predict = true,
+		.model_mab_curv_predict = true,
+		.model_mab_clut_predict = true,
 	});
 }
 
@@ -81,6 +83,8 @@ fn predictICCInsertOnlyFallback(allocator: std.mem.Allocator, icc: []const u8) !
 		.model_sf32_shuffle = false,
 		.model_curv_predict = false,
 		.model_gbd_predict = false,
+		.model_mab_curv_predict = false,
+		.model_mab_clut_predict = false,
 	});
 }
 
@@ -93,6 +97,8 @@ fn predictICCTagTableFallback(allocator: std.mem.Allocator, icc: []const u8) ![]
 		.model_sf32_shuffle = false,
 		.model_curv_predict = false,
 		.model_gbd_predict = false,
+		.model_mab_curv_predict = false,
+		.model_mab_clut_predict = false,
 	});
 }
 
@@ -105,6 +111,8 @@ fn predictICCBodyStructureFallback(allocator: std.mem.Allocator, icc: []const u8
 		.model_sf32_shuffle = false,
 		.model_curv_predict = false,
 		.model_gbd_predict = false,
+		.model_mab_curv_predict = false,
+		.model_mab_clut_predict = false,
 	});
 }
 
@@ -116,6 +124,8 @@ const PredictOptions = struct {
 	model_sf32_shuffle: bool,
 	model_curv_predict: bool,
 	model_gbd_predict: bool,
+	model_mab_curv_predict: bool,
+	model_mab_clut_predict: bool,
 };
 
 fn unshuffle(data: []u8, width: usize) void {
@@ -213,6 +223,8 @@ fn predictICCImpl(allocator: std.mem.Allocator, icc: []const u8, options: Predic
 	defer commands.deinit(allocator);
 	var tag_sizes = std.AutoHashMap(usize, usize).init(allocator);
 	defer tag_sizes.deinit();
+	var tag_types = std.AutoHashMap(usize, common.Tag).init(allocator);
+	defer tag_types.deinit();
 	var header = common.initialHeaderPrediction(@intCast(icc.len));
 	var data: std.ArrayList(u8) = .{};
 	defer data.deinit(allocator);
@@ -236,6 +248,7 @@ fn predictICCImpl(allocator: std.mem.Allocator, icc: []const u8, options: Predic
 				const tagsize = common.decodeUint32(icc, tail_pos + 8);
 				tail_pos += 12;
 				try tag_sizes.put(@intCast(tagstart), @intCast(tagsize));
+				try tag_types.put(@intCast(tagstart), tag);
 
 				var code = tagCode(tag);
 				if (std.mem.eql(u8, &tag, &common.kRtrcTag) and tail_pos + 24 < icc.len) {
@@ -293,7 +306,95 @@ fn predictICCImpl(allocator: std.mem.Allocator, icc: []const u8, options: Predic
 
 		var insert_start = tail_pos;
 		var pos = tail_pos;
+		var current_tag: ?common.Tag = null;
+		var current_tag_start: usize = 0;
+		var current_tag_size: usize = 0;
+		var clut_start: ?usize = null;
 		while (pos < icc.len) {
+			if (current_tag != null and pos > current_tag_start + current_tag_size) current_tag = null;
+			if (tag_types.get(pos)) |tag| {
+				current_tag = tag;
+				current_tag_start = pos;
+				current_tag_size = tag_sizes.get(pos).?;
+				clut_start = null;
+			}
+
+			if (options.model_mab_curv_predict and current_tag != null and pos + 12 <= icc.len) {
+				const outer_tag = current_tag.?;
+				if (std.mem.eql(u8, &outer_tag, &common.kMab_Tag) or std.mem.eql(u8, &outer_tag, &common.kMba_Tag)) {
+					const sub_tag = common.decodeKeyword(icc, pos);
+					if ((std.mem.eql(u8, &sub_tag, &common.kCurvTag) or std.mem.eql(u8, &sub_tag, &common.kVcgtTag)) and
+						common.decodeUint32(icc, pos + 4) == 0)
+					{
+						const num = @as(usize, common.decodeUint32(icc, pos + 8)) * 2;
+						if (num > 16 and num < (1 << 28) and pos + 12 + num <= icc.len) {
+							const payload_start = pos + 12;
+							if (insert_start < payload_start) {
+								try commands.append(allocator, common.kCommandInsert);
+								try encodeVarInt(&commands, allocator, payload_start - insert_start);
+								try data.appendSlice(allocator, icc[insert_start..payload_start]);
+							}
+							try commands.append(allocator, common.kCommandPredict);
+							try commands.append(allocator, (1 << 2) | (2 - 1));
+							try encodeVarInt(&commands, allocator, num);
+							const start = data.items.len;
+							try data.resize(allocator, start + num);
+							for (0..num) |i| {
+								const predicted = common.linearPredictValue(icc, payload_start, i, 2, 2, 1);
+								data.items[start + i] = icc[payload_start + i] -% predicted;
+							}
+							unshuffle(data.items[start .. start + num], 2);
+							pos = payload_start + num;
+							insert_start = pos;
+							continue;
+						}
+					}
+				}
+			}
+
+			if (current_tag != null) {
+				const outer_tag = current_tag.?;
+				if (std.mem.eql(u8, &outer_tag, &common.kMab_Tag) or std.mem.eql(u8, &outer_tag, &common.kMba_Tag)) {
+					if (pos == current_tag_start + 24 and pos + 4 <= icc.len) {
+						clut_start = current_tag_start + common.decodeUint32(icc, pos);
+					}
+					if (options.model_mab_clut_predict and clut_start != null and pos == clut_start.? and clut_start.? + 16 < icc.len) {
+						const numi = icc[current_tag_start + 8];
+						const numo = icc[current_tag_start + 9];
+						const width = icc[clut_start.? + 16];
+						const stride = @as(usize, width) * @as(usize, numo);
+						var num = stride;
+						for (0..numi) |i| {
+							num *= icc[clut_start.? + i];
+						}
+						if ((width == 1 or width == 2) and num > 64 and num < (1 << 28) and pos + num <= icc.len and pos > stride * 4) {
+							if (insert_start < pos) {
+								try commands.append(allocator, common.kCommandInsert);
+								try encodeVarInt(&commands, allocator, pos - insert_start);
+								try data.appendSlice(allocator, icc[insert_start..pos]);
+							}
+							try commands.append(allocator, common.kCommandPredict);
+							const order: u8 = 1;
+							var flags: u8 = (order << 2) | (width - 1);
+							if (stride != width) flags |= 16;
+							try commands.append(allocator, flags);
+							if ((flags & 16) != 0) try encodeVarInt(&commands, allocator, stride);
+							try encodeVarInt(&commands, allocator, num);
+							const start = data.items.len;
+							try data.resize(allocator, start + num);
+							for (0..num) |i| {
+								const predicted = common.linearPredictValue(icc, pos, i, stride, width, order);
+								data.items[start + i] = icc[pos + i] -% predicted;
+							}
+							if (width > 1) unshuffle(data.items[start .. start + num], width);
+							pos += num;
+							insert_start = pos;
+							continue;
+						}
+					}
+				}
+			}
+
 			if (options.model_gbd_predict and pos >= 8) {
 				const sub_tag = common.decodeKeyword(icc, pos - 8);
 				const maybe_tag_size = tag_sizes.get(pos - 8);
@@ -434,6 +535,7 @@ fn predictICCImpl(allocator: std.mem.Allocator, icc: []const u8, options: Predic
 
 			if (options.model_type_starts and pos + 8 <= icc.len and common.decodeUint32(icc, pos + 4) == 0) {
 				const sub_tag = common.decodeKeyword(icc, pos);
+				var matched = false;
 				for (common.kTypeStrings, 0..) |known, i| {
 					if (std.mem.eql(u8, &sub_tag, &known)) {
 						if (insert_start < pos) {
@@ -444,10 +546,11 @@ fn predictICCImpl(allocator: std.mem.Allocator, icc: []const u8, options: Predic
 						try commands.append(allocator, @intCast(common.kCommandTypeStartFirst + i));
 						pos += 8;
 						insert_start = pos;
+						matched = true;
 						break;
 					}
 				}
-				if (insert_start == pos) continue;
+				if (matched) continue;
 			}
 
 			pos += 1;
@@ -706,6 +809,74 @@ fn makeSyntheticGbdPredictProfile(allocator: std.mem.Allocator) ![]u8 {
 	return bytes.toOwnedSlice(allocator);
 }
 
+fn makeSyntheticMabCurvPredictProfile(allocator: std.mem.Allocator) ![]u8 {
+	var bytes: std.ArrayList(u8) = .{};
+	errdefer bytes.deinit(allocator);
+	const total_size: u32 = 128 + 4 + 12 + 40;
+	try bytes.appendSlice(allocator, &common.initialHeaderPrediction(total_size));
+	try common.appendUint32(&bytes, allocator, 1);
+	try common.appendKeyword(&bytes, allocator, common.kMab_Tag);
+	try common.appendUint32(&bytes, allocator, 144);
+	try common.appendUint32(&bytes, allocator, 40);
+	try common.appendKeyword(&bytes, allocator, common.kMab_Tag);
+	try common.appendUint32(&bytes, allocator, 0);
+	try common.appendKeyword(&bytes, allocator, common.kCurvTag);
+	try common.appendUint32(&bytes, allocator, 0);
+	try common.appendUint32(&bytes, allocator, 10);
+	const payload = [_]u8{
+		0x00, 0x10, 0x00, 0x20, 0x00, 0x35, 0x00, 0x50, 0x00, 0x70,
+		0x00, 0x95, 0x00, 0xBF, 0x00, 0xEE, 0x01, 0x22, 0x01, 0x5B,
+	};
+	try bytes.appendSlice(allocator, payload[0..]);
+	return bytes.toOwnedSlice(allocator);
+}
+
+fn makeSyntheticMbaVcgtPredictProfile(allocator: std.mem.Allocator) ![]u8 {
+	var bytes: std.ArrayList(u8) = .{};
+	errdefer bytes.deinit(allocator);
+	const total_size: u32 = 128 + 4 + 12 + 40;
+	try bytes.appendSlice(allocator, &common.initialHeaderPrediction(total_size));
+	try common.appendUint32(&bytes, allocator, 1);
+	try common.appendKeyword(&bytes, allocator, common.kMba_Tag);
+	try common.appendUint32(&bytes, allocator, 144);
+	try common.appendUint32(&bytes, allocator, 40);
+	try common.appendKeyword(&bytes, allocator, common.kMba_Tag);
+	try common.appendUint32(&bytes, allocator, 0);
+	try common.appendKeyword(&bytes, allocator, common.kVcgtTag);
+	try common.appendUint32(&bytes, allocator, 0);
+	try common.appendUint32(&bytes, allocator, 10);
+	const payload = [_]u8{
+		0x00, 0x12, 0x00, 0x24, 0x00, 0x39, 0x00, 0x52, 0x00, 0x74,
+		0x00, 0x99, 0x00, 0xC1, 0x00, 0xF0, 0x01, 0x26, 0x01, 0x60,
+	};
+	try bytes.appendSlice(allocator, payload[0..]);
+	return bytes.toOwnedSlice(allocator);
+}
+
+fn makeSyntheticMabClutPredictProfile(allocator: std.mem.Allocator) ![]u8 {
+	var bytes: std.ArrayList(u8) = .{};
+	errdefer bytes.deinit(allocator);
+	const total_size: u32 = 128 + 4 + 12 + 112;
+	try bytes.appendSlice(allocator, &common.initialHeaderPrediction(total_size));
+	try common.appendUint32(&bytes, allocator, 1);
+	try common.appendKeyword(&bytes, allocator, common.kMab_Tag);
+	try common.appendUint32(&bytes, allocator, 144);
+	try common.appendUint32(&bytes, allocator, 112);
+	try common.appendKeyword(&bytes, allocator, common.kMab_Tag);
+	try common.appendUint32(&bytes, allocator, 0);
+	try bytes.appendSlice(allocator, &[_]u8{
+		1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	});
+	try common.appendUint32(&bytes, allocator, 32);
+	try bytes.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 });
+	var payload: [80]u8 = undefined;
+	for (&payload, 0..) |*b, i| b.* = @intCast((i * 7 + 3) & 0xFF);
+	payload[0] = 80;
+	payload[16] = 1;
+	try bytes.appendSlice(allocator, payload[0..]);
+	return bytes.toOwnedSlice(allocator);
+}
+
 test "predictICC and unpredictICC round-trip header-only byte streams" {
 	var source: [48]u8 = undefined;
 	for (&source, 0..) |*b, i| b.* = @intCast((i * 37 + 11) & 0xFF);
@@ -783,6 +954,54 @@ test "predictICC emits first predict command for synthetic curv payload and roun
 
 test "predictICC emits predict for synthetic gbd payload and round-trips exactly" {
 	const profile = try makeSyntheticGbdPredictProfile(testing.allocator);
+	defer testing.allocator.free(profile);
+
+	const body_only = try predictICCBodyStructureFallback(testing.allocator, profile);
+	defer testing.allocator.free(body_only);
+	const modeled = try predictICC(testing.allocator, profile);
+	defer testing.allocator.free(modeled);
+	try testing.expect(!bodyCommandsContain(body_only, common.kCommandPredict));
+	try testing.expect(bodyCommandsContain(modeled, common.kCommandPredict));
+
+	const decoded = try unpredictICC(testing.allocator, modeled);
+	defer testing.allocator.free(decoded);
+	try testing.expectEqualSlices(u8, profile, decoded);
+}
+
+test "predictICC emits predict for synthetic mAB nested curv payload and round-trips exactly" {
+	const profile = try makeSyntheticMabCurvPredictProfile(testing.allocator);
+	defer testing.allocator.free(profile);
+
+	const body_only = try predictICCBodyStructureFallback(testing.allocator, profile);
+	defer testing.allocator.free(body_only);
+	const modeled = try predictICC(testing.allocator, profile);
+	defer testing.allocator.free(modeled);
+	try testing.expect(!bodyCommandsContain(body_only, common.kCommandPredict));
+	try testing.expect(bodyCommandsContain(modeled, common.kCommandPredict));
+
+	const decoded = try unpredictICC(testing.allocator, modeled);
+	defer testing.allocator.free(decoded);
+	try testing.expectEqualSlices(u8, profile, decoded);
+}
+
+test "predictICC emits predict for synthetic mBA nested vcgt payload and round-trips exactly" {
+	const profile = try makeSyntheticMbaVcgtPredictProfile(testing.allocator);
+	defer testing.allocator.free(profile);
+
+	const body_only = try predictICCBodyStructureFallback(testing.allocator, profile);
+	defer testing.allocator.free(body_only);
+	const modeled = try predictICC(testing.allocator, profile);
+	defer testing.allocator.free(modeled);
+	try testing.expect(!bodyCommandsContain(body_only, common.kCommandPredict));
+	try testing.expect(bodyCommandsContain(modeled, common.kCommandPredict));
+
+	const decoded = try unpredictICC(testing.allocator, modeled);
+	defer testing.allocator.free(decoded);
+	try testing.expectEqualSlices(u8, profile, decoded);
+}
+
+test "predictICC emits predict for synthetic mAB CLUT payload and round-trips exactly" {
+	const profile = try makeSyntheticMabClutPredictProfile(testing.allocator);
 	defer testing.allocator.free(profile);
 
 	const body_only = try predictICCBodyStructureFallback(testing.allocator, profile);
