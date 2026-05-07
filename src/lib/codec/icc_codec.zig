@@ -1,9 +1,20 @@
 const std = @import("std");
 const common = @import("icc_codec_common.zig");
 const icc_profiles = @import("icc_profiles.zig");
+const BitReader = @import("../base/bit_reader.zig").BitReader;
+const BitWriter = @import("../base/bit_writer.zig").BitWriter;
+const U64Coder = @import("field_coders.zig").U64Coder;
+const ans_common = @import("../entropy/ans_common.zig");
+const ans_params = @import("../entropy/ans_params.zig");
+const dec_ans = @import("../entropy/dec_ans.zig");
+const enc_ans = @import("../entropy/enc_ans.zig");
+const HybridUintConfig = @import("../entropy/hybrid_uint.zig").HybridUintConfig;
 
 const kSizeLimit: usize = std.math.maxInt(u32) >> 2;
 const kOutputLimit: usize = 1 << 28;
+const kICCLogAlphaSize: u5 = 8;
+const kICCAlphabetSize: u16 = 256;
+const kICCByteUintConfig = HybridUintConfig.init(8, 0, 0);
 
 fn encodeVarInt(bytes: *std.ArrayList(u8), allocator: std.mem.Allocator, value: u64) !void {
 	var remaining = value;
@@ -72,6 +83,70 @@ pub fn predictICC(allocator: std.mem.Allocator, icc: []const u8) ![]u8 {
 		.model_mab_curv_predict = true,
 		.model_mab_clut_predict = true,
 	});
+}
+
+/// Encodes a raw ICC profile into the JPEG XL compressed-ICC bitstream shape
+/// using the modeled predictor plus a first legal ANS layer with one shared
+/// flat byte histogram across all 41 ICC contexts.
+pub fn compressICC(allocator: std.mem.Allocator, icc: []const u8) ![]u8 {
+	const predicted = try predictICC(allocator, icc);
+	defer allocator.free(predicted);
+
+	const flat_counts = try ans_common.createFlatHistogram(allocator, kICCAlphabetSize, ans_params.ans_tab_size);
+	defer allocator.free(flat_counts);
+	const info = try enc_ans.buildANSEncSymbolInfoTable(allocator, flat_counts, kICCLogAlphaSize);
+	defer enc_ans.freeANSEncSymbolInfoTable(allocator, info);
+
+	var tokens: std.ArrayList(enc_ans.Token) = .{};
+	defer tokens.deinit(allocator);
+	try tokens.ensureTotalCapacity(allocator, predicted.len);
+	for (predicted, 0..) |value, i| {
+		const b1: u8 = if (i > 0) predicted[i - 1] else 0;
+		const b2: u8 = if (i > 1) predicted[i - 2] else 0;
+		try tokens.append(allocator, enc_ans.Token.init(@intCast(common.ansContext(i, b1, b2)), value));
+	}
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try U64Coder.write(predicted.len, &writer);
+	try enc_ans.writeAllZeroContextMapFlatHistogram(common.kNumICCContexts, kICCAlphabetSize, kICCByteUintConfig, kICCLogAlphaSize, &writer);
+
+	const infos = [_][]const enc_ans.ANSEncSymbolInfo{info};
+	const context_map = [_]u8{0} ** common.kNumICCContexts;
+	const uint_configs = [_]HybridUintConfig{kICCByteUintConfig};
+	_ = try enc_ans.writeContextualHistogramTokens(tokens.items, &infos, &context_map, &uint_configs, &writer);
+	try writer.zeroPadToByte();
+	return allocator.dupe(u8, writer.bytes());
+}
+
+/// Decodes the JPEG XL compressed-ICC bitstream back to a raw ICC profile by
+/// reading the ANS-coded intermediate bytes and then applying `unpredictICC`.
+pub fn decompressICC(allocator: std.mem.Allocator, compressed: []const u8) ![]u8 {
+	var br = BitReader.init(compressed);
+	const enc_size = U64Coder.read(&br);
+	try common.checkIs32Bit(enc_size);
+	if (enc_size >= kOutputLimit) return error.DecodedTooLarge;
+
+	var code = dec_ans.ANSCode.init(allocator);
+	defer code.deinit();
+	const context_map = try dec_ans.decodeHistograms(allocator, &br, common.kNumICCContexts, &code);
+	defer allocator.free(context_map);
+
+	var reader = try dec_ans.ANSSymbolReader.create(&code, &br, 0, allocator);
+	defer reader.deinit();
+
+	const predicted = try allocator.alloc(u8, @intCast(enc_size));
+	defer allocator.free(predicted);
+	for (predicted, 0..) |*byte, i| {
+		const b1: u8 = if (i > 0) predicted[i - 1] else 0;
+		const b2: u8 = if (i > 1) predicted[i - 2] else 0;
+		byte.* = @intCast(reader.readHybridUint(common.ansContext(i, b1, b2), &br, context_map));
+	}
+
+	if (!reader.checkANSFinalState()) return error.GenericError;
+	try br.jumpToByteBoundary();
+	try br.close();
+	return unpredictICC(allocator, predicted);
 }
 
 fn predictICCInsertOnlyFallback(allocator: std.mem.Allocator, icc: []const u8) ![]u8 {
@@ -1014,6 +1089,27 @@ test "predictICC emits predict for synthetic mAB CLUT payload and round-trips ex
 	const decoded = try unpredictICC(testing.allocator, modeled);
 	defer testing.allocator.free(decoded);
 	try testing.expectEqualSlices(u8, profile, decoded);
+}
+
+test "compressICC and decompressICC round-trip builtin sRGB profile" {
+	const compressed = try compressICC(testing.allocator, icc_profiles.srgb_builtin_profile[0..]);
+	defer testing.allocator.free(compressed);
+
+	const decompressed = try decompressICC(testing.allocator, compressed);
+	defer testing.allocator.free(decompressed);
+	try testing.expectEqualSlices(u8, icc_profiles.srgb_builtin_profile[0..], decompressed);
+}
+
+test "compressICC and decompressICC round-trip synthetic mAB CLUT profile" {
+	const profile = try makeSyntheticMabClutPredictProfile(testing.allocator);
+	defer testing.allocator.free(profile);
+
+	const compressed = try compressICC(testing.allocator, profile);
+	defer testing.allocator.free(compressed);
+
+	const decompressed = try decompressICC(testing.allocator, compressed);
+	defer testing.allocator.free(decompressed);
+	try testing.expectEqualSlices(u8, profile, decompressed);
 }
 
 test "checkPreamble rejects truncated command/data spans" {
