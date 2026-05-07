@@ -488,6 +488,7 @@ pub const CodecMetadata = struct {
     m: ImageMetadata = .{},
     size: headers.SizeHeader = .{},
     transform_data: CustomTransformData = .{},
+    embedded_icc: []const u8 = &.{},
 
     pub fn xsize(self: CodecMetadata) usize {
         return self.size.xsize();

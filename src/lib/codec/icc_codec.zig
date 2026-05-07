@@ -119,20 +119,19 @@ pub fn compressICC(allocator: std.mem.Allocator, icc: []const u8) ![]u8 {
 	return allocator.dupe(u8, writer.bytes());
 }
 
-/// Decodes the JPEG XL compressed-ICC bitstream back to a raw ICC profile by
-/// reading the ANS-coded intermediate bytes and then applying `unpredictICC`.
-pub fn decompressICC(allocator: std.mem.Allocator, compressed: []const u8) ![]u8 {
-	var br = BitReader.init(compressed);
-	const enc_size = U64Coder.read(&br);
+/// Consumes one embedded compressed-ICC stream from an in-flight codestream
+/// bit reader so higher layers can keep parsing frame data after the profile.
+pub fn decompressICCFromBitReader(allocator: std.mem.Allocator, br: *BitReader) ![]u8 {
+	const enc_size = U64Coder.read(br);
 	try common.checkIs32Bit(enc_size);
 	if (enc_size >= kOutputLimit) return error.DecodedTooLarge;
 
 	var code = dec_ans.ANSCode.init(allocator);
 	defer code.deinit();
-	const context_map = try dec_ans.decodeHistograms(allocator, &br, common.kNumICCContexts, &code);
+	const context_map = try dec_ans.decodeHistograms(allocator, br, common.kNumICCContexts, &code);
 	defer allocator.free(context_map);
 
-	var reader = try dec_ans.ANSSymbolReader.create(&code, &br, 0, allocator);
+	var reader = try dec_ans.ANSSymbolReader.create(&code, br, 0, allocator);
 	defer reader.deinit();
 
 	const predicted = try allocator.alloc(u8, @intCast(enc_size));
@@ -140,13 +139,22 @@ pub fn decompressICC(allocator: std.mem.Allocator, compressed: []const u8) ![]u8
 	for (predicted, 0..) |*byte, i| {
 		const b1: u8 = if (i > 0) predicted[i - 1] else 0;
 		const b2: u8 = if (i > 1) predicted[i - 2] else 0;
-		byte.* = @intCast(reader.readHybridUint(common.ansContext(i, b1, b2), &br, context_map));
+		byte.* = @intCast(reader.readHybridUint(common.ansContext(i, b1, b2), br, context_map));
 	}
 
 	if (!reader.checkANSFinalState()) return error.GenericError;
+	if (!br.allReadsWithinBounds()) return error.NotEnoughBytes;
+	return unpredictICC(allocator, predicted);
+}
+
+/// Decodes the JPEG XL compressed-ICC bitstream back to a raw ICC profile by
+/// reading the ANS-coded intermediate bytes and then applying `unpredictICC`.
+pub fn decompressICC(allocator: std.mem.Allocator, compressed: []const u8) ![]u8 {
+	var br = BitReader.init(compressed);
+	const icc = try decompressICCFromBitReader(allocator, &br);
 	try br.jumpToByteBoundary();
 	try br.close();
-	return unpredictICC(allocator, predicted);
+	return icc;
 }
 
 fn predictICCInsertOnlyFallback(allocator: std.mem.Allocator, icc: []const u8) ![]u8 {

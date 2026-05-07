@@ -6,6 +6,7 @@ const BitReader = @import("lib/base/bit_reader.zig").BitReader;
 const JxlError = @import("lib/base/status.zig").JxlError;
 const headers = @import("lib/codec/headers.zig");
 const color_encoding_mod = @import("lib/codec/color_encoding.zig");
+const icc_codec = @import("lib/codec/icc_codec.zig");
 const icc_profiles = @import("lib/codec/icc_profiles.zig");
 const image_metadata = @import("lib/codec/image_metadata.zig");
 const container_mod = @import("lib/codec/container.zig");
@@ -278,6 +279,7 @@ const DecoderImpl = struct {
 	basic_info: JxlBasicInfo = std.mem.zeroes(JxlBasicInfo),
 	input_is_container: bool = false,
 	owned_codestream: []u8 = &.{},
+	owned_icc: []u8 = &.{},
 	owned_boxes: []container_mod.OwnedBox = &.{},
 	box_index: usize = 0,
 	box_header_emitted: bool = false,
@@ -331,6 +333,7 @@ const EncoderImpl = struct {
 	basic_info: JxlBasicInfo = std.mem.zeroes(JxlBasicInfo),
 	color_encoding: JxlColorEncoding = undefined,
 	encoded_bytes: []u8 = &.{},
+	owned_icc: []u8 = &.{},
 	output_offset: usize = 0,
 	frame_settings: std.ArrayListUnmanaged(*EncoderFrameSettingsImpl) = .{},
 	queued_frames: std.ArrayListUnmanaged(EncoderQueuedFrame) = .{},
@@ -442,6 +445,10 @@ fn freeDecoder(dec: *DecoderImpl) void {
 		std.heap.c_allocator.free(dec.owned_codestream);
 		dec.owned_codestream = &.{};
 	}
+	if (dec.owned_icc.len != 0) {
+		std.heap.c_allocator.free(dec.owned_icc);
+		dec.owned_icc = &.{};
+	}
 	if (dec.owned_boxes.len != 0) {
 		for (dec.owned_boxes) |*box| box.deinit(std.heap.c_allocator);
 		std.heap.c_allocator.free(dec.owned_boxes);
@@ -475,6 +482,10 @@ fn allocEncoder(mm: ?*const JxlMemoryManager) ?*EncoderImpl {
 
 fn freeEncoderState(enc: *EncoderImpl) void {
 	clearPendingEncodeBuffers(enc);
+	if (enc.owned_icc.len != 0) {
+		std.heap.c_allocator.free(enc.owned_icc);
+		enc.owned_icc = &.{};
+	}
 	for (enc.queued_frames.items) |*frame| {
 		frame.deinit();
 	}
@@ -552,6 +563,26 @@ fn defaultJxlColorEncoding(is_gray: bool, linear: bool) JxlColorEncoding {
 		.transfer_function = if (linear) .JXL_TRANSFER_FUNCTION_LINEAR else .JXL_TRANSFER_FUNCTION_SRGB,
 		.gamma = 1.0,
 		.rendering_intent = .JXL_RENDERING_INTENT_RELATIVE,
+	};
+}
+
+/// Validates the ICC header enough to classify grayscale vs RGB profiles from
+/// the standard color-space signature fields without needing a full CMS.
+fn iccChannelCount(icc: []const u8) !u32 {
+	if (icc.len < 40) return error.InvalidArgs;
+	if (!std.mem.eql(u8, icc[36..40], "acsp")) return error.InvalidArgs;
+	if (std.mem.eql(u8, icc[16..20], "GRAY")) return 1;
+	if (std.mem.eql(u8, icc[16..20], "RGB ")) return 3;
+	return error.Unsupported;
+}
+
+/// Builds the narrow internal color-encoding shell for embedded ICC streams:
+/// color space still matters for channel count, while the rest is deferred to
+/// the exact attached ICC bytes.
+fn internalIccColorEncoding(num_color_channels: u32) color_encoding_mod.ColorEncoding {
+	return .{
+		.want_icc = true,
+		.color_space = if (num_color_channels == 1) .gray else .rgb,
 	};
 }
 
@@ -1273,6 +1304,7 @@ fn finalizeSimpleEncode(impl: *EncoderImpl) !void {
 			.width = impl.basic_info.xsize,
 			.height = impl.basic_info.ysize,
 			.num_color_channels = impl.basic_info.num_color_channels,
+			.embedded_icc = impl.owned_icc,
 			.color_row_stride = prepared.color_row_stride,
 			.color_pixels = prepared.color_pixels,
 			.alpha_row_stride = prepared.alpha_row_stride,
@@ -1350,6 +1382,7 @@ fn finalizeSimpleEncode(impl: *EncoderImpl) !void {
 		.width = impl.basic_info.xsize,
 		.height = impl.basic_info.ysize,
 		.num_color_channels = impl.basic_info.num_color_channels,
+		.embedded_icc = impl.owned_icc,
 		.use_container = impl.basic_info.have_container != 0 and impl.staged_boxes.items.len == 0,
 		.alpha_associated = impl.basic_info.alpha_premultiplied != 0,
 		.alpha_info = if (impl.basic_info.alpha_bits != 0 and impl.pending_extra_channels[0].info_set)
@@ -1753,6 +1786,10 @@ fn ensureParsed(dec: *DecoderImpl) JxlDecoderStatus {
 				std.heap.c_allocator.free(dec.owned_codestream);
 				dec.owned_codestream = &.{};
 			}
+			if (dec.owned_icc.len != 0) {
+				std.heap.c_allocator.free(dec.owned_icc);
+				dec.owned_icc = &.{};
+			}
 			if (dec.owned_boxes.len != 0) {
 				for (dec.owned_boxes) |*box| box.deinit(std.heap.c_allocator);
 				std.heap.c_allocator.free(dec.owned_boxes);
@@ -1773,12 +1810,24 @@ fn ensureParsed(dec: *DecoderImpl) JxlDecoderStatus {
 	const size = headers.SizeHeader.readFromBitStream(&br);
 	const metadata = image_metadata.ImageMetadata.readFromBitStream(&br) catch |err| return statusFromError(err, dec.input_closed);
 	const transform_data = image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded) catch |err| return statusFromError(err, dec.input_closed);
+	const embedded_icc = if (metadata.color_encoding.want_icc) blk: {
+		if (dec.owned_icc.len != 0) {
+			std.heap.c_allocator.free(dec.owned_icc);
+			dec.owned_icc = &.{};
+		}
+		dec.owned_icc = icc_codec.decompressICCFromBitReader(std.heap.c_allocator, &br) catch |err| return switch (err) {
+			error.NotEnoughBytes => if (dec.input_closed) .JXL_DEC_ERROR else .JXL_DEC_NEED_MORE_INPUT,
+			else => .JXL_DEC_ERROR,
+		};
+		break :blk dec.owned_icc;
+	} else &[_]u8{};
 	br.jumpToByteBoundary() catch |err| return statusFromError(err, dec.input_closed);
 
 	var codec_meta = image_metadata.CodecMetadata{};
 	codec_meta.m = metadata;
 	codec_meta.size = size;
 	codec_meta.transform_data = transform_data;
+	codec_meta.embedded_icc = embedded_icc;
 
 	const frame_header_byte_offset = br.totalBitsConsumed() / 8;
 	br.close() catch |err| return statusFromError(err, dec.input_closed);
@@ -1830,6 +1879,7 @@ pub export fn JxlDecoderReset(dec_ptr: ?*JxlDecoder) void {
 	const impl: *DecoderImpl = @ptrCast(@alignCast(dec));
 	const mm = impl.memory_manager;
 	if (impl.owned_codestream.len != 0) std.heap.c_allocator.free(impl.owned_codestream);
+	if (impl.owned_icc.len != 0) std.heap.c_allocator.free(impl.owned_icc);
 	if (impl.owned_boxes.len != 0) {
 		for (impl.owned_boxes) |*box| box.deinit(std.heap.c_allocator);
 		std.heap.c_allocator.free(impl.owned_boxes);
@@ -2081,7 +2131,10 @@ pub export fn JxlDecoderGetICCProfileSize(
 		.JXL_COLOR_PROFILE_TARGET_ORIGINAL, .JXL_COLOR_PROFILE_TARGET_DATA => {},
 	}
 
-	const profile = icc_profiles.originalProfile(&impl.codec_meta.m.color_encoding) orelse return .JXL_DEC_ERROR;
+	const profile = if (impl.codec_meta.m.color_encoding.want_icc)
+		impl.codec_meta.embedded_icc
+	else
+		icc_profiles.originalProfile(&impl.codec_meta.m.color_encoding) orelse return .JXL_DEC_ERROR;
 	if (size_ptr) |dst| dst.* = profile.len;
 	return .JXL_DEC_SUCCESS;
 }
@@ -2100,7 +2153,10 @@ pub export fn JxlDecoderGetColorAsICCProfile(
 		.JXL_COLOR_PROFILE_TARGET_ORIGINAL, .JXL_COLOR_PROFILE_TARGET_DATA => {},
 	}
 
-	const profile = icc_profiles.originalProfile(&impl.codec_meta.m.color_encoding) orelse return .JXL_DEC_ERROR;
+	const profile = if (impl.codec_meta.m.color_encoding.want_icc)
+		impl.codec_meta.embedded_icc
+	else
+		icc_profiles.originalProfile(&impl.codec_meta.m.color_encoding) orelse return .JXL_DEC_ERROR;
 	if (size < profile.len) return .JXL_DEC_ERROR;
 	const dst = icc_profile orelse return .JXL_DEC_ERROR;
 	@memcpy(dst[0..profile.len], profile);
@@ -2333,6 +2389,32 @@ pub export fn JxlEncoderSetColorEncoding(enc_ptr: ?*JxlEncoder, color_ptr: ?*con
 	const internal = toInternalColorEncoding(color, impl.basic_info.num_color_channels) catch return .JXL_ENC_ERROR;
 	impl.color_encoding = color.*;
 	impl.internal_color_encoding = internal;
+	impl.color_encoding_set = true;
+	return .JXL_ENC_SUCCESS;
+}
+
+pub export fn JxlEncoderSetICCProfile(
+	enc_ptr: ?*JxlEncoder,
+	icc_profile_ptr: ?[*]const u8,
+	size: usize,
+) JxlEncoderStatus {
+	const enc = enc_ptr orelse return .JXL_ENC_ERROR;
+	const impl: *EncoderImpl = @ptrCast(@alignCast(enc));
+	const icc_profile = icc_profile_ptr orelse return .JXL_ENC_ERROR;
+	if (!impl.basic_info_set or impl.color_encoding_set or impl.started_processing or impl.added_frame or impl.frames_closed) return .JXL_ENC_ERROR;
+	if (size == 0 or size >= (1 << 28)) return .JXL_ENC_ERROR;
+
+	const icc = icc_profile[0..size];
+	const channel_count = iccChannelCount(icc) catch return .JXL_ENC_ERROR;
+	if (channel_count != impl.basic_info.num_color_channels) return .JXL_ENC_ERROR;
+
+	if (impl.owned_icc.len != 0) {
+		std.heap.c_allocator.free(impl.owned_icc);
+		impl.owned_icc = &.{};
+	}
+	impl.owned_icc = std.heap.c_allocator.dupe(u8, icc) catch return .JXL_ENC_ERROR;
+	impl.internal_color_encoding = internalIccColorEncoding(channel_count);
+	impl.color_encoding = defaultJxlColorEncoding(channel_count == 1, false);
 	impl.color_encoding_set = true;
 	return .JXL_ENC_SUCCESS;
 }
@@ -2627,6 +2709,112 @@ test "JxlEncoderProcessOutput rejects unclosed metadata boxes" {
 	var next_out: [*]u8 = &output;
 	var avail_out: usize = output.len;
 	try std.testing.expectEqual(JxlEncoderStatus.JXL_ENC_ERROR, JxlEncoderProcessOutput(enc, &next_out, &avail_out));
+}
+
+test "JxlEncoderSetICCProfile round-trips exact builtin sRGB ICC bytes" {
+	const testing = std.testing;
+	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlEncoderDestroy(enc);
+
+	var info: JxlBasicInfo = undefined;
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 2;
+	info.ysize = 2;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 3;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetBasicInfo(enc, &info));
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderSetICCProfile(enc, icc_profiles.srgb_builtin_profile[0..].ptr, icc_profiles.srgb_builtin_profile.len),
+	);
+
+	const settings = JxlEncoderFrameSettingsCreate(enc, null) orelse return error.OutOfMemory;
+	const pixels = [_]u8{
+		0, 10, 20, 30, 40, 50,
+		60, 70, 80, 90, 100, 110,
+	};
+	const format = JxlPixelFormat{
+		.num_channels = 3,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderAddImageFrame(settings, &format, &pixels, pixels.len));
+	JxlEncoderCloseInput(enc);
+
+	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	defer encoded.deinit(testing.allocator);
+	while (true) {
+		var chunk: [64]u8 = undefined;
+		var next_out = chunk[0..].ptr;
+		var avail_out: usize = chunk.len;
+		const status = JxlEncoderProcessOutput(enc, &next_out, &avail_out);
+		const produced = chunk.len - avail_out;
+		try encoded.appendSlice(testing.allocator, chunk[0..produced]);
+		if (status == .JXL_ENC_SUCCESS) break;
+		try testing.expectEqual(JxlEncoderStatus.JXL_ENC_NEED_MORE_OUTPUT, status);
+	}
+
+	const dec = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlDecoderDestroy(dec);
+	try testing.expectEqual(
+		JxlDecoderStatus.JXL_DEC_SUCCESS,
+		JxlDecoderSubscribeEvents(
+			dec,
+			@intFromEnum(JxlDecoderStatus.JXL_DEC_BASIC_INFO) |
+				@intFromEnum(JxlDecoderStatus.JXL_DEC_COLOR_ENCODING),
+		),
+	);
+	try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(dec, encoded.items.ptr, encoded.items.len));
+	JxlDecoderCloseInput(dec);
+
+	var saw_color = false;
+	while (true) {
+		switch (JxlDecoderProcessInput(dec)) {
+			.JXL_DEC_BASIC_INFO => {},
+			.JXL_DEC_COLOR_ENCODING => {
+				saw_color = true;
+				try testing.expectEqual(
+					JxlDecoderStatus.JXL_DEC_ERROR,
+					JxlDecoderGetColorAsEncodedProfile(dec, .JXL_COLOR_PROFILE_TARGET_ORIGINAL, null),
+				);
+
+				var original_size: usize = 0;
+				try testing.expectEqual(
+					JxlDecoderStatus.JXL_DEC_SUCCESS,
+					JxlDecoderGetICCProfileSize(dec, .JXL_COLOR_PROFILE_TARGET_ORIGINAL, &original_size),
+				);
+				try testing.expectEqual(icc_profiles.srgb_builtin_profile.len, original_size);
+
+				var data_size: usize = 0;
+				try testing.expectEqual(
+					JxlDecoderStatus.JXL_DEC_SUCCESS,
+					JxlDecoderGetICCProfileSize(dec, .JXL_COLOR_PROFILE_TARGET_DATA, &data_size),
+				);
+				try testing.expectEqual(icc_profiles.srgb_builtin_profile.len, data_size);
+
+				const original = try testing.allocator.alloc(u8, original_size);
+				defer testing.allocator.free(original);
+				try testing.expectEqual(
+					JxlDecoderStatus.JXL_DEC_SUCCESS,
+					JxlDecoderGetColorAsICCProfile(dec, .JXL_COLOR_PROFILE_TARGET_ORIGINAL, original.ptr, original.len),
+				);
+				try testing.expectEqualSlices(u8, icc_profiles.srgb_builtin_profile[0..], original);
+
+				const data = try testing.allocator.alloc(u8, data_size);
+				defer testing.allocator.free(data);
+				try testing.expectEqual(
+					JxlDecoderStatus.JXL_DEC_SUCCESS,
+					JxlDecoderGetColorAsICCProfile(dec, .JXL_COLOR_PROFILE_TARGET_DATA, data.ptr, data.len),
+				);
+				try testing.expectEqualSlices(u8, icc_profiles.srgb_builtin_profile[0..], data);
+			},
+			.JXL_DEC_SUCCESS => break,
+			else => return error.UnexpectedDecoderStatus,
+		}
+	}
+
+	try testing.expect(saw_color);
 }
 
 test "rowStrideBytes respects requested alignment" {

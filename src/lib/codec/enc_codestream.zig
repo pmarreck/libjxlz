@@ -10,6 +10,7 @@ const ans_params = @import("../entropy/ans_params.zig");
 const enc_ans = @import("../entropy/enc_ans.zig");
 const HybridUintConfig = @import("../entropy/hybrid_uint.zig").HybridUintConfig;
 const headers = @import("headers.zig");
+const icc_codec = @import("icc_codec.zig");
 const image_metadata = @import("image_metadata.zig");
 const frame_header_mod = @import("frame_header.zig");
 const toc = @import("toc.zig");
@@ -48,19 +49,25 @@ fn prepareFrame(data: []const u8) !struct {
 	codec_meta: image_metadata.CodecMetadata,
 	frame_data: []const u8,
 } {
-    var br = BitReader.init(data[2..]);
-    const size = headers.SizeHeader.readFromBitStream(&br);
-    const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
-    const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
-    try br.jumpToByteBoundary();
+	var br = BitReader.init(data[2..]);
+	const size = headers.SizeHeader.readFromBitStream(&br);
+	const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+	const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+	const embedded_icc = if (metadata.color_encoding.want_icc)
+		try icc_codec.decompressICCFromBitReader(std.testing.allocator, &br)
+	else
+		&[_]u8{};
+	errdefer if (metadata.color_encoding.want_icc) std.testing.allocator.free(embedded_icc);
+	try br.jumpToByteBoundary();
 
-    var codec_meta = image_metadata.CodecMetadata{};
-    codec_meta.m = metadata;
-    codec_meta.size = size;
-    codec_meta.transform_data = transform_data;
-    const frame_header_byte_offset = br.totalBitsConsumed() / 8;
-    return .{
-        .codec_meta = codec_meta,
+	var codec_meta = image_metadata.CodecMetadata{};
+	codec_meta.m = metadata;
+	codec_meta.size = size;
+	codec_meta.transform_data = transform_data;
+	codec_meta.embedded_icc = embedded_icc;
+	const frame_header_byte_offset = br.totalBitsConsumed() / 8;
+	return .{
+		.codec_meta = codec_meta,
         .frame_data = data[2 + frame_header_byte_offset ..],
     };
 }
@@ -114,12 +121,20 @@ pub fn writeCodestreamFrames(
     writer: *BitWriter,
 ) !void {
     try writer.write(8, 0xFF);
-    try writer.write(8, headers.codestream_marker);
-    try writeRawSizeHeader(@intCast(codec_meta.xsize()), @intCast(codec_meta.ysize()), writer);
-    try image_metadata.writeImageMetadata(&codec_meta.m, writer);
-    try image_metadata.writeCustomTransformData(&codec_meta.transform_data, codec_meta.m.xyb_encoded, writer);
-    try writer.zeroPadToByte();
-    for (frame_datas) |frame_data| {
+	try writer.write(8, headers.codestream_marker);
+	try writeRawSizeHeader(@intCast(codec_meta.xsize()), @intCast(codec_meta.ysize()), writer);
+	try image_metadata.writeImageMetadata(&codec_meta.m, writer);
+	try image_metadata.writeCustomTransformData(&codec_meta.transform_data, codec_meta.m.xyb_encoded, writer);
+	if (codec_meta.m.color_encoding.want_icc) {
+		if (codec_meta.embedded_icc.len == 0) return error.InvalidArgs;
+		const compressed_icc = try icc_codec.compressICC(writer.allocator, codec_meta.embedded_icc);
+		defer writer.allocator.free(compressed_icc);
+		for (compressed_icc) |byte| {
+			try writer.write(8, byte);
+		}
+	}
+	try writer.zeroPadToByte();
+	for (frame_datas) |frame_data| {
         for (frame_data) |byte| {
             try writer.write(8, byte);
         }

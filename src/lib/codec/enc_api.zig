@@ -19,6 +19,7 @@ pub const SimpleInterleavedU8Image = struct {
 	height: u32,
 	num_channels: u32,
 	num_extra_channels: u32 = 0,
+	embedded_icc: []const u8 = &.{},
 	use_container: bool = false,
 	alpha_associated: bool = false,
 	orientation: u32 = 1,
@@ -46,6 +47,7 @@ pub const SimplePackedU8Image = struct {
 	width: u32,
 	height: u32,
 	num_color_channels: u32,
+	embedded_icc: []const u8 = &.{},
 	color_row_stride: usize,
 	color_pixels: []const u8,
 	alpha_row_stride: usize = 0,
@@ -80,6 +82,7 @@ pub const SimplePackedU8Animation = struct {
 	width: u32,
 	height: u32,
 	num_color_channels: u32,
+	embedded_icc: []const u8 = &.{},
 	alpha_associated: bool = false,
 	use_container: bool = false,
 	alpha_info: ?image_metadata.ExtraChannelInfo = null,
@@ -233,6 +236,7 @@ fn buildCodecMetadata(
 	width: u32,
 	height: u32,
 	num_extra_channels: u32,
+	embedded_icc: []const u8,
 	alpha_associated: bool,
 	orientation: u32,
 	preview_width: u32,
@@ -260,6 +264,7 @@ fn buildCodecMetadata(
 		.tone_mapping = tone_mapping,
 		.color_encoding = color_encoding,
 	};
+	codec_meta.embedded_icc = embedded_icc;
 	if (intrinsic_width != 0) {
 		codec_meta.m.have_intrinsic_size = true;
 		codec_meta.m.intrinsic_size = .{
@@ -535,12 +540,13 @@ pub fn encodeSimplePackedU8(
 	else
 		color_encoding_mod.ColorEncoding{};
 	if (effective_color_encoding.channels() != image.num_color_channels) return error.Unsupported;
-	if (effective_color_encoding.want_icc) return error.Unsupported;
+	if (effective_color_encoding.want_icc != (image.embedded_icc.len != 0)) return error.InvalidArgs;
 
 	const codec_meta = buildCodecMetadata(
 		image.width,
 		image.height,
 		num_extra_channels,
+		image.embedded_icc,
 		image.alpha_associated,
 		image.orientation,
 		image.preview_width,
@@ -594,12 +600,13 @@ pub fn encodeSimplePackedU8Animation(
 	else
 		color_encoding_mod.ColorEncoding{};
 	if (effective_color_encoding.channels() != image.num_color_channels) return error.Unsupported;
-	if (effective_color_encoding.want_icc) return error.Unsupported;
+	if (effective_color_encoding.want_icc != (image.embedded_icc.len != 0)) return error.InvalidArgs;
 
 	const codec_meta = buildCodecMetadata(
 		image.width,
 		image.height,
 		num_extra_channels,
+		image.embedded_icc,
 		image.alpha_associated,
 		image.orientation,
 		image.preview_width,
@@ -678,12 +685,13 @@ pub fn encodeSimpleInterleavedU8(
 	else
 		color_encoding_mod.ColorEncoding{};
 	if (effective_color_encoding.channels() != num_color_channels) return error.Unsupported;
-	if (effective_color_encoding.want_icc) return error.Unsupported;
+	if (effective_color_encoding.want_icc != (image.embedded_icc.len != 0)) return error.InvalidArgs;
 
 	const codec_meta = buildCodecMetadata(
 		image.width,
 		image.height,
 		image.num_extra_channels,
+		image.embedded_icc,
 		image.alpha_associated,
 		image.orientation,
 		image.preview_width,
