@@ -27,6 +27,7 @@
 - [x] ICC bitstream first slice: wrap the pure-Zig `predictICC` intermediate in a legal compressed-ICC ANS stream using one shared flat histogram across all 41 contexts, add the inverse decode path, and prove exact roundtrip for built-in sRGB plus a synthetic `mAB` CLUT profile — 2026-05-06 ~10:10 AM EDT
 - [x] Embedded ICC public-API first slice: add streaming compressed-ICC decode from the codestream header, wire `JxlEncoderSetICCProfile` through the pure-Zig encoder path for narrow RGB/gray ICC headers, return exact embedded ICC bytes from the decoder public API, and cover it with both a Zig roundtrip test and a C smoke — 2026-05-07 ~11:30 AM EDT
 - [x] Public compressed-ICC utility slice: expose `JxlICCProfileEncode` / `JxlICCProfileDecode` through the `compressed_icc.h` surface, allocate returned buffers through `JxlMemoryManager`, and prove both exact roundtrip and custom-memory-manager ownership via Zig + external C coverage — 2026-05-08 ~11:10 AM EDT
+- [x] Embedded ICC header hardening: tighten `JxlEncoderSetICCProfile` so it rejects profiles whose declared big-endian size disagrees with the supplied bytes or whose payload is shorter than the mandatory 128-byte ICC header, proving both regressions with failing tests first — 2026-05-08 ~11:35 AM EDT
 
 ## Phase 1: Foundation (complete)
 - [x] build.zig + build.zig.zon — 2026-03-06 ~3:00 PM EST

@@ -612,7 +612,9 @@ fn defaultJxlColorEncoding(is_gray: bool, linear: bool) JxlColorEncoding {
 /// Validates the ICC header enough to classify grayscale vs RGB profiles from
 /// the standard color-space signature fields without needing a full CMS.
 fn iccChannelCount(icc: []const u8) !u32 {
-	if (icc.len < 40) return error.InvalidArgs;
+	if (icc.len < 128 or icc.len > std.math.maxInt(u32)) return error.InvalidArgs;
+	const declared_size = byte_order.loadBE32(@ptrCast(icc[0..4]));
+	if (declared_size != icc.len) return error.InvalidArgs;
 	if (!std.mem.eql(u8, icc[36..40], "acsp")) return error.InvalidArgs;
 	if (std.mem.eql(u8, icc[16..20], "GRAY")) return 1;
 	if (std.mem.eql(u8, icc[16..20], "RGB ")) return 3;
@@ -2900,6 +2902,58 @@ test "JxlEncoderSetICCProfile round-trips exact builtin sRGB ICC bytes" {
 	}
 
 	try testing.expect(saw_color);
+}
+
+test "JxlEncoderSetICCProfile rejects ICC with mismatched declared size" {
+	const testing = std.testing;
+	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlEncoderDestroy(enc);
+
+	var info: JxlBasicInfo = undefined;
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 1;
+	info.ysize = 1;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 3;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetBasicInfo(enc, &info));
+
+	var bad_icc = icc_profiles.srgb_builtin_profile;
+	bad_icc[0] = 0;
+	bad_icc[1] = 0;
+	bad_icc[2] = 0x01;
+	bad_icc[3] = 0x00;
+
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_ERROR,
+		JxlEncoderSetICCProfile(enc, bad_icc[0..].ptr, bad_icc.len),
+	);
+}
+
+test "JxlEncoderSetICCProfile rejects undersized ICC header" {
+	const testing = std.testing;
+	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlEncoderDestroy(enc);
+
+	var info: JxlBasicInfo = undefined;
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 1;
+	info.ysize = 1;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 3;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetBasicInfo(enc, &info));
+
+	const short_icc = [_]u8{
+		0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 'm', 'n', 't', 'r',
+		'R', 'G', 'B', ' ', 'X', 'Y', 'Z', ' ',
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 'a', 'c', 's', 'p',
+	};
+
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_ERROR,
+		JxlEncoderSetICCProfile(enc, short_icc[0..].ptr, short_icc.len),
+	);
 }
 
 test "JxlICCProfileEncode and JxlICCProfileDecode round-trip builtin sRGB ICC bytes" {
