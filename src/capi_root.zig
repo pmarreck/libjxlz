@@ -480,6 +480,49 @@ fn allocEncoder(mm: ?*const JxlMemoryManager) ?*EncoderImpl {
 	return enc;
 }
 
+/// Validates the optional C memory-manager pair so public buffer-returning APIs
+/// can share the same ownership rules as the encoder/decoder constructors.
+fn validateMemoryManager(mm: ?*const JxlMemoryManager) bool {
+	if (mm) |manager| {
+		if ((manager.alloc == null) != (manager.free == null)) return false;
+	}
+	return true;
+}
+
+/// Copies Zig-owned bytes into caller-owned storage using the optional C memory
+/// manager, bridging pure-Zig codec results to stable FFI ownership semantics.
+fn exportOwnedBytes(
+	mm: ?*const JxlMemoryManager,
+	bytes: []const u8,
+	out_ptr: *?[*]u8,
+	out_size: *usize,
+) bool {
+	if (!validateMemoryManager(mm)) return false;
+
+	if (bytes.len == 0) {
+		out_ptr.* = null;
+		out_size.* = 0;
+		return true;
+	}
+
+	if (mm) |manager| {
+		if (manager.alloc != null) {
+			const raw = manager.alloc.?(manager.@"opaque", bytes.len) orelse return false;
+			const dst: [*]u8 = @ptrCast(raw);
+			@memcpy(dst[0..bytes.len], bytes);
+			out_ptr.* = dst;
+			out_size.* = bytes.len;
+			return true;
+		}
+	}
+
+	const owned = std.heap.c_allocator.alloc(u8, bytes.len) catch return false;
+	@memcpy(owned, bytes);
+	out_ptr.* = owned.ptr;
+	out_size.* = owned.len;
+	return true;
+}
+
 fn freeEncoderState(enc: *EncoderImpl) void {
 	clearPendingEncodeBuffers(enc);
 	if (enc.owned_icc.len != 0) {
@@ -1860,6 +1903,48 @@ pub export fn JxlDecoderVersion() u32 {
 	return decoderVersion();
 }
 
+pub export fn JxlICCProfileEncode(
+	memory_manager: ?*const JxlMemoryManager,
+	icc_ptr: ?[*]const u8,
+	icc_size: usize,
+	compressed_icc_ptr: ?*?[*]u8,
+	compressed_icc_size: ?*usize,
+) JXL_BOOL {
+	const compressed_out = compressed_icc_ptr orelse return 0;
+	const size_out = compressed_icc_size orelse return 0;
+	compressed_out.* = null;
+	size_out.* = 0;
+	if (!validateMemoryManager(memory_manager)) return 0;
+
+	const icc_many = icc_ptr orelse return 0;
+	const icc = icc_many[0..icc_size];
+	const compressed = icc_codec.compressICC(std.heap.c_allocator, icc) catch return 0;
+	defer std.heap.c_allocator.free(compressed);
+
+	return if (exportOwnedBytes(memory_manager, compressed, compressed_out, size_out)) 1 else 0;
+}
+
+pub export fn JxlICCProfileDecode(
+	memory_manager: ?*const JxlMemoryManager,
+	compressed_icc_ptr: ?[*]const u8,
+	compressed_icc_size: usize,
+	icc_ptr: ?*?[*]u8,
+	icc_size: ?*usize,
+) JXL_BOOL {
+	const icc_out = icc_ptr orelse return 0;
+	const size_out = icc_size orelse return 0;
+	icc_out.* = null;
+	size_out.* = 0;
+	if (!validateMemoryManager(memory_manager)) return 0;
+
+	const compressed_many = compressed_icc_ptr orelse return 0;
+	const compressed_icc = compressed_many[0..compressed_icc_size];
+	const icc = icc_codec.decompressICC(std.heap.c_allocator, compressed_icc) catch return 0;
+	defer std.heap.c_allocator.free(icc);
+
+	return if (exportOwnedBytes(memory_manager, icc, icc_out, size_out)) 1 else 0;
+}
+
 pub export fn JxlSignatureCheck(buf: ?[*]const u8, len: usize) JxlSignature {
 	if (len < 2) return .JXL_SIG_NOT_ENOUGH_BYTES;
 	const data = buf orelse return .JXL_SIG_INVALID;
@@ -2815,6 +2900,30 @@ test "JxlEncoderSetICCProfile round-trips exact builtin sRGB ICC bytes" {
 	}
 
 	try testing.expect(saw_color);
+}
+
+test "JxlICCProfileEncode and JxlICCProfileDecode round-trip builtin sRGB ICC bytes" {
+	const testing = std.testing;
+
+	var compressed_ptr: ?[*]u8 = null;
+	var compressed_size: usize = 0;
+	try testing.expectEqual(
+		@as(JXL_BOOL, 1),
+		JxlICCProfileEncode(null, icc_profiles.srgb_builtin_profile[0..].ptr, icc_profiles.srgb_builtin_profile.len, @ptrCast(&compressed_ptr), &compressed_size),
+	);
+	defer std.heap.c_allocator.free(compressed_ptr.?[0..compressed_size]);
+	try testing.expect(compressed_size != 0);
+
+	var decoded_ptr: ?[*]u8 = null;
+	var decoded_size: usize = 0;
+	try testing.expectEqual(
+		@as(JXL_BOOL, 1),
+		JxlICCProfileDecode(null, compressed_ptr.?, compressed_size, @ptrCast(&decoded_ptr), &decoded_size),
+	);
+	defer std.heap.c_allocator.free(decoded_ptr.?[0..decoded_size]);
+
+	try testing.expectEqual(icc_profiles.srgb_builtin_profile.len, decoded_size);
+	try testing.expectEqualSlices(u8, icc_profiles.srgb_builtin_profile[0..], decoded_ptr.?[0..decoded_size]);
 }
 
 test "rowStrideBytes respects requested alignment" {
