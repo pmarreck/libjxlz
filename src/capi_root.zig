@@ -8,6 +8,7 @@ const headers = @import("lib/codec/headers.zig");
 const color_encoding_mod = @import("lib/codec/color_encoding.zig");
 const icc_codec = @import("lib/codec/icc_codec.zig");
 const icc_profiles = @import("lib/codec/icc_profiles.zig");
+const icc_test_fixtures = @import("lib/codec/icc_test_fixtures.zig");
 const image_metadata = @import("lib/codec/image_metadata.zig");
 const container_mod = @import("lib/codec/container.zig");
 const brotli = @import("lib/base/brotli.zig");
@@ -609,16 +610,39 @@ fn defaultJxlColorEncoding(is_gray: bool, linear: bool) JxlColorEncoding {
 	};
 }
 
-/// Validates the ICC header enough to classify grayscale vs RGB profiles from
-/// the standard color-space signature fields without needing a full CMS.
-fn iccChannelCount(icc: []const u8) !u32 {
+const IccEmbeddingShape = struct {
+	main_color_channels: u32,
+	requires_black_extra: bool = false,
+};
+
+/// Classifies the narrow embedded-ICC shapes we can faithfully map onto the
+/// current JXL surface by inspecting ICC header signatures instead of pulling
+/// in a full CMS.
+fn classifyIccEmbeddingShape(icc: []const u8) !IccEmbeddingShape {
 	if (icc.len < 128 or icc.len > std.math.maxInt(u32)) return error.InvalidArgs;
 	const declared_size = byte_order.loadBE32(@ptrCast(icc[0..4]));
 	if (declared_size != icc.len) return error.InvalidArgs;
 	if (!std.mem.eql(u8, icc[36..40], "acsp")) return error.InvalidArgs;
-	if (std.mem.eql(u8, icc[16..20], "GRAY")) return 1;
-	if (std.mem.eql(u8, icc[16..20], "RGB ")) return 3;
+	if (std.mem.eql(u8, icc[16..20], "GRAY")) return .{ .main_color_channels = 1 };
+	if (std.mem.eql(u8, icc[16..20], "RGB ")) return .{ .main_color_channels = 3 };
+	if (std.mem.eql(u8, icc[16..20], "CMYK")) {
+		return .{
+			.main_color_channels = 3,
+			.requires_black_extra = true,
+		};
+	}
 	return error.Unsupported;
+}
+
+/// Ensures the first CMYK slice only accepts profiles when the public encoder
+/// has already staged a real black sidecar channel, matching how the core
+/// currently models non-alpha extras.
+fn hasStagedBlackExtraChannel(enc: *const EncoderImpl) bool {
+	for (enc.pending_extra_channels[0..enc.basic_info.num_extra_channels]) |pending| {
+		if (!pending.info_set) continue;
+		if (pending.info.type == .JXL_CHANNEL_BLACK) return true;
+	}
+	return false;
 }
 
 /// Builds the narrow internal color-encoding shell for embedded ICC streams:
@@ -2492,16 +2516,17 @@ pub export fn JxlEncoderSetICCProfile(
 	if (size == 0 or size >= (1 << 28)) return .JXL_ENC_ERROR;
 
 	const icc = icc_profile[0..size];
-	const channel_count = iccChannelCount(icc) catch return .JXL_ENC_ERROR;
-	if (channel_count != impl.basic_info.num_color_channels) return .JXL_ENC_ERROR;
+	const shape = classifyIccEmbeddingShape(icc) catch return .JXL_ENC_ERROR;
+	if (shape.main_color_channels != impl.basic_info.num_color_channels) return .JXL_ENC_ERROR;
+	if (shape.requires_black_extra and !hasStagedBlackExtraChannel(impl)) return .JXL_ENC_ERROR;
 
 	if (impl.owned_icc.len != 0) {
 		std.heap.c_allocator.free(impl.owned_icc);
 		impl.owned_icc = &.{};
 	}
 	impl.owned_icc = std.heap.c_allocator.dupe(u8, icc) catch return .JXL_ENC_ERROR;
-	impl.internal_color_encoding = internalIccColorEncoding(channel_count);
-	impl.color_encoding = defaultJxlColorEncoding(channel_count == 1, false);
+	impl.internal_color_encoding = internalIccColorEncoding(shape.main_color_channels);
+	impl.color_encoding = defaultJxlColorEncoding(shape.main_color_channels == 1, false);
 	impl.color_encoding_set = true;
 	return .JXL_ENC_SUCCESS;
 }
@@ -2953,6 +2978,66 @@ test "JxlEncoderSetICCProfile rejects undersized ICC header" {
 	try testing.expectEqual(
 		JxlEncoderStatus.JXL_ENC_ERROR,
 		JxlEncoderSetICCProfile(enc, short_icc[0..].ptr, short_icc.len),
+	);
+}
+
+test "JxlEncoderSetICCProfile accepts CMYK ICC with black extra channel" {
+	const testing = std.testing;
+	const cmyk_icc = try icc_codec.decompressICC(
+		testing.allocator,
+		icc_test_fixtures.cmyk_test_icc_compressed[0..],
+	);
+	defer testing.allocator.free(cmyk_icc);
+	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlEncoderDestroy(enc);
+
+	var info: JxlBasicInfo = undefined;
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 1;
+	info.ysize = 1;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 3;
+	info.num_extra_channels = 1;
+	info.uses_original_profile = 1;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetBasicInfo(enc, &info));
+
+	var black: JxlExtraChannelInfo = undefined;
+	JxlEncoderInitExtraChannelInfo(.JXL_CHANNEL_BLACK, &black);
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetExtraChannelInfo(enc, 0, &black));
+
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderSetICCProfile(enc, cmyk_icc.ptr, cmyk_icc.len),
+	);
+}
+
+test "JxlEncoderSetICCProfile rejects CMYK ICC without a staged black extra channel" {
+	const testing = std.testing;
+	const cmyk_icc = try icc_codec.decompressICC(
+		testing.allocator,
+		icc_test_fixtures.cmyk_test_icc_compressed[0..],
+	);
+	defer testing.allocator.free(cmyk_icc);
+	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlEncoderDestroy(enc);
+
+	var info: JxlBasicInfo = undefined;
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 1;
+	info.ysize = 1;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 3;
+	info.num_extra_channels = 1;
+	info.uses_original_profile = 1;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetBasicInfo(enc, &info));
+
+	var mask: JxlExtraChannelInfo = undefined;
+	JxlEncoderInitExtraChannelInfo(.JXL_CHANNEL_SELECTION_MASK, &mask);
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetExtraChannelInfo(enc, 0, &mask));
+
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_ERROR,
+		JxlEncoderSetICCProfile(enc, cmyk_icc.ptr, cmyk_icc.len),
 	);
 }
 
