@@ -28,6 +28,7 @@
 - [x] Embedded ICC public-API first slice: add streaming compressed-ICC decode from the codestream header, wire `JxlEncoderSetICCProfile` through the pure-Zig encoder path for narrow RGB/gray ICC headers, return exact embedded ICC bytes from the decoder public API, and cover it with both a Zig roundtrip test and a C smoke — 2026-05-07 ~11:30 AM EDT
 - [x] Public compressed-ICC utility slice: expose `JxlICCProfileEncode` / `JxlICCProfileDecode` through the `compressed_icc.h` surface, allocate returned buffers through `JxlMemoryManager`, and prove both exact roundtrip and custom-memory-manager ownership via Zig + external C coverage — 2026-05-08 ~11:10 AM EDT
 - [x] Embedded ICC header hardening: tighten `JxlEncoderSetICCProfile` so it rejects profiles whose declared big-endian size disagrees with the supplied bytes or whose payload is shorter than the mandatory 128-byte ICC header, proving both regressions with failing tests first — 2026-05-08 ~11:35 AM EDT
+- [x] Compressed-ICC cross-oracle coverage: add an external smoke that compiles the same helper against `libjxlz` and a vendored-upstream static `jxl_extras_codec` build, then proves each side can decode the other side’s compressed ICC stream for a real built-in sRGB profile — 2026-05-13 ~estimated EDT
 
 ## Phase 1: Foundation (complete)
 - [x] build.zig + build.zig.zon — 2026-03-06 ~3:00 PM EST
