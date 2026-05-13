@@ -148,12 +148,104 @@ fail:
 	return NULL;
 }
 
+static uint8_t* encode_tiny_embedded_icc_jxl(size_t* size_out) {
+	const uint8_t pixels[3] = { 12, 34, 56 };
+	const JxlPixelFormat format = { 3, JXL_TYPE_UINT8, JXL_NATIVE_ENDIAN, 0 };
+	JxlBasicInfo info;
+	JxlEncoder* enc = NULL;
+	JxlEncoderFrameSettings* settings = NULL;
+	uint8_t* icc = NULL;
+	size_t icc_size = 0;
+	uint8_t* encoded = NULL;
+	size_t encoded_size = 0;
+	size_t encoded_capacity = 4096;
+
+	icc = extract_srgb_icc(&icc_size);
+	if (!icc) return NULL;
+
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 1;
+	info.ysize = 1;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 3;
+	info.uses_original_profile = JXL_TRUE;
+
+	enc = JxlEncoderCreate(NULL);
+	if (!enc) goto fail;
+	settings = JxlEncoderFrameSettingsCreate(enc, NULL);
+	if (!settings) goto fail;
+	if (JxlEncoderSetBasicInfo(enc, &info) != JXL_ENC_SUCCESS) goto fail;
+	if (JxlEncoderSetICCProfile(enc, icc, icc_size) != JXL_ENC_SUCCESS) goto fail;
+	if (JxlEncoderAddImageFrame(settings, &format, pixels, sizeof(pixels)) != JXL_ENC_SUCCESS) goto fail;
+	JxlEncoderCloseInput(enc);
+
+	encoded = (uint8_t*)malloc(encoded_capacity);
+	if (!encoded) goto fail;
+
+	for (;;) {
+		uint8_t* next_out = encoded + encoded_size;
+		size_t avail_out = encoded_capacity - encoded_size;
+		JxlEncoderStatus status = JxlEncoderProcessOutput(enc, &next_out, &avail_out);
+		encoded_size = encoded_capacity - avail_out;
+		if (status == JXL_ENC_SUCCESS) break;
+		if (status != JXL_ENC_NEED_MORE_OUTPUT) goto fail;
+
+		encoded_capacity *= 2;
+		uint8_t* grown = (uint8_t*)realloc(encoded, encoded_capacity);
+		if (!grown) goto fail;
+		encoded = grown;
+	}
+
+	free(icc);
+	JxlEncoderDestroy(enc);
+	*size_out = encoded_size;
+	return encoded;
+
+fail:
+	free(encoded);
+	free(icc);
+	JxlEncoderDestroy(enc);
+	return NULL;
+}
+
+static uint8_t* extract_embedded_icc_from_jxl(const uint8_t* codestream, size_t codestream_size, size_t* size_out) {
+	JxlDecoder* dec = NULL;
+	uint8_t* icc = NULL;
+
+	dec = JxlDecoderCreate(NULL);
+	if (!dec) return NULL;
+	if (JxlDecoderSubscribeEvents(dec, JXL_DEC_BASIC_INFO | JXL_DEC_COLOR_ENCODING) != JXL_DEC_SUCCESS) goto fail;
+	if (JxlDecoderSetInput(dec, codestream, codestream_size) != JXL_DEC_SUCCESS) goto fail;
+	JxlDecoderCloseInput(dec);
+
+	for (;;) {
+		JxlDecoderStatus status = JxlDecoderProcessInput(dec);
+		if (status == JXL_DEC_BASIC_INFO) continue;
+		if (status == JXL_DEC_COLOR_ENCODING) {
+			size_t icc_size = 0;
+			if (JxlDecoderGetICCProfileSize(dec, JXL_COLOR_PROFILE_TARGET_ORIGINAL, &icc_size) != JXL_DEC_SUCCESS) goto fail;
+			icc = (uint8_t*)malloc(icc_size == 0 ? 1 : icc_size);
+			if (!icc) goto fail;
+			if (JxlDecoderGetColorAsICCProfile(dec, JXL_COLOR_PROFILE_TARGET_ORIGINAL, icc, icc_size) != JXL_DEC_SUCCESS) goto fail;
+			*size_out = icc_size;
+			JxlDecoderDestroy(dec);
+			return icc;
+		}
+		if (status == JXL_DEC_ERROR || status == JXL_DEC_NEED_MORE_INPUT || status == JXL_DEC_SUCCESS) goto fail;
+	}
+
+fail:
+	free(icc);
+	JxlDecoderDestroy(dec);
+	return NULL;
+}
+
 int main(int argc, char** argv) {
 	uint8_t* bytes = NULL;
 	size_t size = 0;
 
 	if (argc != 2) {
-		fprintf(stderr, "usage: %s profile|compress|decompress\n", argv[0]);
+		fprintf(stderr, "usage: %s profile|compress|decompress|encode-embedded|extract-embedded\n", argv[0]);
 		return 1;
 	}
 
@@ -219,6 +311,45 @@ int main(int argc, char** argv) {
 			return 1;
 		}
 		free(decompressed);
+		return 0;
+	}
+
+	if (strcmp(argv[1], "encode-embedded") == 0) {
+		bytes = encode_tiny_embedded_icc_jxl(&size);
+		if (!bytes) {
+			fprintf(stderr, "encode embedded icc codestream failed\n");
+			return 1;
+		}
+		if (!write_all_stdout(bytes, size)) {
+			fprintf(stderr, "write embedded icc codestream failed\n");
+			free(bytes);
+			return 1;
+		}
+		free(bytes);
+		return 0;
+	}
+
+	if (strcmp(argv[1], "extract-embedded") == 0) {
+		uint8_t* embedded = NULL;
+		size_t embedded_size = 0;
+
+		bytes = read_stdin(&size);
+		if (!bytes) {
+			fprintf(stderr, "read embedded icc codestream failed\n");
+			return 1;
+		}
+		embedded = extract_embedded_icc_from_jxl(bytes, size, &embedded_size);
+		free(bytes);
+		if (!embedded) {
+			fprintf(stderr, "extract embedded icc failed\n");
+			return 1;
+		}
+		if (!write_all_stdout(embedded, embedded_size)) {
+			fprintf(stderr, "write embedded icc failed\n");
+			free(embedded);
+			return 1;
+		}
+		free(embedded);
 		return 0;
 	}
 

@@ -15,6 +15,10 @@ OURS_COMPRESSED="${TMPDIR}/capi_compressed_icc_cross_oracle_ours.cicc"
 UPSTREAM_COMPRESSED="${TMPDIR}/capi_compressed_icc_cross_oracle_upstream.cicc"
 OURS_DECODED_UPSTREAM="${TMPDIR}/capi_compressed_icc_cross_oracle_ours_decoded_upstream.icc"
 UPSTREAM_DECODED_OURS="${TMPDIR}/capi_compressed_icc_cross_oracle_upstream_decoded_ours.icc"
+OURS_EMBEDDED_JXL="${TMPDIR}/capi_compressed_icc_cross_oracle_ours_embedded.jxl"
+UPSTREAM_EMBEDDED_JXL="${TMPDIR}/capi_compressed_icc_cross_oracle_upstream_embedded.jxl"
+OURS_EXTRACTED_UPSTREAM="${TMPDIR}/capi_compressed_icc_cross_oracle_ours_extracted_upstream.icc"
+UPSTREAM_EXTRACTED_OURS="${TMPDIR}/capi_compressed_icc_cross_oracle_upstream_extracted_ours.icc"
 UPSTREAM_BUILD_DIR="${TMPDIR}/capi_compressed_icc_cross_oracle_upstream_build"
 
 if ! PACKAGE_OUT="$(nix build --no-link --print-out-paths ".#packages.${SYSTEM}.default" 2>"${PACKAGE_BUILD_LOG}")"; then
@@ -116,5 +120,31 @@ fi
 
 if ! cmp -s "${OURS_PROFILE}" "${UPSTREAM_DECODED_OURS}"; then
 	echo "upstream libjxl failed to decode libjxlz compressed ICC stream" >&2
+	exit 1
+fi
+
+if ! "${OURS_BIN}" encode-embedded >"${OURS_EMBEDDED_JXL}"; then
+	exit 1
+fi
+
+if ! "${UPSTREAM_BIN}" encode-embedded >"${UPSTREAM_EMBEDDED_JXL}"; then
+	exit 1
+fi
+
+if ! "${OURS_BIN}" extract-embedded <"${UPSTREAM_EMBEDDED_JXL}" >"${OURS_EXTRACTED_UPSTREAM}"; then
+	exit 1
+fi
+
+if ! "${UPSTREAM_BIN}" extract-embedded <"${OURS_EMBEDDED_JXL}" >"${UPSTREAM_EXTRACTED_OURS}"; then
+	exit 1
+fi
+
+if ! cmp -s "${UPSTREAM_PROFILE}" "${OURS_EXTRACTED_UPSTREAM}"; then
+	echo "libjxlz failed to decode upstream embedded ICC codestream" >&2
+	exit 1
+fi
+
+if ! cmp -s "${OURS_PROFILE}" "${UPSTREAM_EXTRACTED_OURS}"; then
+	echo "upstream libjxl failed to decode libjxlz embedded ICC codestream" >&2
 	exit 1
 fi
