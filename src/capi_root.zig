@@ -336,9 +336,9 @@ const EncoderImpl = struct {
 	encoded_bytes: []u8 = &.{},
 	owned_icc: []u8 = &.{},
 	output_offset: usize = 0,
-	frame_settings: std.ArrayListUnmanaged(*EncoderFrameSettingsImpl) = .{},
-	queued_frames: std.ArrayListUnmanaged(EncoderQueuedFrame) = .{},
-	staged_boxes: std.ArrayListUnmanaged(EncoderPendingBox) = .{},
+	frame_settings: std.ArrayListUnmanaged(*EncoderFrameSettingsImpl) = .empty,
+	queued_frames: std.ArrayListUnmanaged(EncoderQueuedFrame) = .empty,
+	staged_boxes: std.ArrayListUnmanaged(EncoderPendingBox) = .empty,
 	internal_color_encoding: ?color_encoding_mod.ColorEncoding = null,
 	image_format: JxlPixelFormat = .{
 		.num_channels = 0,
@@ -534,17 +534,17 @@ fn freeEncoderState(enc: *EncoderImpl) void {
 		frame.deinit();
 	}
 	enc.queued_frames.deinit(std.heap.c_allocator);
-	enc.queued_frames = .{};
+	enc.queued_frames = .empty;
 	for (enc.staged_boxes.items) |*box| {
 		box.deinit();
 	}
 	enc.staged_boxes.deinit(std.heap.c_allocator);
-	enc.staged_boxes = .{};
+	enc.staged_boxes = .empty;
 	for (enc.frame_settings.items) |settings| {
 		std.heap.c_allocator.destroy(settings);
 	}
 	enc.frame_settings.deinit(std.heap.c_allocator);
-	enc.frame_settings = .{};
+	enc.frame_settings = .empty;
 	enc.output_offset = 0;
 }
 
@@ -2854,7 +2854,7 @@ test "JxlEncoderSetICCProfile round-trips exact builtin sRGB ICC bytes" {
 	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderAddImageFrame(settings, &format, &pixels, pixels.len));
 	JxlEncoderCloseInput(enc);
 
-	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	var encoded: std.ArrayListUnmanaged(u8) = .empty;
 	defer encoded.deinit(testing.allocator);
 	while (true) {
 		var chunk: [64]u8 = undefined;
@@ -3184,7 +3184,7 @@ test "JxlEncoder encodes a selection-mask extra channel buffer" {
 
 	JxlEncoderCloseInput(enc);
 
-	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	var encoded: std.ArrayListUnmanaged(u8) = .empty;
 	defer encoded.deinit(testing.allocator);
 	while (true) {
 		var chunk: [32]u8 = undefined;
@@ -3294,7 +3294,7 @@ test "JxlEncoder encodes multiple non-alpha extra channel buffers" {
 
 	JxlEncoderCloseInput(enc);
 
-	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	var encoded: std.ArrayListUnmanaged(u8) = .empty;
 	defer encoded.deinit(testing.allocator);
 	while (true) {
 		var chunk: [32]u8 = undefined;
@@ -3394,7 +3394,7 @@ test "JxlEncoder encodes interleaved alpha plus a sidecar extra channel" {
 
 	JxlEncoderCloseInput(enc);
 
-	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	var encoded: std.ArrayListUnmanaged(u8) = .empty;
 	defer encoded.deinit(testing.allocator);
 	while (true) {
 		var chunk: [32]u8 = undefined;
@@ -3626,7 +3626,7 @@ test "JxlEncoder encodes a staged alpha buffer" {
 
 	JxlEncoderCloseInput(enc);
 
-	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	var encoded: std.ArrayListUnmanaged(u8) = .empty;
 	defer encoded.deinit(testing.allocator);
 	while (true) {
 		var chunk: [32]u8 = undefined;
@@ -3727,7 +3727,7 @@ test "JxlEncoder encodes a staged alpha buffer with explicit alpha metadata" {
 
 	JxlEncoderCloseInput(enc);
 
-	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	var encoded: std.ArrayListUnmanaged(u8) = .empty;
 	defer encoded.deinit(testing.allocator);
 	while (true) {
 		var chunk: [32]u8 = undefined;
@@ -3806,7 +3806,7 @@ test "JxlEncoder encodes a staged subsampled alpha buffer" {
 
 	JxlEncoderCloseInput(enc);
 
-	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	var encoded: std.ArrayListUnmanaged(u8) = .empty;
 	defer encoded.deinit(testing.allocator);
 	while (true) {
 		var chunk: [32]u8 = undefined;
@@ -3973,7 +3973,7 @@ test "JxlEncoder encodes a spot-color extra channel buffer" {
 
 	JxlEncoderCloseInput(enc);
 
-	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	var encoded: std.ArrayListUnmanaged(u8) = .empty;
 	defer encoded.deinit(testing.allocator);
 	while (true) {
 		var chunk: [32]u8 = undefined;
@@ -4074,7 +4074,7 @@ test "JxlEncoder encodes a cfa extra channel buffer" {
 
 	JxlEncoderCloseInput(enc);
 
-	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	var encoded: std.ArrayListUnmanaged(u8) = .empty;
 	defer encoded.deinit(testing.allocator);
 	while (true) {
 		var chunk: [32]u8 = undefined;
@@ -4169,7 +4169,7 @@ test "JxlEncoder encodes a subsampled depth extra channel buffer" {
 
 	JxlEncoderCloseInput(enc);
 
-	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	var encoded: std.ArrayListUnmanaged(u8) = .empty;
 	defer encoded.deinit(testing.allocator);
 	while (true) {
 		var chunk: [23]u8 = undefined;
@@ -4263,7 +4263,7 @@ test "JxlEncoder encodes animation metadata and frame timing" {
 
 	JxlEncoderCloseInput(enc);
 
-	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	var encoded: std.ArrayListUnmanaged(u8) = .empty;
 	defer encoded.deinit(testing.allocator);
 	while (true) {
 		var chunk: [23]u8 = undefined;
@@ -4368,7 +4368,7 @@ test "JxlEncoder encodes two animation frames" {
 
 	JxlEncoderCloseFrames(enc);
 
-	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	var encoded: std.ArrayListUnmanaged(u8) = .empty;
 	defer encoded.deinit(testing.allocator);
 	while (true) {
 		var chunk: [23]u8 = undefined;
@@ -4513,7 +4513,7 @@ test "JxlEncoder encodes two animation frames with staged alpha" {
 
 	JxlEncoderCloseFrames(enc);
 
-	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	var encoded: std.ArrayListUnmanaged(u8) = .empty;
 	defer encoded.deinit(testing.allocator);
 	while (true) {
 		var chunk: [32]u8 = undefined;
@@ -4658,7 +4658,7 @@ test "JxlEncoder encodes two animation frames with staged subsampled alpha" {
 
 	JxlEncoderCloseFrames(enc);
 
-	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	var encoded: std.ArrayListUnmanaged(u8) = .empty;
 	defer encoded.deinit(testing.allocator);
 	while (true) {
 		var chunk: [48]u8 = undefined;
@@ -4795,7 +4795,7 @@ test "JxlEncoder encodes two animation frames with a staged selection mask" {
 
 	JxlEncoderCloseFrames(enc);
 
-	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	var encoded: std.ArrayListUnmanaged(u8) = .empty;
 	defer encoded.deinit(testing.allocator);
 	while (true) {
 		var chunk: [48]u8 = undefined;
@@ -4926,7 +4926,7 @@ test "JxlEncoder encodes two animation frames with a staged subsampled depth cha
 
 	JxlEncoderCloseFrames(enc);
 
-	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	var encoded: std.ArrayListUnmanaged(u8) = .empty;
 	defer encoded.deinit(testing.allocator);
 	while (true) {
 		var chunk: [48]u8 = undefined;
@@ -5031,7 +5031,7 @@ test "JxlDecoder emits frame headers for animated codestreams" {
 	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderAddImageFrame(settings, &format, &pixels1, pixels1.len));
 	JxlEncoderCloseFrames(enc);
 
-	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	var encoded: std.ArrayListUnmanaged(u8) = .empty;
 	defer encoded.deinit(testing.allocator);
 	while (true) {
 		var chunk: [23]u8 = undefined;
@@ -5151,7 +5151,7 @@ test "JxlDecoderSkipFrames skips the requested displayed frames" {
 	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderAddImageFrame(settings, &format, &pixels2, pixels2.len));
 	JxlEncoderCloseFrames(enc);
 
-	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	var encoded: std.ArrayListUnmanaged(u8) = .empty;
 	defer encoded.deinit(testing.allocator);
 	while (true) {
 		var chunk: [64]u8 = undefined;
@@ -5251,7 +5251,7 @@ test "JxlDecoderSkipCurrentFrame advances to the next frame" {
 	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderAddImageFrame(settings, &format, &pixels1, pixels1.len));
 	JxlEncoderCloseFrames(enc);
 
-	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	var encoded: std.ArrayListUnmanaged(u8) = .empty;
 	defer encoded.deinit(testing.allocator);
 	while (true) {
 		var chunk: [64]u8 = undefined;
@@ -5350,7 +5350,7 @@ test "JxlDecoderRewind replays animation from the beginning" {
 	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderAddImageFrame(settings, &format, &pixels1, pixels1.len));
 	JxlEncoderCloseFrames(enc);
 
-	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	var encoded: std.ArrayListUnmanaged(u8) = .empty;
 	defer encoded.deinit(testing.allocator);
 	while (true) {
 		var chunk: [64]u8 = undefined;
@@ -5466,7 +5466,7 @@ test "JxlDecoderRewind requests a fresh output buffer before replaying frames" {
 	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderAddImageFrame(settings, &format, &pixels, pixels.len));
 	JxlEncoderCloseFrames(enc);
 
-	var encoded: std.ArrayListUnmanaged(u8) = .{};
+	var encoded: std.ArrayListUnmanaged(u8) = .empty;
 	defer encoded.deinit(testing.allocator);
 	while (true) {
 		var chunk: [64]u8 = undefined;

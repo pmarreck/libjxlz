@@ -53,7 +53,7 @@ pub const Transform = struct {
 
         // TransformId: U32(Val(0), Val(1), Val(2), Val(3))
         const id_sel = br.readBits(2);
-        t.id = std.meta.intToEnum(TransformId, @as(u32, @intCast(id_sel))) catch return error.GenericError;
+        t.id = std.enums.fromInt(TransformId, @as(u32, @intCast(id_sel))) orelse return error.GenericError;
         if (t.id == .invalid) return error.GenericError;
 
         // begin_c (for RCT and Palette)
@@ -81,7 +81,7 @@ pub const Transform = struct {
             t.nb_deltas = fc.U32Coder.read(nbd_enc, br);
 
             const pred_val: u32 = @intCast(br.readBits(4));
-            t.predictor = std.meta.intToEnum(Predictor, pred_val) catch return error.GenericError;
+            t.predictor = std.enums.fromInt(Predictor, pred_val) orelse return error.GenericError;
             if (@intFromEnum(t.predictor) >= @intFromEnum(Predictor.best)) return error.GenericError;
         }
 
@@ -584,7 +584,7 @@ pub fn fwdSqueeze(image: *Image, parameters: []const SqueezeParams) JxlError!voi
 }
 
 pub fn defaultSqueezeParameters(allocator: std.mem.Allocator, image: *const Image) ![]SqueezeParams {
-    var params: std.ArrayList(SqueezeParams) = .{};
+    var params: std.ArrayList(SqueezeParams) = .empty;
     errdefer params.deinit(allocator);
 
     const nb_channels = image.channels.items.len - image.nb_meta_channels;
@@ -735,7 +735,7 @@ pub fn fwdPalette(image: *Image, begin_c: u32, end_c: u32, allocator: std.mem.Al
 		implicit: u32,
 	};
 
-	var palette_values: std.ArrayList(pixel_type) = .{};
+	var palette_values: std.ArrayList(pixel_type) = .empty;
 	defer palette_values.deinit(allocator);
 	const indices = try allocator.alloc(pixel_type, total);
 	defer allocator.free(indices);
@@ -863,7 +863,7 @@ pub fn fwdPaletteWithDeltas(
 	const source = &image.channels.items[begin_c];
 	if (source.w == 0 or source.h == 0) return error.GenericError;
 
-	var explicit_values: std.ArrayList(pixel_type) = .{};
+	var explicit_values: std.ArrayList(pixel_type) = .empty;
 	defer explicit_values.deinit(allocator);
 	const total = source.w * source.h;
 	const indices = try allocator.alloc(pixel_type, total);
@@ -1089,7 +1089,7 @@ fn chooseCommonDeltaTuples(
 	var residual: []pixel_type = try allocator.alloc(pixel_type, num_channels);
 	defer allocator.free(residual);
 
-	var candidates: std.ArrayList(DeltaTupleCandidate) = .{};
+	var candidates: std.ArrayList(DeltaTupleCandidate) = .empty;
 	defer deinitDeltaTupleCandidates(allocator, &candidates);
 
 	var first_seen: usize = 0;
@@ -1127,7 +1127,7 @@ fn chooseCommonDeltaTuples(
 	const bucket_size: pixel_type = @intCast(@as(i32, 3) << bucket_shift);
 	var rounded = try allocator.alloc(pixel_type, num_channels);
 	defer allocator.free(rounded);
-	var buckets: std.ArrayList(DeltaBucketCandidate) = .{};
+	var buckets: std.ArrayList(DeltaBucketCandidate) = .empty;
 	defer deinitDeltaBucketCandidates(allocator, &buckets);
 
 	for (candidates.items, 0..) |candidate, candidate_index| {

@@ -69,7 +69,7 @@ fn writeNonSimpleContextMapSymbols(
 	const uint_config = contextMapUintConfig();
 	const log_alpha_size = try selectLogAlphaSize(symbols, uint_config);
 
-	var tokens: std.ArrayList(enc_ans.Token) = .{};
+	var tokens: std.ArrayList(enc_ans.Token) = .empty;
 	defer tokens.deinit(allocator);
 	try tokens.ensureTotalCapacity(allocator, symbols.len);
 	for (symbols) |symbol| {

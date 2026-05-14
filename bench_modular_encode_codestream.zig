@@ -193,10 +193,10 @@ fn parseArgs(args: []const []const u8) !struct {
 	};
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
 	const allocator = std.heap.page_allocator;
-	const args = try std.process.argsAlloc(allocator);
-	defer std.process.argsFree(allocator, args);
+	const io = init.io;
+	const args = try init.minimal.args.toSlice(init.arena.allocator());
 
 	const parsed = try parseArgs(args);
 	const result = try runRealEncodeBenchmark(allocator, parsed.cfg);
@@ -207,7 +207,7 @@ pub fn main() !void {
 
 	if (parsed.print_checksum) {
 		var stdout_buffer: [4096]u8 = undefined;
-		var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+		var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
 		const stdout = &stdout_writer.interface;
 		try stdout.print("{x}\n", .{result.checksum});
 		try stdout.flush();

@@ -101,8 +101,8 @@ pub const Image = struct {
 
     pub fn create(allocator: std.mem.Allocator, iw: usize, ih: usize, bitdepth: i32, nb_chans: usize) !Image {
         var img = Image{
-            .channels = .{},
-            .transforms = .{},
+            .channels = .empty,
+            .transforms = .empty,
             .w = iw,
             .h = ih,
             .bitdepth = bitdepth,

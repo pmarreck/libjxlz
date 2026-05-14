@@ -245,11 +245,11 @@ pub const ModularFrameDecoder = struct {
     pub fn init(allocator: std.mem.Allocator) ModularFrameDecoder {
         return .{
             .full_image = Image{
-                .channels = .{},
-                .transforms = .{},
+                .channels = .empty,
+                .transforms = .empty,
                 .allocator = allocator,
             },
-            .tree = .{},
+            .tree = .empty,
             .code = ANSCode.init(allocator),
             .allocator = allocator,
         };

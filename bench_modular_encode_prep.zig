@@ -287,8 +287,9 @@ pub fn runSyntheticEncodePrep(allocator: std.mem.Allocator, cfg: WorkloadConfig)
     };
 }
 
-fn printUsage(file: std.fs.File) !void {
-    try file.writeAll(
+fn printUsage(io: std.Io, file: std.Io.File) !void {
+    try file.writeStreamingAll(
+        io,
         "Usage: bench_modular_encode_prep [--repeat N] [--width N] [--height N]\n" ++
             "\t[--channels N] [--seed N] [--print-checksum] [--expect-checksum HEX]\n" ++
             "\t[--print-profile] [--bookkeeping instrumented|minimal]\n",
@@ -317,17 +318,14 @@ fn printProfile(result: WorkloadResult) void {
     }
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     if (comptime @import("builtin").mode == .Debug) {
         std.debug.print("\x1b[33mDEBUG BUILD\x1b[0m\n", .{});
     }
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer std.debug.assert(gpa.deinit() == .ok);
-    const allocator = gpa.allocator();
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    const allocator = init.gpa;
+    const io = init.io;
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
     var cfg = WorkloadConfig{};
     var print_checksum = false;
@@ -338,7 +336,7 @@ pub fn main() !void {
     while (i < args.len) : (i += 1) {
         const arg = args[i];
         if (std.mem.eql(u8, arg, "--help")) {
-            try printUsage(std.fs.File.stdout());
+            try printUsage(io, std.Io.File.stdout());
             return;
         } else if (std.mem.eql(u8, arg, "--repeat")) {
             i += 1;
@@ -380,7 +378,7 @@ pub fn main() !void {
             expected_checksum = try std.fmt.parseUnsigned(u64, args[i], 16);
         } else {
             std.debug.print("unknown argument: {s}\n", .{arg});
-            try printUsage(std.fs.File.stderr());
+            try printUsage(io, std.Io.File.stderr());
             return error.InvalidArguments;
         }
     }

@@ -127,11 +127,10 @@ fn decodeBytesWithReaderStrategy(
 	return imageFingerprint(frame_dec.getDecodedImage());
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
 	const allocator = std.heap.c_allocator;
 
-	const args = try std.process.argsAlloc(allocator);
-	defer std.process.argsFree(allocator, args);
+	const args = try init.minimal.args.toSlice(init.arena.allocator());
 	if (args.len < 2) {
 		std.debug.print(
 			"usage: {s} [--repeat N] [--reader reference|specialized] [--no-verify-known] [--print-checksum] <file.jxl> [more.jxl ...]\n",

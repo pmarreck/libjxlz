@@ -44,7 +44,7 @@ pub fn decompress(allocator: std.mem.Allocator, compressed: []const u8) JxlError
 }
 
 fn decompressWithC(allocator: std.mem.Allocator, compressed: []const u8) JxlError![]u8 {
-	var out: std.ArrayListUnmanaged(u8) = .{};
+	var out: std.ArrayListUnmanaged(u8) = .empty;
 	errdefer out.deinit(allocator);
 
 	const state = c.BrotliDecoderCreateInstance(null, null, null) orelse return error.OutOfMemory;

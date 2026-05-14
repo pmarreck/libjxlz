@@ -36,7 +36,7 @@ pub const Token = struct {
 };
 
 pub const Histogram = struct {
-	counts: std.ArrayList(i32) = .{},
+	counts: std.ArrayList(i32) = .empty,
 	total_count: usize = 0,
 	entropy: f64 = 0,
 
@@ -1468,7 +1468,7 @@ pub fn buildContextualHistogramBundle(
 		for (cluster_values) |*values| values.deinit(allocator);
 		allocator.free(cluster_values);
 	}
-	for (cluster_values) |*values| values.* = .{};
+	for (cluster_values) |*values| values.* = .empty;
 
 	for (tokens) |token| {
 		if (token.is_lz77_length or token.context >= context_map.len) return error.GenericError;
@@ -1684,7 +1684,7 @@ test "encodeUintConfig omits msb/lsb fields at max split exponent" {
 test "encodeUintConfigs exhaustively round-trips valid configs through decoder" {
 	inline for (5..9) |log_alpha_size_usize| {
 		const log_alpha_size: u5 = @intCast(log_alpha_size_usize);
-		var original: std.ArrayList(HybridUintConfig) = .{};
+		var original: std.ArrayList(HybridUintConfig) = .empty;
 		defer original.deinit(testing.allocator);
 
 		for (0..log_alpha_size) |split_exponent_usize| {
@@ -2365,7 +2365,7 @@ test "buildContextualHistogramBundle keeps distinct histograms separate when mer
 		HybridUintConfig.init(5, 0, 0),
 		HybridUintConfig.init(5, 0, 0),
 	};
-	var tokens: std.ArrayList(Token) = .{};
+	var tokens: std.ArrayList(Token) = .empty;
 	defer tokens.deinit(allocator);
 	for (0..30) |_| {
 		try tokens.append(allocator, Token.init(0, 3));
@@ -2395,7 +2395,7 @@ test "buildContextualHistogramBundle chooses emitted uint config from clustered 
 	const ctx_map = [_]u8{0};
 	const input_uint_configs = [_]HybridUintConfig{HybridUintConfig.init(8, 0, 0)};
 
-	var tokens: std.ArrayList(Token) = .{};
+	var tokens: std.ArrayList(Token) = .empty;
 	defer tokens.deinit(allocator);
 	const adaptive_values = [_]u32{ 0, 1, 2, 3, 4, 7, 15, 31, 63, 127, 255 };
 	for (adaptive_values) |value| {

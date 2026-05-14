@@ -871,7 +871,7 @@ pub fn modularDecodeWithReaderStrategy(
     if (num_chans == 0) return;
 
     // Read or use global tree
-    var local_tree: dec_ma.Tree = .{};
+    var local_tree: dec_ma.Tree = .empty;
     defer local_tree.deinit(allocator);
     var local_code = ANSCode.init(allocator);
     defer local_code.deinit();

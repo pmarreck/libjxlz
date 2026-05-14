@@ -278,7 +278,7 @@ pub fn writeColorEncoding(ce: *const ColorEncoding, writer: anytype) !void {
 // ── Enum conversion helper ──
 
 fn enumFromU32(comptime E: type, val: u32) ?E {
-    return std.meta.intToEnum(E, val) catch null;
+    return std.enums.fromInt(E, val);
 }
 
 // ── Tests ──

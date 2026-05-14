@@ -32,7 +32,7 @@ pub fn tokenizeTree(
 ) !void {
 	if (tree.len == 0 or tree.len > ma_common.kMaxTreeSize) return error.GenericError;
 
-	var queue: std.ArrayList(usize) = .{};
+	var queue: std.ArrayList(usize) = .empty;
 	defer queue.deinit(allocator);
 	try queue.append(allocator, 0);
 	var queue_head: usize = 0;
@@ -99,9 +99,9 @@ pub fn canonicalizeTree(
 	allocator: std.mem.Allocator,
 	tree: []const dec_ma.PropertyDecisionNode,
 ) !dec_ma.Tree {
-	var tokens: std.ArrayList(Token) = .{};
+	var tokens: std.ArrayList(Token) = .empty;
 	defer tokens.deinit(allocator);
-	var decoder_tree: dec_ma.Tree = .{};
+	var decoder_tree: dec_ma.Tree = .empty;
 	errdefer decoder_tree.deinit(allocator);
 	try tokenizeTree(allocator, tree, &tokens, &decoder_tree);
 	return decoder_tree;
@@ -151,9 +151,9 @@ pub fn writeTree(
 	tree: []const dec_ma.PropertyDecisionNode,
 	writer: *BitWriter,
 ) !void {
-	var tokens: std.ArrayList(Token) = .{};
+	var tokens: std.ArrayList(Token) = .empty;
 	defer tokens.deinit(allocator);
-	var decoder_tree: dec_ma.Tree = .{};
+	var decoder_tree: dec_ma.Tree = .empty;
 	defer decoder_tree.deinit(allocator);
 	try tokenizeTree(allocator, tree, &tokens, &decoder_tree);
 	if (tokens.items.len == 0) return error.GenericError;
@@ -206,7 +206,7 @@ test "writeSingleLeafTree round-trips through dec_ma.decodeTree" {
 	try writer.zeroPadToByte();
 
 	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
-	var tree: dec_ma.Tree = .{};
+	var tree: dec_ma.Tree = .empty;
 	defer tree.deinit(allocator);
 	try dec_ma.decodeTree(allocator, &br, &tree, 16);
 	try testing.expectEqual(@as(usize, 1), tree.items.len);
@@ -233,7 +233,7 @@ test "writeTree round-trips a split tree through dec_ma.decodeTree" {
 	try writer.zeroPadToByte();
 
 	var br = @import("../base/bit_reader.zig").BitReader.init(writer.bytes());
-	var tree: dec_ma.Tree = .{};
+	var tree: dec_ma.Tree = .empty;
 	defer tree.deinit(allocator);
 	try dec_ma.decodeTree(allocator, &br, &tree, 16);
 	try testing.expectEqual(@as(usize, 3), tree.items.len);

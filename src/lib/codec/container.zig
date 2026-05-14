@@ -155,7 +155,7 @@ pub fn wrapCodestream(allocator: std.mem.Allocator, codestream: []const u8) ![]u
 /// Wraps a raw codestream in the minimal BMFF container plus any already-owned
 /// metadata boxes that should precede the codestream box.
 pub fn wrapCodestreamWithBoxes(allocator: std.mem.Allocator, codestream: []const u8, boxes: []const Box) ![]u8 {
-	var list: std.ArrayListUnmanaged(u8) = .{};
+	var list: std.ArrayListUnmanaged(u8) = .empty;
 	defer list.deinit(allocator);
 
 	try list.appendSlice(allocator, &signature_box);
@@ -183,9 +183,9 @@ pub fn extractCodestreamAndBoxes(allocator: std.mem.Allocator, container_bytes: 
 	if (!std.mem.eql(u8, container_bytes[0..signature_box.len], &signature_box)) return error.GenericError;
 
 	var offset: usize = signature_box.len;
-	var partial: std.ArrayListUnmanaged(u8) = .{};
+	var partial: std.ArrayListUnmanaged(u8) = .empty;
 	defer partial.deinit(allocator);
-	var owned_boxes: std.ArrayListUnmanaged(OwnedBox) = .{};
+	var owned_boxes: std.ArrayListUnmanaged(OwnedBox) = .empty;
 	defer {
 		for (owned_boxes.items) |*box| box.deinit(allocator);
 		owned_boxes.deinit(allocator);
@@ -250,7 +250,7 @@ test "wrapCodestream and extractCodestream round-trip" {
 
 test "extractCodestream accepts final open-ended jxlc box" {
 	const codestream = [_]u8{ 0xFF, 0x0A, 0x11, 0x22, 0x33 };
-	var wrapped: std.ArrayListUnmanaged(u8) = .{};
+	var wrapped: std.ArrayListUnmanaged(u8) = .empty;
 	defer wrapped.deinit(testing.allocator);
 
 	try wrapped.appendSlice(testing.allocator, &signature_box);
@@ -322,7 +322,7 @@ test "extractCodestreamAndBoxes preserves core and metadata boxes in order" {
 
 test "extractCodestream handles extended-size BMFF boxes" {
 	const codestream = [_]u8{ 0xFF, 0x0A, 0x44, 0x55 };
-	var wrapped: std.ArrayListUnmanaged(u8) = .{};
+	var wrapped: std.ArrayListUnmanaged(u8) = .empty;
 	defer wrapped.deinit(testing.allocator);
 
 	try wrapped.appendSlice(testing.allocator, &signature_box);

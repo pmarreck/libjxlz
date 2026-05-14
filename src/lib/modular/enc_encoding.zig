@@ -54,7 +54,7 @@ fn makeFixedTree(
 ) !dec_ma.Tree {
 	if (num_pixels == 0) return error.GenericError;
 
-	var tree: dec_ma.Tree = .{};
+	var tree: dec_ma.Tree = .empty;
 	errdefer tree.deinit(allocator);
 	try tree.append(allocator, dec_ma.PropertyDecisionNode.leaf(pred, 0, 1));
 
@@ -64,7 +64,7 @@ fn makeFixedTree(
 	const shift: i32 = if (bitdepth > 11) @min(@as(i32, 4), bitdepth - 11) else 0;
 	const mul: i32 = @as(i32, 1) << @intCast(shift);
 
-	var queue: std.ArrayList(FixedTreeNodeInfo) = .{};
+	var queue: std.ArrayList(FixedTreeNodeInfo) = .empty;
 	defer queue.deinit(allocator);
 	try queue.append(allocator, .{ .begin = 0, .end = cutoffs.len, .pos = 0 });
 	var queue_head: usize = 0;
@@ -98,26 +98,26 @@ pub fn predefinedTree(
 ) !dec_ma.Tree {
 	switch (tree_kind) {
 		.jpeg_transcode_ac_meta, .trivial_tree_no_predictor => {
-			var tree: dec_ma.Tree = .{};
+			var tree: dec_ma.Tree = .empty;
 			errdefer tree.deinit(allocator);
 			try tree.append(allocator, dec_ma.PropertyDecisionNode.leaf(.zero, 0, 1));
 			return tree;
 		},
 		.falcon_ac_meta => {
-			var tree: dec_ma.Tree = .{};
+			var tree: dec_ma.Tree = .empty;
 			errdefer tree.deinit(allocator);
 			try tree.append(allocator, dec_ma.PropertyDecisionNode.leaf(.left, 0, 1));
 			return tree;
 		},
 		.ac_meta => {
 			if (total_pixels < 1024) {
-				var tree: dec_ma.Tree = .{};
+				var tree: dec_ma.Tree = .empty;
 				errdefer tree.deinit(allocator);
 				try tree.append(allocator, dec_ma.PropertyDecisionNode.leaf(.left, 0, 1));
 				return tree;
 			}
 
-			var tree: dec_ma.Tree = .{};
+			var tree: dec_ma.Tree = .empty;
 			errdefer tree.deinit(allocator);
 			try tree.appendSlice(allocator, &.{
 				dec_ma.PropertyDecisionNode.split(0, 1, 1, 0),
@@ -251,7 +251,7 @@ const FlatHistogramInfoKey = struct {
 /// the reverse maps across repeated tiles with the same token alphabet.
 pub const FlatHistogramInfoCache = struct {
 	allocator: std.mem.Allocator,
-	entries: std.ArrayListUnmanaged(Entry) = .{},
+	entries: std.ArrayListUnmanaged(Entry) = .empty,
 
 	const Entry = struct {
 		key: FlatHistogramInfoKey,
@@ -403,8 +403,8 @@ fn extractImageRect(
 	rect: Rect,
 ) !modular_image.Image {
 	var tile = modular_image.Image{
-		.channels = .{},
-		.transforms = .{},
+		.channels = .empty,
+		.transforms = .empty,
 		.w = rect.xsize(),
 		.h = rect.ysize(),
 		.bitdepth = image.bitdepth,
@@ -1305,7 +1305,7 @@ pub fn writeSingleNodeGlobalTreeGroupImageRectContexts(
 	uint_configs: []const HybridUintConfig,
 	writer: *BitWriter,
 ) !usize {
-	var tokens: std.ArrayList(Token) = .{};
+	var tokens: std.ArrayList(Token) = .empty;
 	defer tokens.deinit(allocator);
 	try appendImageRectTokensWithChannelContexts(allocator, image, rect, predictor, channel_contexts, &tokens);
 
@@ -1328,7 +1328,7 @@ pub fn writeGlobalTreeGroupImageRectNoWP(
 	uint_configs: []const HybridUintConfig,
 	writer: *BitWriter,
 ) !usize {
-	var tokens: std.ArrayList(Token) = .{};
+	var tokens: std.ArrayList(Token) = .empty;
 	defer tokens.deinit(allocator);
 	try appendGlobalTreeImageRectTokensNoWP(allocator, image, rect, group_id, global_tree, &tokens);
 
@@ -1352,7 +1352,7 @@ pub fn writeGlobalTreeGroupImageRectWPNoRefs(
 	uint_configs: []const HybridUintConfig,
 	writer: *BitWriter,
 ) !usize {
-	var tokens: std.ArrayList(Token) = .{};
+	var tokens: std.ArrayList(Token) = .empty;
 	defer tokens.deinit(allocator);
 	try appendGlobalTreeImageRectTokensWPNoRefs(allocator, image, rect, group_id, global_tree, &tokens);
 
@@ -1375,7 +1375,7 @@ pub fn writeGlobalTreeGroupImageRectRefsNoWP(
 	uint_configs: []const HybridUintConfig,
 	writer: *BitWriter,
 ) !usize {
-	var tokens: std.ArrayList(Token) = .{};
+	var tokens: std.ArrayList(Token) = .empty;
 	defer tokens.deinit(allocator);
 	try appendGlobalTreeImageRectTokensRefsNoWP(allocator, image, rect, group_id, global_tree, &tokens);
 
@@ -1398,7 +1398,7 @@ pub fn writeGlobalTreeGroupImageRectWPRefs(
 	uint_configs: []const HybridUintConfig,
 	writer: *BitWriter,
 ) !usize {
-	var tokens: std.ArrayList(Token) = .{};
+	var tokens: std.ArrayList(Token) = .empty;
 	defer tokens.deinit(allocator);
 	try appendGlobalTreeImageRectTokensWPRefs(allocator, image, rect, group_id, global_tree, &tokens);
 
@@ -1472,7 +1472,7 @@ fn buildGlobalTreeHistogramBundleImpl(
 	comptime allow_wp: bool,
 	comptime allow_refs: bool,
 ) !enc_ans.ContextualHistogramBundle {
-	var tokens: std.ArrayList(Token) = .{};
+	var tokens: std.ArrayList(Token) = .empty;
 	defer tokens.deinit(allocator);
 	try appendGlobalTreeTokensForGroupRects(
 		allocator,
@@ -1620,7 +1620,7 @@ pub fn writeSingleNodeLocalTreeGroupImageWithCache(
 ) !usize {
 	if (image.channels.items.len == 0) return error.GenericError;
 
-	var tokens: std.ArrayList(Token) = .{};
+	var tokens: std.ArrayList(Token) = .empty;
 	defer tokens.deinit(allocator);
 
     for (image.channels.items) |*channel| {
@@ -1643,7 +1643,7 @@ pub fn writeSingleNodeLocalTreeGroupImageWithSqueeze(
 ) !usize {
 	if (image.channels.items.len == 0 or squeezes.len == 0) return error.GenericError;
 
-	var tokens: std.ArrayList(Token) = .{};
+	var tokens: std.ArrayList(Token) = .empty;
 	defer tokens.deinit(allocator);
 
 	for (image.channels.items) |*channel| {
@@ -1668,7 +1668,7 @@ pub fn writeSingleNodeLocalTreeGroupImageWithPalette(
 ) !usize {
 	if (image.channels.items.len == 0) return error.GenericError;
 
-	var tokens: std.ArrayList(Token) = .{};
+	var tokens: std.ArrayList(Token) = .empty;
 	defer tokens.deinit(allocator);
 
 	for (image.channels.items) |*channel| {
@@ -1702,7 +1702,7 @@ pub fn writeSingleNodeLocalTreeGroupImageRectWithCache(
 	cache: ?*FlatHistogramInfoCache,
 	writer: *BitWriter,
 ) !usize {
-	var tokens: std.ArrayList(Token) = .{};
+	var tokens: std.ArrayList(Token) = .empty;
 	defer tokens.deinit(allocator);
 	try appendImageRectTokens(allocator, image, rect, predictor, 0, &tokens);
 
@@ -2345,7 +2345,7 @@ test "buildGlobalTreeHistogramBundleNoWP matches direct tree-driven token histog
 		.{ .group_id = 0, .rect = Rect.init(0, 0, 3, 2) },
 	};
 
-	var tokens: std.ArrayList(Token) = .{};
+	var tokens: std.ArrayList(Token) = .empty;
 	defer tokens.deinit(allocator);
 	try appendGlobalTreeImageRectTokensNoWP(
 		allocator,

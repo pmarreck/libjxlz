@@ -97,7 +97,7 @@ pub fn compressICC(allocator: std.mem.Allocator, icc: []const u8) ![]u8 {
 	const info = try enc_ans.buildANSEncSymbolInfoTable(allocator, flat_counts, kICCLogAlphaSize);
 	defer enc_ans.freeANSEncSymbolInfoTable(allocator, info);
 
-	var tokens: std.ArrayList(enc_ans.Token) = .{};
+	var tokens: std.ArrayList(enc_ans.Token) = .empty;
 	defer tokens.deinit(allocator);
 	try tokens.ensureTotalCapacity(allocator, predicted.len);
 	for (predicted, 0..) |value, i| {
@@ -298,18 +298,18 @@ fn bodyCommandsContain(encoded: []const u8, opcode: u8) bool {
 fn predictICCImpl(allocator: std.mem.Allocator, icc: []const u8, options: PredictOptions) ![]u8 {
 	if (icc.len > kSizeLimit) return error.ProfileTooLarge;
 
-	var result: std.ArrayList(u8) = .{};
+	var result: std.ArrayList(u8) = .empty;
 	errdefer result.deinit(allocator);
 	try encodeVarInt(&result, allocator, icc.len);
 
-	var commands: std.ArrayList(u8) = .{};
+	var commands: std.ArrayList(u8) = .empty;
 	defer commands.deinit(allocator);
 	var tag_sizes = std.AutoHashMap(usize, usize).init(allocator);
 	defer tag_sizes.deinit();
 	var tag_types = std.AutoHashMap(usize, common.Tag).init(allocator);
 	defer tag_types.deinit();
 	var header = common.initialHeaderPrediction(@intCast(icc.len));
-	var data: std.ArrayList(u8) = .{};
+	var data: std.ArrayList(u8) = .empty;
 	defer data.deinit(allocator);
 	for (0..@min(icc.len, common.kICCHeaderSize)) |i| {
 		common.predictHeader(icc, &header, i);
@@ -668,7 +668,7 @@ pub fn unpredictICC(allocator: std.mem.Allocator, enc: []const u8) ![]u8 {
 	const commands_end = cpos + @as(usize, @intCast(csize));
 	pos = commands_end;
 
-	var result: std.ArrayList(u8) = .{};
+	var result: std.ArrayList(u8) = .empty;
 	errdefer result.deinit(allocator);
 
 	var header = common.initialHeaderPrediction(@intCast(osize));
@@ -851,7 +851,7 @@ pub fn unpredictICC(allocator: std.mem.Allocator, enc: []const u8) ![]u8 {
 const testing = std.testing;
 
 fn makeSyntheticCurvPredictProfile(allocator: std.mem.Allocator) ![]u8 {
-	var bytes: std.ArrayList(u8) = .{};
+	var bytes: std.ArrayList(u8) = .empty;
 	errdefer bytes.deinit(allocator);
 	const total_size: u32 = 128 + 4 + 12 + 28;
 	try bytes.appendSlice(allocator, &common.initialHeaderPrediction(total_size));
@@ -870,7 +870,7 @@ fn makeSyntheticCurvPredictProfile(allocator: std.mem.Allocator) ![]u8 {
 }
 
 fn makeSyntheticGbdPredictProfile(allocator: std.mem.Allocator) ![]u8 {
-	var bytes: std.ArrayList(u8) = .{};
+	var bytes: std.ArrayList(u8) = .empty;
 	errdefer bytes.deinit(allocator);
 	const total_size: u32 = 128 + 4 + 12 + 32;
 	try bytes.appendSlice(allocator, &common.initialHeaderPrediction(total_size));
@@ -893,7 +893,7 @@ fn makeSyntheticGbdPredictProfile(allocator: std.mem.Allocator) ![]u8 {
 }
 
 fn makeSyntheticMabCurvPredictProfile(allocator: std.mem.Allocator) ![]u8 {
-	var bytes: std.ArrayList(u8) = .{};
+	var bytes: std.ArrayList(u8) = .empty;
 	errdefer bytes.deinit(allocator);
 	const total_size: u32 = 128 + 4 + 12 + 40;
 	try bytes.appendSlice(allocator, &common.initialHeaderPrediction(total_size));
@@ -915,7 +915,7 @@ fn makeSyntheticMabCurvPredictProfile(allocator: std.mem.Allocator) ![]u8 {
 }
 
 fn makeSyntheticMbaVcgtPredictProfile(allocator: std.mem.Allocator) ![]u8 {
-	var bytes: std.ArrayList(u8) = .{};
+	var bytes: std.ArrayList(u8) = .empty;
 	errdefer bytes.deinit(allocator);
 	const total_size: u32 = 128 + 4 + 12 + 40;
 	try bytes.appendSlice(allocator, &common.initialHeaderPrediction(total_size));
@@ -937,7 +937,7 @@ fn makeSyntheticMbaVcgtPredictProfile(allocator: std.mem.Allocator) ![]u8 {
 }
 
 fn makeSyntheticMabClutPredictProfile(allocator: std.mem.Allocator) ![]u8 {
-	var bytes: std.ArrayList(u8) = .{};
+	var bytes: std.ArrayList(u8) = .empty;
 	errdefer bytes.deinit(allocator);
 	const total_size: u32 = 128 + 4 + 12 + 112;
 	try bytes.appendSlice(allocator, &common.initialHeaderPrediction(total_size));

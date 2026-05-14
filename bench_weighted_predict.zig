@@ -125,10 +125,9 @@ fn parseMode(arg: []const u8) !WorkloadMode {
     return error.InvalidArgs;
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     const allocator = std.heap.c_allocator;
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
     var repeat: usize = 1;
     var width: usize = 600;

@@ -5,17 +5,15 @@ const headers = jxlz.codec.headers;
 const image_metadata = jxlz.codec.image_metadata;
 const dec_frame = jxlz.codec.dec_frame;
 
-pub fn main() !void {
-	var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
-	defer _ = gpa_state.deinit();
-	const gpa = gpa_state.allocator();
+pub fn main(init: std.process.Init) !void {
+	const gpa = init.gpa;
+	const io = init.io;
 
-	var args = try std.process.argsWithAllocator(gpa);
-	defer args.deinit();
-	_ = args.next();
-	const path = args.next() orelse return error.InvalidArgs;
+	const args = try init.minimal.args.toSlice(init.arena.allocator());
+	if (args.len < 2) return error.InvalidArgs;
+	const path = args[1];
 
-	const bytes = try std.fs.cwd().readFileAlloc(gpa, path, std.math.maxInt(usize));
+	const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .unlimited);
 	defer gpa.free(bytes);
 	if (bytes.len < 2 or bytes[0] != 0xFF or bytes[1] != headers.codestream_marker) return error.InvalidArgs;
 
@@ -32,7 +30,7 @@ pub fn main() !void {
 
 	var frame_offset = 2 + br.totalBitsConsumed() / 8;
 	var frame_count: usize = 0;
-	var durations: std.ArrayList(u32) = .{};
+	var durations: std.ArrayList(u32) = .empty;
 	defer durations.deinit(gpa);
 
 	while (frame_offset < bytes.len) {
@@ -48,7 +46,7 @@ pub fn main() !void {
 	}
 
 	var stdout_buffer: [4096]u8 = undefined;
-	var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+	var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
 	const stdout = &stdout_writer.interface;
 	try stdout.print(
 		"{d} {d} {d} {d} {d}",

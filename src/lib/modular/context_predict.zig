@@ -75,13 +75,13 @@ pub fn clampedGradient(n: anytype, w: anytype, l: anytype) @TypeOf(n) {
     const M = @max(n, w);
     // grad = n + w - l, with potential overflow handled via unsigned arithmetic
     const grad: T = @bitCast(@as(
-        @Type(.{ .int = .{ .signedness = .unsigned, .bits = @typeInfo(T).int.bits } }),
+        @Int(.unsigned, @typeInfo(T).int.bits),
         @bitCast(n),
     ) +% @as(
-        @Type(.{ .int = .{ .signedness = .unsigned, .bits = @typeInfo(T).int.bits } }),
+        @Int(.unsigned, @typeInfo(T).int.bits),
         @bitCast(w),
     ) -% @as(
-        @Type(.{ .int = .{ .signedness = .unsigned, .bits = @typeInfo(T).int.bits } }),
+        @Int(.unsigned, @typeInfo(T).int.bits),
         @bitCast(l),
     ));
     const grad_clamp_M: T = if (l < m) M else grad;
@@ -206,10 +206,10 @@ pub fn filterTree(
     gradient_only.* = true;
     property_use.* = .{};
 
-    var output: FlatTree = .{};
+    var output: FlatTree = .empty;
 
     // BFS queue
-    var queue: std.ArrayList(usize) = .{};
+    var queue: std.ArrayList(usize) = .empty;
     defer queue.deinit(allocator);
     try queue.append(allocator, 0);
 

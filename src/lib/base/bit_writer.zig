@@ -8,13 +8,13 @@ pub const BitWriter = struct {
 	pub const kMaxBitsPerCall: usize = 56;
 
 	allocator: std.mem.Allocator,
-	storage: std.ArrayList(u8) = .{},
+	storage: std.ArrayList(u8) = .empty,
 	bits_written: usize = 0,
 
 	pub fn init(allocator: std.mem.Allocator) BitWriter {
 		return .{
 			.allocator = allocator,
-			.storage = .{},
+			.storage = .empty,
 		};
 	}
 
@@ -125,7 +125,7 @@ test "BitWriter random sequence round-trips through BitReader" {
 	var prng = std.Random.DefaultPrng.init(42);
 	const random = prng.random();
 
-	var patches: std.ArrayList(struct { len: usize, bits: u64 }) = .{};
+	var patches: std.ArrayList(struct { len: usize, bits: u64 }) = .empty;
 	defer patches.deinit(testing.allocator);
 
 	var total_bits: usize = 0;

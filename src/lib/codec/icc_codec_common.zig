@@ -225,7 +225,7 @@ pub fn ansContext(i: usize, b1: u8, b2: u8) usize {
 const testing = std.testing;
 
 test "decodeUint32 and appendUint32 round-trip big-endian values" {
-	var bytes: std.ArrayList(u8) = .{};
+	var bytes: std.ArrayList(u8) = .empty;
 	defer bytes.deinit(testing.allocator);
 	try appendUint32(&bytes, testing.allocator, 0x1234_5678);
 	try appendUint32(&bytes, testing.allocator, 0xAABB_CCDD);
@@ -242,7 +242,7 @@ test "keyword helpers round-trip tags and tolerate out-of-bounds" {
 	try testing.expectEqual(kAcspTag, decodeKeyword(bytes[0..], 1));
 	try testing.expectEqual(Tag{ ' ', ' ', ' ', ' ' }, decodeKeyword(bytes[0..], 3));
 
-	var out: std.ArrayList(u8) = .{};
+	var out: std.ArrayList(u8) = .empty;
 	defer out.deinit(testing.allocator);
 	try appendKeyword(&out, testing.allocator, kDescTag);
 	try testing.expectEqualSlices(u8, "desc", out.items);
