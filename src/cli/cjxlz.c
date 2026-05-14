@@ -1515,23 +1515,6 @@ static int encode_image(
 		JxlEncoderDestroy(enc);
 		return 0;
 	}
-	if (icc_profile) {
-		if (JxlEncoderSetICCProfile(enc, icc_profile, icc_profile_size) != JXL_ENC_SUCCESS) {
-			snprintf(err, err_cap, "JxlEncoderSetICCProfile failed");
-			JxlEncoderDestroy(enc);
-			return 0;
-		}
-	} else {
-		if (JxlEncoderSetColorEncoding(enc, &color) != JXL_ENC_SUCCESS) {
-			snprintf(err, err_cap, "JxlEncoderSetColorEncoding failed");
-			JxlEncoderDestroy(enc);
-			return 0;
-		}
-	}
-	if (!apply_staged_boxes(enc, boxes, box_count, err, err_cap)) {
-		JxlEncoderDestroy(enc);
-		return 0;
-	}
 	if (alpha_name) {
 		JxlExtraChannelInfo alpha;
 		JxlEncoderInitExtraChannelInfo(JXL_CHANNEL_ALPHA, &alpha);
@@ -1574,6 +1557,23 @@ static int encode_image(
 			JxlEncoderDestroy(enc);
 			return 0;
 		}
+	}
+	if (icc_profile) {
+		if (JxlEncoderSetICCProfile(enc, icc_profile, icc_profile_size) != JXL_ENC_SUCCESS) {
+			snprintf(err, err_cap, "JxlEncoderSetICCProfile failed");
+			JxlEncoderDestroy(enc);
+			return 0;
+		}
+	} else {
+		if (JxlEncoderSetColorEncoding(enc, &color) != JXL_ENC_SUCCESS) {
+			snprintf(err, err_cap, "JxlEncoderSetColorEncoding failed");
+			JxlEncoderDestroy(enc);
+			return 0;
+		}
+	}
+	if (!apply_staged_boxes(enc, boxes, box_count, err, err_cap)) {
+		JxlEncoderDestroy(enc);
+		return 0;
 	}
 	if (JxlEncoderAddImageFrame(settings, &format, image->pixels, image->pixels_size) != JXL_ENC_SUCCESS) {
 		snprintf(err, err_cap, "JxlEncoderAddImageFrame failed");
