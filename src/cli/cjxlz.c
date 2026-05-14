@@ -100,6 +100,7 @@ static void print_help(FILE* out) {
 		"  --box TYPE PATH           Add an uncompressed BMFF metadata box from PATH\n"
 		"  --premultiplied-alpha     Mark the alpha channel as premultiplied/associated\n"
 		"  --associated-alpha        Alias for --premultiplied-alpha\n"
+		"  --icc-profile PATH        Embed an ICC profile instead of structured color metadata\n"
 		"  --linear-srgb             Use linear sRGB/gray instead of nonlinear sRGB\n"
 		"  --gamma VALUE             Set explicit gamma transfer (0 < gamma <= 1)\n"
 		"  --white-point NAME        Set white point: d65, e, or dci\n"
@@ -1405,6 +1406,8 @@ static int encode_image(
 	uint32_t animation_loops,
 	uint32_t frame_duration,
 	uint32_t frame_timecode,
+	const uint8_t* icc_profile,
+	size_t icc_profile_size,
 	uint8_t** encoded_out,
 	size_t* encoded_size_out,
 	char* err,
@@ -1432,6 +1435,7 @@ static int encode_image(
 	info.bits_per_sample = 8;
 	info.num_color_channels = image->num_color_channels;
 	info.num_extra_channels = image->num_extra_channels + (uint32_t)extra_count;
+	info.uses_original_profile = icc_profile ? 1 : 0;
 	info.alpha_bits = (image->num_extra_channels != 0 || staged_alpha_seen) ? 8 : 0;
 	info.intensity_target = intensity_target;
 	info.min_nits = min_nits;
@@ -1511,10 +1515,18 @@ static int encode_image(
 		JxlEncoderDestroy(enc);
 		return 0;
 	}
-	if (JxlEncoderSetColorEncoding(enc, &color) != JXL_ENC_SUCCESS) {
-		snprintf(err, err_cap, "JxlEncoderSetColorEncoding failed");
-		JxlEncoderDestroy(enc);
-		return 0;
+	if (icc_profile) {
+		if (JxlEncoderSetICCProfile(enc, icc_profile, icc_profile_size) != JXL_ENC_SUCCESS) {
+			snprintf(err, err_cap, "JxlEncoderSetICCProfile failed");
+			JxlEncoderDestroy(enc);
+			return 0;
+		}
+	} else {
+		if (JxlEncoderSetColorEncoding(enc, &color) != JXL_ENC_SUCCESS) {
+			snprintf(err, err_cap, "JxlEncoderSetColorEncoding failed");
+			JxlEncoderDestroy(enc);
+			return 0;
+		}
 	}
 	if (!apply_staged_boxes(enc, boxes, box_count, err, err_cap)) {
 		JxlEncoderDestroy(enc);
@@ -1642,8 +1654,12 @@ int cjxlz_main(int argc, char** argv) {
 
 	const char* input_path = NULL;
 	const char* output_path = NULL;
+	const char* icc_profile_path = NULL;
+	uint8_t* icc_profile = NULL;
+	size_t icc_profile_size = 0;
 	int use_container = 0;
 	int alpha_premultiplied = 0;
+	int structured_color_encoding_set = 0;
 	JxlWhitePoint white_point = JXL_WHITE_POINT_D65;
 	double white_point_x = 0.3127;
 	double white_point_y = 0.3290;
@@ -1698,6 +1714,15 @@ int cjxlz_main(int argc, char** argv) {
 			use_container = 1;
 			continue;
 		}
+		if (strcmp(argv[i], "--icc-profile") == 0) {
+			if (i + 1 >= argc) {
+				fprintf(stderr, "--icc-profile requires PATH\n");
+				return 2;
+			}
+			icc_profile_path = argv[i + 1];
+			i += 1;
+			continue;
+		}
 		if (strcmp(argv[i], "--xmp") == 0) {
 			if (i + 1 >= argc) {
 				fprintf(stderr, "--xmp requires PATH\n");
@@ -1740,6 +1765,7 @@ int cjxlz_main(int argc, char** argv) {
 		}
 		if (strcmp(argv[i], "--linear-srgb") == 0) {
 			transfer_function = JXL_TRANSFER_FUNCTION_LINEAR;
+			structured_color_encoding_set = 1;
 			continue;
 		}
 		if (strcmp(argv[i], "--gamma") == 0) {
@@ -1751,6 +1777,7 @@ int cjxlz_main(int argc, char** argv) {
 			gamma = parsed_gamma;
 			transfer_function = JXL_TRANSFER_FUNCTION_GAMMA;
 			gamma_set = 1;
+			structured_color_encoding_set = 1;
 			i += 1;
 			continue;
 		}
@@ -1759,6 +1786,7 @@ int cjxlz_main(int argc, char** argv) {
 				fprintf(stderr, "--white-point requires one of: d65, e, dci\n");
 				return 2;
 			}
+			structured_color_encoding_set = 1;
 			i += 1;
 			continue;
 		}
@@ -1768,6 +1796,7 @@ int cjxlz_main(int argc, char** argv) {
 				return 2;
 			}
 			white_point = JXL_WHITE_POINT_CUSTOM;
+			structured_color_encoding_set = 1;
 			i += 1;
 			continue;
 		}
@@ -1776,6 +1805,7 @@ int cjxlz_main(int argc, char** argv) {
 				fprintf(stderr, "--primaries requires one of: srgb, p3, 2100\n");
 				return 2;
 			}
+			structured_color_encoding_set = 1;
 			i += 1;
 			continue;
 		}
@@ -1793,6 +1823,7 @@ int cjxlz_main(int argc, char** argv) {
 				return 2;
 			}
 			primaries = JXL_PRIMARIES_CUSTOM;
+			structured_color_encoding_set = 1;
 			i += 1;
 			continue;
 		}
@@ -1801,6 +1832,7 @@ int cjxlz_main(int argc, char** argv) {
 				fprintf(stderr, "--transfer-function requires one of: srgb, linear, 709, pq, dci, hlg, gamma\n");
 				return 2;
 			}
+			structured_color_encoding_set = 1;
 			i += 1;
 			continue;
 		}
@@ -1809,6 +1841,7 @@ int cjxlz_main(int argc, char** argv) {
 				fprintf(stderr, "--rendering-intent requires one of: perceptual, relative, saturation, absolute\n");
 				return 2;
 			}
+			structured_color_encoding_set = 1;
 			i += 1;
 			continue;
 		}
@@ -1953,6 +1986,14 @@ int cjxlz_main(int argc, char** argv) {
 		fprintf(stderr, "--transfer-function gamma requires --gamma VALUE\n");
 		return 2;
 	}
+	if (icc_profile_path && structured_color_encoding_set) {
+		fprintf(stderr, "--icc-profile cannot be combined with structured color-encoding options\n");
+		return 2;
+	}
+	if (icc_profile_path && (strcmp(icc_profile_path, "-") == 0 || strcmp(icc_profile_path, "@stdin") == 0)) {
+		fprintf(stderr, "--icc-profile paths cannot use stdin\n");
+		return 2;
+	}
 
 	size_t input_size = 0;
 	uint8_t* input = read_path(input_path, &input_size);
@@ -1965,10 +2006,19 @@ int cjxlz_main(int argc, char** argv) {
 	err[0] = '\0';
 	uint8_t* encoded = NULL;
 	size_t encoded_size = 0;
+	if (icc_profile_path) {
+		icc_profile = read_path(icc_profile_path, &icc_profile_size);
+		if (!icc_profile) {
+			fprintf(stderr, "failed to read icc profile: %s\n", icc_profile_path);
+			free(input);
+			return 1;
+		}
+	}
 	for (size_t i = 0; i < box_count; ++i) {
 		boxes[i].data = read_path(boxes[i].path, &boxes[i].size);
 		if (!boxes[i].data && boxes[i].size != 0) {
 			fprintf(stderr, "failed to read box payload: %s\n", boxes[i].path);
+			free(icc_profile);
 			free(input);
 			free_box_inputs(boxes, box_count);
 			return 1;
@@ -1979,6 +2029,7 @@ int cjxlz_main(int argc, char** argv) {
 		ParsedAnimation animation;
 		if (!parse_gif_animation(input, input_size, &animation, err, sizeof(err))) {
 			fprintf(stderr, "%s\n", err[0] ? err : "GIF parse failed");
+			free(icc_profile);
 			free_box_inputs(boxes, box_count);
 			free(input);
 			return 1;
@@ -1986,6 +2037,15 @@ int cjxlz_main(int argc, char** argv) {
 		if (extra_count != 0) {
 			fprintf(stderr, "GIF input does not support --extra yet\n");
 			free_parsed_animation(&animation);
+			free(icc_profile);
+			free_box_inputs(boxes, box_count);
+			free(input);
+			return 1;
+		}
+		if (icc_profile_path) {
+			fprintf(stderr, "GIF input does not support --icc-profile yet\n");
+			free_parsed_animation(&animation);
+			free(icc_profile);
 			free_box_inputs(boxes, box_count);
 			free(input);
 			return 1;
@@ -1993,6 +2053,7 @@ int cjxlz_main(int argc, char** argv) {
 		if (frame_timecode_set) {
 			fprintf(stderr, "--frame-timecode is not supported for GIF input\n");
 			free_parsed_animation(&animation);
+			free(icc_profile);
 			free_box_inputs(boxes, box_count);
 			free(input);
 			return 1;
@@ -2057,6 +2118,7 @@ int cjxlz_main(int argc, char** argv) {
 			)) {
 				fprintf(stderr, "%s\n", err[0] ? err : "animation encode failed");
 				free_parsed_animation(&animation);
+				free(icc_profile);
 				free_box_inputs(boxes, box_count);
 				free(input);
 				return 1;
@@ -2099,6 +2161,8 @@ int cjxlz_main(int argc, char** argv) {
 				0,
 				0,
 				0,
+				NULL,
+				0,
 				&encoded,
 				&encoded_size,
 				err,
@@ -2106,6 +2170,7 @@ int cjxlz_main(int argc, char** argv) {
 			)) {
 				fprintf(stderr, "%s\n", err[0] ? err : "encode failed");
 				free_parsed_animation(&animation);
+				free(icc_profile);
 				free_box_inputs(boxes, box_count);
 				free(input);
 				return 1;
@@ -2114,6 +2179,7 @@ int cjxlz_main(int argc, char** argv) {
 		free_parsed_animation(&animation);
 #else
 		fprintf(stderr, "gif input is not supported in this build\n");
+		free(icc_profile);
 		free_box_inputs(boxes, box_count);
 		free(input);
 		return 1;
@@ -2122,6 +2188,7 @@ int cjxlz_main(int argc, char** argv) {
 		ParsedImage image;
 		if (!parse_input_image(input, input_size, &image, err, sizeof(err))) {
 			fprintf(stderr, "%s\n", err[0] ? err : "parse failed");
+			free(icc_profile);
 			free_box_inputs(boxes, box_count);
 			free(input);
 			return 1;
@@ -2134,6 +2201,7 @@ int cjxlz_main(int argc, char** argv) {
 					free_parsed_image(&extras[j].image);
 					free(extras[j].file_data);
 				}
+				free(icc_profile);
 				free_parsed_image(&image);
 				free_box_inputs(boxes, box_count);
 				free(input);
@@ -2178,6 +2246,8 @@ int cjxlz_main(int argc, char** argv) {
 			animation_loops,
 			frame_duration,
 			frame_timecode,
+			icc_profile,
+			icc_profile_size,
 			&encoded,
 			&encoded_size,
 			err,
@@ -2188,6 +2258,7 @@ int cjxlz_main(int argc, char** argv) {
 				free_parsed_image(&extras[i].image);
 				free(extras[i].file_data);
 			}
+			free(icc_profile);
 			free_parsed_image(&image);
 			free_box_inputs(boxes, box_count);
 			free(input);
@@ -2199,6 +2270,7 @@ int cjxlz_main(int argc, char** argv) {
 		}
 		free_parsed_image(&image);
 	}
+	free(icc_profile);
 	free(input);
 
 	FILE* out = open_output(output_path);
