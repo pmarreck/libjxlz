@@ -18,12 +18,29 @@ static const uint8_t kSyntheticRgbIcc[128] = {
 	0x00, 0x00, 0x00, 0x00, 'a', 'c', 's', 'p',
 };
 
-int main(void) {
+static const uint8_t kSyntheticCmykIcc[128] = {
+	0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 'm', 'n', 't', 'r',
+	'C', 'M', 'Y', 'K', 'X', 'Y', 'Z', ' ',
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 'a', 'c', 's', 'p',
+};
+
+static int run_roundtrip(
+	const uint8_t* icc,
+	size_t icc_size,
+	int expect_black_extra
+) {
 	const uint8_t pixels[12] = {
 		0, 10, 20, 30, 40, 50,
 		60, 70, 80, 90, 100, 110,
 	};
-	JxlPixelFormat format = {3, JXL_TYPE_UINT8, JXL_NATIVE_ENDIAN, 0};
+	const uint8_t black_pixels[4] = {
+		5, 55,
+		105, 155,
+	};
+	JxlPixelFormat rgb_format = {3, JXL_TYPE_UINT8, JXL_NATIVE_ENDIAN, 0};
+	JxlPixelFormat extra_format = {1, JXL_TYPE_UINT8, JXL_NATIVE_ENDIAN, 0};
 
 	JxlBasicInfo info;
 	JxlEncoderInitBasicInfo(&info);
@@ -31,6 +48,8 @@ int main(void) {
 	info.ysize = 2;
 	info.bits_per_sample = 8;
 	info.num_color_channels = 3;
+	info.num_extra_channels = expect_black_extra ? 1 : 0;
+	info.uses_original_profile = JXL_TRUE;
 
 	JxlEncoder* enc = JxlEncoderCreate(NULL);
 	if (!enc) {
@@ -50,15 +69,31 @@ int main(void) {
 		JxlEncoderDestroy(enc);
 		return 1;
 	}
-	if (JxlEncoderSetICCProfile(enc, kSyntheticRgbIcc, sizeof(kSyntheticRgbIcc)) != JXL_ENC_SUCCESS) {
+	if (expect_black_extra) {
+		JxlExtraChannelInfo black_info;
+		JxlEncoderInitExtraChannelInfo(JXL_CHANNEL_BLACK, &black_info);
+		if (JxlEncoderSetExtraChannelInfo(enc, 0, &black_info) != JXL_ENC_SUCCESS) {
+			fprintf(stderr, "set black extra info failed\n");
+			JxlEncoderDestroy(enc);
+			return 1;
+		}
+	}
+	if (JxlEncoderSetICCProfile(enc, icc, icc_size) != JXL_ENC_SUCCESS) {
 		fprintf(stderr, "set icc profile failed\n");
 		JxlEncoderDestroy(enc);
 		return 1;
 	}
-	if (JxlEncoderAddImageFrame(settings, &format, pixels, sizeof(pixels)) != JXL_ENC_SUCCESS) {
+	if (JxlEncoderAddImageFrame(settings, &rgb_format, pixels, sizeof(pixels)) != JXL_ENC_SUCCESS) {
 		fprintf(stderr, "add image frame failed\n");
 		JxlEncoderDestroy(enc);
 		return 1;
+	}
+	if (expect_black_extra) {
+		if (JxlEncoderSetExtraChannelBuffer(settings, &extra_format, black_pixels, sizeof(black_pixels), 0) != JXL_ENC_SUCCESS) {
+			fprintf(stderr, "set black extra buffer failed\n");
+			JxlEncoderDestroy(enc);
+			return 1;
+		}
 	}
 	JxlEncoderCloseInput(enc);
 
@@ -96,31 +131,64 @@ int main(void) {
 
 	for (;;) {
 		JxlDecoderStatus status = JxlDecoderProcessInput(dec);
-		if (status == JXL_DEC_BASIC_INFO) continue;
+		if (status == JXL_DEC_BASIC_INFO) {
+			JxlBasicInfo decoded_info;
+			memset(&decoded_info, 0, sizeof(decoded_info));
+			if (JxlDecoderGetBasicInfo(dec, &decoded_info) != JXL_DEC_SUCCESS) {
+				fprintf(stderr, "get basic info failed\n");
+				JxlDecoderDestroy(dec);
+				return 1;
+			}
+			if (decoded_info.num_extra_channels != (expect_black_extra ? 1u : 0u)) {
+				fprintf(stderr, "unexpected extra channel count %u\n", decoded_info.num_extra_channels);
+				JxlDecoderDestroy(dec);
+				return 1;
+			}
+			if (expect_black_extra) {
+				JxlExtraChannelInfo extra_info;
+				memset(&extra_info, 0, sizeof(extra_info));
+				if (JxlDecoderGetExtraChannelInfo(dec, 0, &extra_info) != JXL_DEC_SUCCESS) {
+					fprintf(stderr, "get extra channel info failed\n");
+					JxlDecoderDestroy(dec);
+					return 1;
+				}
+				if (extra_info.type != JXL_CHANNEL_BLACK) {
+					fprintf(stderr, "unexpected extra channel type %d\n", (int)extra_info.type);
+					JxlDecoderDestroy(dec);
+					return 1;
+				}
+			}
+			continue;
+		}
 		if (status == JXL_DEC_COLOR_ENCODING) {
-			size_t icc_size = 0;
-			uint8_t decoded[sizeof(kSyntheticRgbIcc)];
+			size_t decoded_icc_size = 0;
+			uint8_t decoded_icc[256];
 			if (JxlDecoderGetColorAsEncodedProfile(dec, JXL_COLOR_PROFILE_TARGET_ORIGINAL, NULL) != JXL_DEC_ERROR) {
 				fprintf(stderr, "encoded profile unexpectedly available\n");
 				JxlDecoderDestroy(dec);
 				return 1;
 			}
-			if (JxlDecoderGetICCProfileSize(dec, JXL_COLOR_PROFILE_TARGET_ORIGINAL, &icc_size) != JXL_DEC_SUCCESS) {
+			if (JxlDecoderGetICCProfileSize(dec, JXL_COLOR_PROFILE_TARGET_ORIGINAL, &decoded_icc_size) != JXL_DEC_SUCCESS) {
 				fprintf(stderr, "get icc size failed\n");
 				JxlDecoderDestroy(dec);
 				return 1;
 			}
-			if (icc_size != sizeof(kSyntheticRgbIcc)) {
-				fprintf(stderr, "unexpected icc size %zu\n", icc_size);
+			if (decoded_icc_size != icc_size) {
+				fprintf(stderr, "unexpected icc size %zu\n", decoded_icc_size);
 				JxlDecoderDestroy(dec);
 				return 1;
 			}
-			if (JxlDecoderGetColorAsICCProfile(dec, JXL_COLOR_PROFILE_TARGET_ORIGINAL, decoded, sizeof(decoded)) != JXL_DEC_SUCCESS) {
+			if (decoded_icc_size > sizeof(decoded_icc)) {
+				fprintf(stderr, "icc buffer too small\n");
+				JxlDecoderDestroy(dec);
+				return 1;
+			}
+			if (JxlDecoderGetColorAsICCProfile(dec, JXL_COLOR_PROFILE_TARGET_ORIGINAL, decoded_icc, sizeof(decoded_icc)) != JXL_DEC_SUCCESS) {
 				fprintf(stderr, "get icc profile failed\n");
 				JxlDecoderDestroy(dec);
 				return 1;
 			}
-			if (memcmp(decoded, kSyntheticRgbIcc, sizeof(kSyntheticRgbIcc)) != 0) {
+			if (memcmp(decoded_icc, icc, icc_size) != 0) {
 				fprintf(stderr, "icc payload mismatch\n");
 				JxlDecoderDestroy(dec);
 				return 1;
@@ -134,4 +202,14 @@ int main(void) {
 			return 1;
 		}
 	}
+}
+
+int main(void) {
+	if (run_roundtrip(kSyntheticRgbIcc, sizeof(kSyntheticRgbIcc), 0) != 0) {
+		return 1;
+	}
+	if (run_roundtrip(kSyntheticCmykIcc, sizeof(kSyntheticCmykIcc), 1) != 0) {
+		return 1;
+	}
+	return 0;
 }

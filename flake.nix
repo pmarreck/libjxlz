@@ -2,20 +2,25 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    zig-overlay = {
+      url = "github:mitchellh/zig-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, zig-overlay }:
     flake-utils.lib.eachDefaultSystem
       (system:
         let
           pkgs = import nixpkgs {
             inherit system;
           };
+          zigPkg = zig-overlay.packages.${system}."0.16.0";
           pname = "libjxlz";
           version = "0.1.0";
           mkZigPackage = optimize: with pkgs; stdenv.mkDerivation {
             inherit pname version;
             src = ./.;
-            nativeBuildInputs = [ zig pkg-config libpng giflib zlib brotli ]
+            nativeBuildInputs = [ zigPkg pkg-config libpng giflib zlib brotli ]
               ++ lib.optionals (stdenv.isDarwin) [
                 darwin.cctools
                 apple-sdk
@@ -64,7 +69,7 @@
               pname = "${pname}-test";
               inherit version;
               src = ./.;
-            nativeBuildInputs = [ zig pkg-config libpng giflib zlib brotli ]
+            nativeBuildInputs = [ zigPkg pkg-config libpng giflib zlib brotli ]
                 ++ lib.optionals (stdenv.isDarwin) [
                   darwin.cctools
                   apple-sdk
@@ -95,7 +100,7 @@
               pname = "${pname}-windows-x86_64-cross";
               inherit version;
               src = ./.;
-              nativeBuildInputs = [ bash zig mingwBrotli ];
+              nativeBuildInputs = [ bash zigPkg mingwBrotli ];
               dontConfigure = true;
               dontFixup = true;
               buildPhase = ''
@@ -129,7 +134,7 @@
               brotli
               ninja
               # Zig + tools
-              zig
+              zigPkg
               hyperfine
             ];
             shellHook = ''

@@ -623,9 +623,30 @@ fn classifyIccEmbeddingShape(icc: []const u8) !IccEmbeddingShape {
 	const declared_size = byte_order.loadBE32(@ptrCast(icc[0..4]));
 	if (declared_size != icc.len) return error.InvalidArgs;
 	if (!std.mem.eql(u8, icc[36..40], "acsp")) return error.InvalidArgs;
-	if (std.mem.eql(u8, icc[16..20], "GRAY")) return .{ .main_color_channels = 1 };
-	if (std.mem.eql(u8, icc[16..20], "RGB ")) return .{ .main_color_channels = 3 };
-	if (std.mem.eql(u8, icc[16..20], "CMYK")) {
+	const color_space = icc[16..20];
+	if (
+		std.mem.eql(u8, color_space, "GRAY") or
+		std.mem.eql(u8, color_space, "MCH1") or
+		std.mem.eql(u8, color_space, "1CLR")
+	) {
+		return .{ .main_color_channels = 1 };
+	}
+	if (
+		std.mem.eql(u8, color_space, "RGB ") or
+		std.mem.eql(u8, color_space, "XYZ ") or
+		std.mem.eql(u8, color_space, "Lab ") or
+		std.mem.eql(u8, color_space, "Luv ") or
+		std.mem.eql(u8, color_space, "YCbr") or
+		std.mem.eql(u8, color_space, "Yxy ") or
+		std.mem.eql(u8, color_space, "HSV ") or
+		std.mem.eql(u8, color_space, "HLS ") or
+		std.mem.eql(u8, color_space, "CMY ") or
+		std.mem.eql(u8, color_space, "MCH3") or
+		std.mem.eql(u8, color_space, "3CLR")
+	) {
+		return .{ .main_color_channels = 3 };
+	}
+	if (std.mem.eql(u8, color_space, "CMYK")) {
 		return .{
 			.main_color_channels = 3,
 			.requires_black_extra = true,
@@ -3038,6 +3059,98 @@ test "JxlEncoderSetICCProfile rejects CMYK ICC without a staged black extra chan
 	try testing.expectEqual(
 		JxlEncoderStatus.JXL_ENC_ERROR,
 		JxlEncoderSetICCProfile(enc, cmyk_icc.ptr, cmyk_icc.len),
+	);
+}
+
+/// Builds a minimal header-only ICC payload for API tests that only exercise
+/// public header classification, keeping channel-shape coverage hermetic.
+fn makeSyntheticIccHeader(data_color_space: [4]u8) [128]u8 {
+	var icc = std.mem.zeroes([128]u8);
+	icc[0] = 0x00;
+	icc[1] = 0x00;
+	icc[2] = 0x00;
+	icc[3] = 0x80;
+	icc[12] = 'm';
+	icc[13] = 'n';
+	icc[14] = 't';
+	icc[15] = 'r';
+	@memcpy(icc[16..20], &data_color_space);
+	icc[20] = 'X';
+	icc[21] = 'Y';
+	icc[22] = 'Z';
+	icc[23] = ' ';
+	icc[36] = 'a';
+	icc[37] = 'c';
+	icc[38] = 's';
+	icc[39] = 'p';
+	return icc;
+}
+
+test "JxlEncoderSetICCProfile accepts Lab ICC with three color channels" {
+	const testing = std.testing;
+	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlEncoderDestroy(enc);
+
+	var info: JxlBasicInfo = undefined;
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 1;
+	info.ysize = 1;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 3;
+	info.uses_original_profile = 1;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetBasicInfo(enc, &info));
+
+	const lab_icc = makeSyntheticIccHeader(.{ 'L', 'a', 'b', ' ' });
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderSetICCProfile(enc, lab_icc[0..].ptr, lab_icc.len),
+	);
+}
+
+test "JxlEncoderSetICCProfile accepts XYZ ICC with three color channels" {
+	const testing = std.testing;
+	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlEncoderDestroy(enc);
+
+	var info: JxlBasicInfo = undefined;
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 1;
+	info.ysize = 1;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 3;
+	info.uses_original_profile = 1;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetBasicInfo(enc, &info));
+
+	const xyz_icc = makeSyntheticIccHeader(.{ 'X', 'Y', 'Z', ' ' });
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderSetICCProfile(enc, xyz_icc[0..].ptr, xyz_icc.len),
+	);
+}
+
+test "JxlEncoderSetICCProfile rejects generic four-channel ICC without a CMYK mapping" {
+	const testing = std.testing;
+	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlEncoderDestroy(enc);
+
+	var info: JxlBasicInfo = undefined;
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 1;
+	info.ysize = 1;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 3;
+	info.num_extra_channels = 1;
+	info.uses_original_profile = 1;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetBasicInfo(enc, &info));
+
+	var black: JxlExtraChannelInfo = undefined;
+	JxlEncoderInitExtraChannelInfo(.JXL_CHANNEL_BLACK, &black);
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetExtraChannelInfo(enc, 0, &black));
+
+	const four_channel_icc = makeSyntheticIccHeader(.{ '4', 'C', 'L', 'R' });
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_ERROR,
+		JxlEncoderSetICCProfile(enc, four_channel_icc[0..].ptr, four_channel_icc.len),
 	);
 }
 
