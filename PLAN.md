@@ -35,6 +35,9 @@
 - [x] `cjxlz` embedded ICC first slice: add `--icc-profile PATH` to the C CLI for still-image inputs, dogfood `JxlEncoderSetICCProfile` instead of structured color metadata, reject conflicting structured-color flags up front, and prove exact embedded RGB ICC roundtrip with a new external CLI smoke — 2026-05-14 ~estimated EDT
 - [x] `cjxlz` embedded ICC CMYK follow-up: broaden the new CLI path from still-image RGB ICC input to the first `CMYK + --extra black PATH` dogfood case, with a failing CLI smoke first and explicit decoder-side assertions on both the exact ICC bytes and the staged black extra channel; fixing the smoke required reordering the CLI’s public-API calls so staged extra-channel info is visible before `JxlEncoderSetICCProfile` validates the ICC shape — 2026-05-14 ~estimated EDT
 - [x] `./test` runner observability follow-up: factor the shell-smoke loop into a tiny reusable Bash helper, cover it with a fake-`nix` smoke, and make the real top-level runner print deterministic per-test progress lines so long CLI sweeps no longer look hung — 2026-05-14 ~estimated EDT
+- [x] Embedded ICC codestream writer parity follow-up: add failing full-image/frame-parse regressions for the synthetic header-only RGB ICC path, stop embedding the standalone byte-padded compressed-ICC blob inside the main codestream, write ICC bits directly into the outer codestream writer instead, and prove exact `djxlz --icc-profile-output` RGB/CMYK roundtrip through a new CLI smoke — 2026-05-14 ~estimated EDT
+- [ ] `djxlz` embedded ICC hardening: add negative `--icc-profile-output` smokes (`@stdout`, write failures, and option-contract edges) now that the happy-path extractor is green
+- [ ] Embedded ICC broader CLI/API parity: decide the next smallest surface between animation-aware ICC handling in `djxlz` and richer decoder-side ICC inspection helpers
 
 ## Phase 1: Foundation (complete)
 - [x] build.zig + build.zig.zon — 2026-03-06 ~3:00 PM EST

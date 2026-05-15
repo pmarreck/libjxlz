@@ -59,6 +59,7 @@ static void print_help(FILE* out) {
 		"Options:\n"
 		"  -h, --help               Show this help\n"
 		"  --about                  Show version, platform, and architecture\n"
+		"  --icc-profile-output P   Write the decoded original ICC profile to PATH\n"
 		"  --output_format FORMAT   One of: ppm, pgm, pam, pnm, gif\n\n"
 		"Paths:\n"
 		"  INPUT accepts '-' or '@stdin'\n"
@@ -221,6 +222,71 @@ static int decode_image(const uint8_t* data, size_t size, const char* output_for
 		free(out->pixels);
 		JxlDecoderDestroy(dec);
 		return 0;
+	}
+}
+
+static int write_blob(FILE* out, const uint8_t* bytes, size_t size) {
+	if (size == 0) return 1;
+	return fwrite(bytes, 1, size, out) == size;
+}
+
+static int extract_icc_profile(const uint8_t* data, size_t size, uint8_t** icc_out, size_t* icc_size_out, char* err, size_t err_cap) {
+	*icc_out = NULL;
+	*icc_size_out = 0;
+
+	JxlDecoder* dec = JxlDecoderCreate(NULL);
+	if (!dec) {
+		snprintf(err, err_cap, "JxlDecoderCreate failed");
+		return 0;
+	}
+	if (JxlDecoderSubscribeEvents(dec, JXL_DEC_BASIC_INFO | JXL_DEC_COLOR_ENCODING) != JXL_DEC_SUCCESS) {
+		snprintf(err, err_cap, "JxlDecoderSubscribeEvents failed");
+		JxlDecoderDestroy(dec);
+		return 0;
+	}
+	if (JxlDecoderSetInput(dec, data, size) != JXL_DEC_SUCCESS) {
+		snprintf(err, err_cap, "JxlDecoderSetInput failed");
+		JxlDecoderDestroy(dec);
+		return 0;
+	}
+	JxlDecoderCloseInput(dec);
+
+	for (;;) {
+		JxlDecoderStatus status = JxlDecoderProcessInput(dec);
+		if (status == JXL_DEC_BASIC_INFO) continue;
+		if (status == JXL_DEC_COLOR_ENCODING) {
+			if (JxlDecoderGetICCProfileSize(dec, JXL_COLOR_PROFILE_TARGET_ORIGINAL, icc_size_out) != JXL_DEC_SUCCESS) {
+				snprintf(err, err_cap, "JxlDecoderGetICCProfileSize failed");
+				JxlDecoderDestroy(dec);
+				return 0;
+			}
+			*icc_out = (uint8_t*)malloc(*icc_size_out == 0 ? 1 : *icc_size_out);
+			if (!*icc_out) {
+				snprintf(err, err_cap, "malloc failed");
+				JxlDecoderDestroy(dec);
+				return 0;
+			}
+			if (JxlDecoderGetColorAsICCProfile(dec, JXL_COLOR_PROFILE_TARGET_ORIGINAL, *icc_out, *icc_size_out) != JXL_DEC_SUCCESS) {
+				snprintf(err, err_cap, "JxlDecoderGetColorAsICCProfile failed");
+				free(*icc_out);
+				*icc_out = NULL;
+				*icc_size_out = 0;
+				JxlDecoderDestroy(dec);
+				return 0;
+			}
+			JxlDecoderDestroy(dec);
+			return 1;
+		}
+		if (status == JXL_DEC_ERROR) {
+			snprintf(err, err_cap, "JxlDecoderProcessInput failed");
+			JxlDecoderDestroy(dec);
+			return 0;
+		}
+		if (status == JXL_DEC_NEED_MORE_INPUT || status == JXL_DEC_SUCCESS) {
+			snprintf(err, err_cap, "decoder failed before color encoding");
+			JxlDecoderDestroy(dec);
+			return 0;
+		}
 	}
 }
 
@@ -593,6 +659,7 @@ int djxlz_main(int argc, char** argv) {
 	const char* output_format = NULL;
 	const char* input_path = NULL;
 	const char* output_path = NULL;
+	const char* icc_profile_output_path = NULL;
 
 	for (int i = 1; i < argc; ++i) {
 		if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -602,6 +669,14 @@ int djxlz_main(int argc, char** argv) {
 		if (strcmp(argv[i], "--about") == 0) {
 			printf("djxlz %u %s %s\n", JxlDecoderVersion(), platform_name(), arch_name());
 			return 0;
+		}
+		if (strcmp(argv[i], "--icc-profile-output") == 0) {
+			if (i + 1 >= argc) {
+				fprintf(stderr, "missing value for --icc-profile-output\n");
+				return 2;
+			}
+			icc_profile_output_path = argv[++i];
+			continue;
 		}
 		if (strcmp(argv[i], "--output_format") == 0) {
 			if (i + 1 >= argc) {
@@ -648,18 +723,30 @@ int djxlz_main(int argc, char** argv) {
 		free(input);
 		return 1;
 	}
+	uint8_t* extracted_icc = NULL;
+	size_t extracted_icc_size = 0;
+	if (icc_profile_output_path) {
+		if (!extract_icc_profile(input, input_size, &extracted_icc, &extracted_icc_size, err, sizeof(err))) {
+			fprintf(stderr, "%s\n", err[0] ? err : "icc extraction failed");
+			close_output(output_path, out);
+			free(input);
+			return 1;
+		}
+	}
 
 	if (strcmp(output_format, "gif") == 0) {
 #ifdef JXLZ_HAVE_GIF_OUTPUT
 		if (!write_gif(input, input_size, out, err, sizeof(err))) {
 			fprintf(stderr, "%s\n", err[0] ? err : "gif export failed");
 			close_output(output_path, out);
+			free(extracted_icc);
 			free(input);
 			return 1;
 		}
 #else
 		fprintf(stderr, "gif output is not supported in this build\n");
 		close_output(output_path, out);
+		free(extracted_icc);
 		free(input);
 		return 1;
 #endif
@@ -668,6 +755,7 @@ int djxlz_main(int argc, char** argv) {
 		if (!decode_image(input, input_size, output_format, &image, err, sizeof(err))) {
 			fprintf(stderr, "%s\n", err[0] ? err : "decode failed");
 			close_output(output_path, out);
+			free(extracted_icc);
 			free(input);
 			return 1;
 		}
@@ -675,13 +763,34 @@ int djxlz_main(int argc, char** argv) {
 			fprintf(stderr, "failed to write output\n");
 			close_output(output_path, out);
 			free(image.pixels);
+			free(extracted_icc);
 			free(input);
 			return 1;
 		}
 		free(image.pixels);
 	}
+	if (icc_profile_output_path) {
+		FILE* icc_out = open_output(icc_profile_output_path);
+		if (!icc_out) {
+			fprintf(stderr, "failed to open icc output: %s\n", icc_profile_output_path);
+			close_output(output_path, out);
+			free(extracted_icc);
+			free(input);
+			return 1;
+		}
+		if (!write_blob(icc_out, extracted_icc, extracted_icc_size)) {
+			fprintf(stderr, "failed to write icc output\n");
+			close_output(icc_profile_output_path, icc_out);
+			close_output(output_path, out);
+			free(extracted_icc);
+			free(input);
+			return 1;
+		}
+		close_output(icc_profile_output_path, icc_out);
+	}
 
 	close_output(output_path, out);
+	free(extracted_icc);
 	free(input);
 	return 0;
 }

@@ -2950,6 +2950,316 @@ test "JxlEncoderSetICCProfile round-trips exact builtin sRGB ICC bytes" {
 	try testing.expect(saw_color);
 }
 
+test "embedded ICC codestream reaches full-image decode" {
+	const testing = std.testing;
+	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlEncoderDestroy(enc);
+
+	var info: JxlBasicInfo = undefined;
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 2;
+	info.ysize = 2;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 3;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetBasicInfo(enc, &info));
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderSetICCProfile(enc, icc_profiles.srgb_builtin_profile[0..].ptr, icc_profiles.srgb_builtin_profile.len),
+	);
+
+	const settings = JxlEncoderFrameSettingsCreate(enc, null) orelse return error.OutOfMemory;
+	const pixels = [_]u8{
+		0, 10, 20, 30, 40, 50,
+		60, 70, 80, 90, 100, 110,
+	};
+	const format = JxlPixelFormat{
+		.num_channels = 3,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderAddImageFrame(settings, &format, &pixels, pixels.len));
+	JxlEncoderCloseInput(enc);
+
+	var encoded: std.ArrayListUnmanaged(u8) = .empty;
+	defer encoded.deinit(testing.allocator);
+	while (true) {
+		var chunk: [64]u8 = undefined;
+		var next_out = chunk[0..].ptr;
+		var avail_out: usize = chunk.len;
+		const status = JxlEncoderProcessOutput(enc, &next_out, &avail_out);
+		const produced = chunk.len - avail_out;
+		try encoded.appendSlice(testing.allocator, chunk[0..produced]);
+		if (status == .JXL_ENC_SUCCESS) break;
+		try testing.expectEqual(JxlEncoderStatus.JXL_ENC_NEED_MORE_OUTPUT, status);
+	}
+
+	const dec = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlDecoderDestroy(dec);
+	try testing.expectEqual(
+		JxlDecoderStatus.JXL_DEC_SUCCESS,
+		JxlDecoderSubscribeEvents(
+			dec,
+			@intFromEnum(JxlDecoderStatus.JXL_DEC_BASIC_INFO) |
+				@intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE),
+		),
+	);
+	try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(dec, encoded.items.ptr, encoded.items.len));
+	JxlDecoderCloseInput(dec);
+
+	var output = std.mem.zeroes([12]u8);
+	var saw_need_out = false;
+	var saw_full = false;
+	while (true) {
+		switch (JxlDecoderProcessInput(dec)) {
+			.JXL_DEC_BASIC_INFO => {},
+			.JXL_DEC_NEED_IMAGE_OUT_BUFFER => {
+				saw_need_out = true;
+				try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(dec, &format, &output, output.len));
+			},
+			.JXL_DEC_FULL_IMAGE => saw_full = true,
+			.JXL_DEC_SUCCESS => break,
+			else => return error.UnexpectedDecoderStatus,
+		}
+	}
+
+	try testing.expect(saw_need_out);
+	try testing.expect(saw_full);
+	try testing.expectEqualSlices(u8, &pixels, &output);
+}
+
+test "synthetic embedded RGB ICC codestream reaches full-image decode" {
+	const testing = std.testing;
+	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlEncoderDestroy(enc);
+
+	var info: JxlBasicInfo = undefined;
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 2;
+	info.ysize = 2;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 3;
+	info.uses_original_profile = 1;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetBasicInfo(enc, &info));
+
+	const synthetic_icc = makeSyntheticIccHeader(.{ 'R', 'G', 'B', ' ' });
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderSetICCProfile(enc, synthetic_icc[0..].ptr, synthetic_icc.len),
+	);
+
+	const settings = JxlEncoderFrameSettingsCreate(enc, null) orelse return error.OutOfMemory;
+	const pixels = [_]u8{
+		0, 10, 20, 30, 40, 50,
+		60, 70, 80, 90, 100, 110,
+	};
+	const format = JxlPixelFormat{
+		.num_channels = 3,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderAddImageFrame(settings, &format, &pixels, pixels.len));
+	JxlEncoderCloseInput(enc);
+
+	var encoded: std.ArrayListUnmanaged(u8) = .empty;
+	defer encoded.deinit(testing.allocator);
+	while (true) {
+		var chunk: [64]u8 = undefined;
+		var next_out = chunk[0..].ptr;
+		var avail_out: usize = chunk.len;
+		const status = JxlEncoderProcessOutput(enc, &next_out, &avail_out);
+		const produced = chunk.len - avail_out;
+		try encoded.appendSlice(testing.allocator, chunk[0..produced]);
+		if (status == .JXL_ENC_SUCCESS) break;
+		try testing.expectEqual(JxlEncoderStatus.JXL_ENC_NEED_MORE_OUTPUT, status);
+	}
+
+	const dec = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlDecoderDestroy(dec);
+	try testing.expectEqual(
+		JxlDecoderStatus.JXL_DEC_SUCCESS,
+		JxlDecoderSubscribeEvents(
+			dec,
+			@intFromEnum(JxlDecoderStatus.JXL_DEC_BASIC_INFO) |
+				@intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE),
+		),
+	);
+	try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(dec, encoded.items.ptr, encoded.items.len));
+	JxlDecoderCloseInput(dec);
+
+	var output = std.mem.zeroes([12]u8);
+	var saw_need_out = false;
+	var saw_full = false;
+	while (true) {
+		switch (JxlDecoderProcessInput(dec)) {
+			.JXL_DEC_BASIC_INFO => {},
+			.JXL_DEC_NEED_IMAGE_OUT_BUFFER => {
+				saw_need_out = true;
+				try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(dec, &format, &output, output.len));
+			},
+			.JXL_DEC_FULL_IMAGE => saw_full = true,
+			.JXL_DEC_SUCCESS => break,
+			else => return error.UnexpectedDecoderStatus,
+		}
+	}
+
+	try testing.expect(saw_need_out);
+	try testing.expect(saw_full);
+	try testing.expectEqualSlices(u8, &pixels, &output);
+}
+
+test "builtin embedded ICC codestream reaches full-image decode with original-profile flag" {
+	const testing = std.testing;
+	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlEncoderDestroy(enc);
+
+	var info: JxlBasicInfo = undefined;
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 2;
+	info.ysize = 2;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 3;
+	info.uses_original_profile = 1;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetBasicInfo(enc, &info));
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderSetICCProfile(enc, icc_profiles.srgb_builtin_profile[0..].ptr, icc_profiles.srgb_builtin_profile.len),
+	);
+
+	const settings = JxlEncoderFrameSettingsCreate(enc, null) orelse return error.OutOfMemory;
+	const pixels = [_]u8{
+		0, 10, 20, 30, 40, 50,
+		60, 70, 80, 90, 100, 110,
+	};
+	const format = JxlPixelFormat{
+		.num_channels = 3,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderAddImageFrame(settings, &format, &pixels, pixels.len));
+	JxlEncoderCloseInput(enc);
+
+	var encoded: std.ArrayListUnmanaged(u8) = .empty;
+	defer encoded.deinit(testing.allocator);
+	while (true) {
+		var chunk: [64]u8 = undefined;
+		var next_out = chunk[0..].ptr;
+		var avail_out: usize = chunk.len;
+		const status = JxlEncoderProcessOutput(enc, &next_out, &avail_out);
+		const produced = chunk.len - avail_out;
+		try encoded.appendSlice(testing.allocator, chunk[0..produced]);
+		if (status == .JXL_ENC_SUCCESS) break;
+		try testing.expectEqual(JxlEncoderStatus.JXL_ENC_NEED_MORE_OUTPUT, status);
+	}
+
+	const dec = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlDecoderDestroy(dec);
+	try testing.expectEqual(
+		JxlDecoderStatus.JXL_DEC_SUCCESS,
+		JxlDecoderSubscribeEvents(
+			dec,
+			@intFromEnum(JxlDecoderStatus.JXL_DEC_BASIC_INFO) |
+				@intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE),
+		),
+	);
+	try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(dec, encoded.items.ptr, encoded.items.len));
+	JxlDecoderCloseInput(dec);
+
+	var output = std.mem.zeroes([12]u8);
+	var saw_need_out = false;
+	var saw_full = false;
+	while (true) {
+		switch (JxlDecoderProcessInput(dec)) {
+			.JXL_DEC_BASIC_INFO => {},
+			.JXL_DEC_NEED_IMAGE_OUT_BUFFER => {
+				saw_need_out = true;
+				try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(dec, &format, &output, output.len));
+			},
+			.JXL_DEC_FULL_IMAGE => saw_full = true,
+			.JXL_DEC_SUCCESS => break,
+			else => return error.UnexpectedDecoderStatus,
+		}
+	}
+
+	try testing.expect(saw_need_out);
+	try testing.expect(saw_full);
+	try testing.expectEqualSlices(u8, &pixels, &output);
+}
+
+test "synthetic embedded RGB ICC codestream frame header parses after metadata and ICC" {
+	const testing = std.testing;
+	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlEncoderDestroy(enc);
+
+	var info: JxlBasicInfo = undefined;
+	JxlEncoderInitBasicInfo(&info);
+	info.xsize = 2;
+	info.ysize = 2;
+	info.bits_per_sample = 8;
+	info.num_color_channels = 3;
+	info.uses_original_profile = 1;
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderSetBasicInfo(enc, &info));
+
+	const synthetic_icc = makeSyntheticIccHeader(.{ 'R', 'G', 'B', ' ' });
+	try testing.expectEqual(
+		JxlEncoderStatus.JXL_ENC_SUCCESS,
+		JxlEncoderSetICCProfile(enc, synthetic_icc[0..].ptr, synthetic_icc.len),
+	);
+
+	const settings = JxlEncoderFrameSettingsCreate(enc, null) orelse return error.OutOfMemory;
+	const pixels = [_]u8{
+		0, 10, 20, 30, 40, 50,
+		60, 70, 80, 90, 100, 110,
+	};
+	const format = JxlPixelFormat{
+		.num_channels = 3,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	try testing.expectEqual(JxlEncoderStatus.JXL_ENC_SUCCESS, JxlEncoderAddImageFrame(settings, &format, &pixels, pixels.len));
+	JxlEncoderCloseInput(enc);
+
+	var encoded: std.ArrayListUnmanaged(u8) = .empty;
+	defer encoded.deinit(testing.allocator);
+	while (true) {
+		var chunk: [64]u8 = undefined;
+		var next_out = chunk[0..].ptr;
+		var avail_out: usize = chunk.len;
+		const status = JxlEncoderProcessOutput(enc, &next_out, &avail_out);
+		const produced = chunk.len - avail_out;
+		try encoded.appendSlice(testing.allocator, chunk[0..produced]);
+		if (status == .JXL_ENC_SUCCESS) break;
+		try testing.expectEqual(JxlEncoderStatus.JXL_ENC_NEED_MORE_OUTPUT, status);
+	}
+
+	var br = BitReader.init(encoded.items[2..]);
+	const size = headers.SizeHeader.readFromBitStream(&br);
+	const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+	const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+	const embedded_icc = try icc_codec.decompressICCFromBitReader(testing.allocator, &br);
+	defer testing.allocator.free(embedded_icc);
+	try br.jumpToByteBoundary();
+	const frame_header_byte_offset = br.totalBitsConsumed() / 8;
+	try br.close();
+
+	var codec_meta = image_metadata.CodecMetadata{};
+	codec_meta.size = size;
+	codec_meta.m = metadata;
+	codec_meta.transform_data = transform_data;
+	codec_meta.embedded_icc = embedded_icc;
+
+	const frame_bytes = encoded.items[2 + frame_header_byte_offset ..];
+	_ = try dec_frame.frameByteCount(testing.allocator, &codec_meta, frame_bytes);
+	var frame_dec = dec_frame.FrameDecoder.init(testing.allocator, &codec_meta);
+	defer frame_dec.deinit();
+	var header_br = BitReader.init(frame_bytes);
+	try frame_dec.initFrame(&header_br);
+	try header_br.close();
+}
+
 test "JxlEncoderSetICCProfile rejects ICC with mismatched declared size" {
 	const testing = std.testing;
 	const enc = JxlEncoderCreate(null) orelse return error.OutOfMemory;

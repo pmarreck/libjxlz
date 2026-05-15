@@ -127,11 +127,7 @@ pub fn writeCodestreamFrames(
 	try image_metadata.writeCustomTransformData(&codec_meta.transform_data, codec_meta.m.xyb_encoded, writer);
 	if (codec_meta.m.color_encoding.want_icc) {
 		if (codec_meta.embedded_icc.len == 0) return error.InvalidArgs;
-		const compressed_icc = try icc_codec.compressICC(writer.allocator, codec_meta.embedded_icc);
-		defer writer.allocator.free(compressed_icc);
-		for (compressed_icc) |byte| {
-			try writer.write(8, byte);
-		}
+		try icc_codec.writeCompressedICCToBitWriter(writer, codec_meta.embedded_icc);
 	}
 	try writer.zeroPadToByte();
 	for (frame_datas) |frame_data| {

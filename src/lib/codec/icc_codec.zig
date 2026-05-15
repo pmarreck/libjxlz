@@ -89,6 +89,17 @@ pub fn predictICC(allocator: std.mem.Allocator, icc: []const u8) ![]u8 {
 /// using the modeled predictor plus a first legal ANS layer with one shared
 /// flat byte histogram across all 41 ICC contexts.
 pub fn compressICC(allocator: std.mem.Allocator, icc: []const u8) ![]u8 {
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writeCompressedICCToBitWriter(&writer, icc);
+	try writer.zeroPadToByte();
+	return allocator.dupe(u8, writer.bytes());
+}
+
+/// Writes the compressed-ICC payload directly into an existing codestream bit
+/// writer so embedded ICC data does not gain a second, standalone byte-padding layer.
+pub fn writeCompressedICCToBitWriter(writer: *BitWriter, icc: []const u8) !void {
+	const allocator = writer.allocator;
 	const predicted = try predictICC(allocator, icc);
 	defer allocator.free(predicted);
 
@@ -106,17 +117,13 @@ pub fn compressICC(allocator: std.mem.Allocator, icc: []const u8) ![]u8 {
 		try tokens.append(allocator, enc_ans.Token.init(@intCast(common.ansContext(i, b1, b2)), value));
 	}
 
-	var writer = BitWriter.init(allocator);
-	defer writer.deinit();
-	try U64Coder.write(predicted.len, &writer);
-	try enc_ans.writeAllZeroContextMapFlatHistogram(common.kNumICCContexts, kICCAlphabetSize, kICCByteUintConfig, kICCLogAlphaSize, &writer);
+	try U64Coder.write(predicted.len, writer);
+	try enc_ans.writeAllZeroContextMapFlatHistogram(common.kNumICCContexts, kICCAlphabetSize, kICCByteUintConfig, kICCLogAlphaSize, writer);
 
 	const infos = [_][]const enc_ans.ANSEncSymbolInfo{info};
 	const context_map = [_]u8{0} ** common.kNumICCContexts;
 	const uint_configs = [_]HybridUintConfig{kICCByteUintConfig};
-	_ = try enc_ans.writeContextualHistogramTokens(tokens.items, &infos, &context_map, &uint_configs, &writer);
-	try writer.zeroPadToByte();
-	return allocator.dupe(u8, writer.bytes());
+	_ = try enc_ans.writeContextualHistogramTokens(tokens.items, &infos, &context_map, &uint_configs, writer);
 }
 
 /// Consumes one embedded compressed-ICC stream from an in-flight codestream
@@ -960,6 +967,31 @@ fn makeSyntheticMabClutPredictProfile(allocator: std.mem.Allocator) ![]u8 {
 	return bytes.toOwnedSlice(allocator);
 }
 
+fn makeSyntheticHeaderOnlyRgbIcc() [128]u8 {
+	var icc = std.mem.zeroes([128]u8);
+	icc[0] = 0x00;
+	icc[1] = 0x00;
+	icc[2] = 0x00;
+	icc[3] = 0x80;
+	icc[12] = 'm';
+	icc[13] = 'n';
+	icc[14] = 't';
+	icc[15] = 'r';
+	icc[16] = 'R';
+	icc[17] = 'G';
+	icc[18] = 'B';
+	icc[19] = ' ';
+	icc[20] = 'X';
+	icc[21] = 'Y';
+	icc[22] = 'Z';
+	icc[23] = ' ';
+	icc[36] = 'a';
+	icc[37] = 'c';
+	icc[38] = 's';
+	icc[39] = 'p';
+	return icc;
+}
+
 test "predictICC and unpredictICC round-trip header-only byte streams" {
 	var source: [48]u8 = undefined;
 	for (&source, 0..) |*b, i| b.* = @intCast((i * 37 + 11) & 0xFF);
@@ -1118,6 +1150,28 @@ test "compressICC and decompressICC round-trip synthetic mAB CLUT profile" {
 	const decompressed = try decompressICC(testing.allocator, compressed);
 	defer testing.allocator.free(decompressed);
 	try testing.expectEqualSlices(u8, profile, decompressed);
+}
+
+test "decompressICCFromBitReader preserves following bytes for synthetic header-only ICC" {
+	const profile = makeSyntheticHeaderOnlyRgbIcc();
+	const compressed = try compressICC(testing.allocator, profile[0..]);
+	defer testing.allocator.free(compressed);
+
+	var stream = std.ArrayList(u8).empty;
+	defer stream.deinit(testing.allocator);
+	try stream.appendSlice(testing.allocator, compressed);
+	try stream.appendSlice(testing.allocator, &.{ 0xA5, 0x5A, 0xC3 });
+
+	var br = BitReader.init(stream.items);
+	const decompressed = try decompressICCFromBitReader(testing.allocator, &br);
+	defer testing.allocator.free(decompressed);
+	try testing.expectEqualSlices(u8, profile[0..], decompressed);
+	try br.jumpToByteBoundary();
+	try testing.expectEqual(compressed.len * 8, br.totalBitsConsumed());
+	try testing.expectEqual(@as(u64, 0xA5), br.readBits(8));
+	try testing.expectEqual(@as(u64, 0x5A), br.readBits(8));
+	try testing.expectEqual(@as(u64, 0xC3), br.readBits(8));
+	try br.close();
 }
 
 test "checkPreamble rejects truncated command/data spans" {
