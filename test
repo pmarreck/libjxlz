@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 set -u
 
+ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+NIX_BIN="${NIX_BIN:-nix}"
+SYSTEM="${SYSTEM_OVERRIDE:-$("${NIX_BIN}" eval --impure --raw --expr builtins.currentSystem)}"
+CLI_TEST_DIR="${CLI_TEST_DIR:-${ROOT_DIR}/tests/cli}"
 ERRORS=0
-SYSTEM="$(nix eval --impure --raw --expr builtins.currentSystem)"
+
+source "${ROOT_DIR}/tests/lib/test_runner.bash"
 
 echo "=== Zig unit tests ==="
-if ! nix build ".#checks.${SYSTEM}.test" 2>&1; then
+if ! "${NIX_BIN}" build ".#checks.${SYSTEM}.test" 2>&1; then
 	ERRORS=$((ERRORS + 1))
 fi
 
-if [ -d tests/cli ]; then
-	echo "=== CLI tests ==="
-	for t in tests/cli/*.sh; do
-		if ! nix develop -c bash "$t"; then
-			ERRORS=$((ERRORS + 1))
-		fi
-	done
+if [ -d "${CLI_TEST_DIR}" ]; then
+	run_shell_test_dir "CLI tests" "${NIX_BIN}" "${CLI_TEST_DIR}"
+	ERRORS=$((ERRORS + $?))
 fi
 
 if [ "$ERRORS" -gt 0 ]; then
