@@ -114,6 +114,23 @@ static FILE* open_output(const char* path) {
 	return fopen(path, "wb");
 }
 
+/* Classifies CLI output aliases so sink-conflict checks can treat '-' and
+ * '@stdout' as the same destination without opening files first. */
+static int output_sink_id(const char* path) {
+	if (strcmp(path, "-") == 0 || strcmp(path, "@stdout") == 0) return 1;
+	if (strcmp(path, "@stderr") == 0) return 2;
+	return 0;
+}
+
+/* Rejects ambiguous double-writes before decode by normalizing stdio aliases
+ * and also catching the trivial identical-path case for regular files. */
+static int paths_share_output_sink(const char* a, const char* b) {
+	int sink_a = output_sink_id(a);
+	int sink_b = output_sink_id(b);
+	if (sink_a != 0 || sink_b != 0) return sink_a != 0 && sink_a == sink_b;
+	return strcmp(a, b) == 0;
+}
+
 static void close_output(const char* path, FILE* out) {
 	if (!out) return;
 	if (strcmp(path, "-") == 0 || strcmp(path, "@stdout") == 0 || strcmp(path, "@stderr") == 0) return;
@@ -706,6 +723,10 @@ int djxlz_main(int argc, char** argv) {
 	if (!output_format) {
 		output_format = infer_output_format(output_path);
 		if (!output_format) output_format = "pnm";
+	}
+	if (icc_profile_output_path && paths_share_output_sink(icc_profile_output_path, output_path)) {
+		fprintf(stderr, "icc output cannot share the same stream as image output\n");
+		return 2;
 	}
 
 	size_t input_size = 0;

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -u
 
-RUN_STDOUT="${TMPDIR}/test_runner_smoke_stdout.txt"
-RUN_STDERR="${TMPDIR}/test_runner_smoke_stderr.txt"
-FAKE_ROOT="${TMPDIR}/test_runner_smoke"
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/test_runner_smoke.XXXXXX")"
+RUN_STDOUT="${WORKDIR}/stdout.txt"
+RUN_STDERR="${WORKDIR}/stderr.txt"
+FAKE_ROOT="${WORKDIR}/root"
 FAKE_BIN="${FAKE_ROOT}/bin"
 FAKE_TESTS="${FAKE_ROOT}/cli"
 mkdir -p "${FAKE_BIN}" "${FAKE_TESTS}"
@@ -24,6 +25,10 @@ case "${1-}" in
 		if [ "${1-}" != "-c" ] || [ "${2-}" != "bash" ]; then
 			echo "unexpected develop invocation" >&2
 			exit 99
+		fi
+		if [ ! -d "${TMPDIR-}" ]; then
+			echo "tmpdir missing: ${TMPDIR-}" >&2
+			exit 97
 		fi
 		shift 2
 		exec bash "$@"
@@ -51,7 +56,8 @@ exit 1
 FAIL
 chmod +x "${FAKE_TESTS}/fail.sh"
 
-if PATH="${FAKE_BIN}:$PATH" bash -c '
+BAD_TMPDIR="${WORKDIR}/missing/tmpdir"
+if TMPDIR="${BAD_TMPDIR}" PATH="${FAKE_BIN}:$PATH" bash -c '
 	source ./tests/lib/test_runner.bash
 	run_shell_test_dir "CLI tests" nix "$1"
 ' bash "${FAKE_TESTS}" >"${RUN_STDOUT}" 2>"${RUN_STDERR}"; then
