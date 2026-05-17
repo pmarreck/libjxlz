@@ -12,7 +12,7 @@ INFO_STDERR="${TMPDIR}/cjxlz_gif_info_stderr.txt"
 OUTPUT_JXL="${TMPDIR}/cjxlz_traffic_light.jxl"
 INPUT_GIF="${TMPDIR}/traffic_light.gif"
 
-if ! zig build-exe cjxlz_gif_info.zig -O ReleaseFast -femit-bin="${INFO_BIN}" >"${BUILD_LOG}" 2>&1; then
+if ! nix develop -c zig build-exe cjxlz_gif_info.zig -O ReleaseFast -femit-bin="${INFO_BIN}" >"${BUILD_LOG}" 2>&1; then
 	cat "${BUILD_LOG}"
 	exit 1
 fi

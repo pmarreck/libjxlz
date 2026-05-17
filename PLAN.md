@@ -39,7 +39,8 @@
 - [x] `./test` runner tempdir hardening: extend the shared shell-test runner so stale session-specific `TMPDIR` values are normalized before any `nix develop` smoke launch, and prove it with a fake-`nix` regression that simulates real temp-file creation failure under a missing directory — 2026-05-16 ~estimated EDT
 - [x] `djxlz` embedded ICC hardening: add negative `--icc-profile-output` smokes (`@stdout`, write failures, and option-contract edges), prove `@stdout`/`@stderr` alias extraction as a real happy path, and reject ambiguous shared output sinks up front — 2026-05-16 ~estimated EDT
 - [x] Embedded ICC broader CLI/API parity: choose the smaller decoder-side helper path before animation work by hardening the existing `djxlz --icc-profile-output` surface around stream aliases and sink conflicts rather than widening GIF/animation ICC handling first — 2026-05-16 ~estimated EDT
-- [ ] Embedded ICC next parity slice: decide whether to broaden `djxlz --icc-profile-output` across animated/GIF output paths or add a more inspectable decoder-side ICC metadata surface first
+- [x] Animated GIF embedded ICC parity: broaden `cjxlz --icc-profile PATH` across GIF input so animated JXL can carry embedded ICC, teach the `cjxlz_gif_info.zig` codestream inspector to skip embedded ICC payloads before frame scans, and prove preserved animation metadata plus exact `djxlz --icc-profile-output` roundtrip with a dedicated GIF smoke — 2026-05-16 ~estimated EDT
+- [ ] Embedded ICC next parity slice: add a more inspectable decoder-side ICC metadata surface, or broaden GIF input further with staged sidecar extras / richer non-RGB embedded-profile animation cases
 
 ## Phase 1: Foundation (complete)
 - [x] build.zig + build.zig.zon — 2026-03-06 ~3:00 PM EST

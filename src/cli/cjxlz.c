@@ -1182,6 +1182,8 @@ static int encode_animation(
 	uint32_t animation_tps_numerator,
 	uint32_t animation_tps_denominator,
 	uint32_t animation_loops,
+	const uint8_t* icc_profile,
+	size_t icc_profile_size,
 	uint8_t** encoded_out,
 	size_t* encoded_size_out,
 	char* err,
@@ -1217,6 +1219,7 @@ static int encode_animation(
 	info.bits_per_sample = 8;
 	info.num_color_channels = animation->num_color_channels;
 	info.num_extra_channels = animation->num_extra_channels;
+	info.uses_original_profile = icc_profile ? 1 : 0;
 	info.alpha_bits = animation->num_extra_channels != 0 ? 8 : 0;
 	info.intensity_target = intensity_target;
 	info.min_nits = min_nits;
@@ -1282,10 +1285,18 @@ static int encode_animation(
 		JxlEncoderDestroy(enc);
 		return 0;
 	}
-	if (JxlEncoderSetColorEncoding(enc, &color) != JXL_ENC_SUCCESS) {
-		snprintf(err, err_cap, "JxlEncoderSetColorEncoding failed");
-		JxlEncoderDestroy(enc);
-		return 0;
+	if (icc_profile) {
+		if (JxlEncoderSetICCProfile(enc, icc_profile, icc_profile_size) != JXL_ENC_SUCCESS) {
+			snprintf(err, err_cap, "JxlEncoderSetICCProfile failed");
+			JxlEncoderDestroy(enc);
+			return 0;
+		}
+	} else {
+		if (JxlEncoderSetColorEncoding(enc, &color) != JXL_ENC_SUCCESS) {
+			snprintf(err, err_cap, "JxlEncoderSetColorEncoding failed");
+			JxlEncoderDestroy(enc);
+			return 0;
+		}
 	}
 	if (!apply_staged_boxes(enc, boxes, box_count, err, err_cap)) {
 		JxlEncoderDestroy(enc);
@@ -2042,14 +2053,6 @@ int cjxlz_main(int argc, char** argv) {
 			free(input);
 			return 1;
 		}
-		if (icc_profile_path) {
-			fprintf(stderr, "GIF input does not support --icc-profile yet\n");
-			free_parsed_animation(&animation);
-			free(icc_profile);
-			free_box_inputs(boxes, box_count);
-			free(input);
-			return 1;
-		}
 		if (frame_timecode_set) {
 			fprintf(stderr, "--frame-timecode is not supported for GIF input\n");
 			free_parsed_animation(&animation);
@@ -2111,6 +2114,8 @@ int cjxlz_main(int argc, char** argv) {
 				animation_tps_numerator,
 				animation_tps_denominator,
 				animation_loops,
+				icc_profile,
+				icc_profile_size,
 				&encoded,
 				&encoded_size,
 				err,

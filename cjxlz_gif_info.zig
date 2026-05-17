@@ -3,6 +3,7 @@ const jxlz = @import("src/root.zig");
 const BitReader = jxlz.base.bit_reader.BitReader;
 const headers = jxlz.codec.headers;
 const image_metadata = jxlz.codec.image_metadata;
+const icc_codec = jxlz.codec.icc_codec;
 const dec_frame = jxlz.codec.dec_frame;
 
 pub fn main(init: std.process.Init) !void {
@@ -21,6 +22,11 @@ pub fn main(init: std.process.Init) !void {
 	const size = headers.SizeHeader.readFromBitStream(&br);
 	const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
 	const transform_data = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+	const embedded_icc = if (metadata.color_encoding.want_icc)
+		try icc_codec.decompressICCFromBitReader(gpa, &br)
+	else
+		&[_]u8{};
+	defer if (embedded_icc.len != 0) gpa.free(embedded_icc);
 	try br.jumpToByteBoundary();
 
 	var codec_meta = image_metadata.CodecMetadata{};

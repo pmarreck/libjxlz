@@ -15,7 +15,7 @@ OUTPUT_JXL="${TMPDIR}/djxlz_gif_animation_input.jxl"
 ROUNDTRIP_GIF="${TMPDIR}/djxlz_gif_animation_roundtrip.gif"
 ROUNDTRIP_JXL="${TMPDIR}/djxlz_gif_animation_roundtrip.jxl"
 
-if ! zig build-exe cjxlz_gif_info.zig -O ReleaseFast -femit-bin="${INFO_BIN}" >"${BUILD_LOG}" 2>&1; then
+if ! nix develop -c zig build-exe cjxlz_gif_info.zig -O ReleaseFast -femit-bin="${INFO_BIN}" >"${BUILD_LOG}" 2>&1; then
 	cat "${BUILD_LOG}"
 	exit 1
 fi
