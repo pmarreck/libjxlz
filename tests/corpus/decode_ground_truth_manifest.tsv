@@ -2,3 +2,4 @@ src/lib/testdata/lossless_4x4.jxl
 src/lib/testdata/lossless_300x200.jxl
 src/lib/testdata/lossless_600x10_multisection.jxl
 src/lib/testdata/lossless_600x300_multigroup_rgb.jxl
+testdata/jxl/boxes/square-extended-size-container.jxl

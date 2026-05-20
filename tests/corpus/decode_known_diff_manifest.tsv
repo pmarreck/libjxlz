@@ -1,0 +1,3 @@
+src/lib/testdata/small_test_codestream.jxl
+testdata/jxl/pq_gradient.jxl
+testdata/jxl/jpeg_reconstruction/1x1_exif_xmp.jxl
