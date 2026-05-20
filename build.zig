@@ -244,4 +244,37 @@ pub fn build(b: *std.Build) void {
 	test_step.dependOn(&run_encode_prep_bench_tests.step);
 	test_step.dependOn(&run_encode_codestream_bench_tests.step);
 	test_step.dependOn(&run_capi_tests.step);
+
+	// `test-compile` builds every test binary but does not run them. The
+	// Nix flake check uses this on Linux so it can invoke each binary via
+	// Nix's actual dynamic linker — Zig 0.16 bakes an FHS loader path
+	// (/lib64/ld-linux-x86-64.so.2 or /lib/ld-linux-aarch64.so.1) that
+	// doesn't exist inside the Nix build sandbox, which is what produced
+	// the `FileNotFound` failure when `zig build test` tried to spawn the
+	// compiled test binaries.
+	const test_compile_step = b.step("test-compile", "Compile test binaries without running them");
+	test_compile_step.dependOn(&b.addInstallArtifact(unit_tests, .{
+		.dest_dir = .{ .override = .{ .custom = "test-bins" } },
+		.dest_sub_path = "unit_tests",
+	}).step);
+	test_compile_step.dependOn(&b.addInstallArtifact(bench_tests, .{
+		.dest_dir = .{ .override = .{ .custom = "test-bins" } },
+		.dest_sub_path = "bench_tests",
+	}).step);
+	test_compile_step.dependOn(&b.addInstallArtifact(weighted_bench_tests, .{
+		.dest_dir = .{ .override = .{ .custom = "test-bins" } },
+		.dest_sub_path = "weighted_bench_tests",
+	}).step);
+	test_compile_step.dependOn(&b.addInstallArtifact(encode_prep_bench_tests, .{
+		.dest_dir = .{ .override = .{ .custom = "test-bins" } },
+		.dest_sub_path = "encode_prep_bench_tests",
+	}).step);
+	test_compile_step.dependOn(&b.addInstallArtifact(encode_codestream_bench_tests, .{
+		.dest_dir = .{ .override = .{ .custom = "test-bins" } },
+		.dest_sub_path = "encode_codestream_bench_tests",
+	}).step);
+	test_compile_step.dependOn(&b.addInstallArtifact(capi_tests, .{
+		.dest_dir = .{ .override = .{ .custom = "test-bins" } },
+		.dest_sub_path = "capi_tests",
+	}).step);
 }

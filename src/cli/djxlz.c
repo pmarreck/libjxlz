@@ -1,3 +1,12 @@
+/* fileno(3), dup(2), close(2) are POSIX, not ISO C. With Zig 0.16's
+ * -std=c11 default they need an explicit feature-test macro before any
+ * libc header is included. Without this the Linux glibc headers hide
+ * the prototypes and Zig's clang refuses with "call to undeclared
+ * function 'fileno'" under modern -Werror=implicit-function-declaration.
+ * macOS happens to expose them anyway, which is why this only bit Linux.
+ */
+#define _POSIX_C_SOURCE 200809L
+
 #include <stdbool.h>
 #include <ctype.h>
 #include <stdint.h>

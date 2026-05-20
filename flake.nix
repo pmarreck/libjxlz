@@ -86,7 +86,27 @@
                 export GIF_LIB_DIR=${giflib}/lib
                 export CPATH=${giflib}/include''${CPATH:+:$CPATH}
                 export LIBRARY_PATH=${giflib}/lib''${LIBRARY_PATH:+:$LIBRARY_PATH}
+                ${lib.optionalString stdenv.isLinux ''
+                # On Linux, Zig 0.16 bakes the FHS dynamic-linker path
+                # (/lib64/ld-linux-x86-64.so.2 etc.) into libc-linked
+                # binaries. That path doesn't exist in the Nix sandbox,
+                # so `zig build test` fails to spawn the test binaries
+                # with `FileNotFound` — even though every test passed
+                # under cross-build coverage. We compile the test bins
+                # via `test-compile`, then invoke each through Nix's
+                # actual loader. Mirrors the pattern in c0/flake.nix.
+                zig build test-compile -Doptimize=Debug
+                DL="$(cat ${stdenv.cc}/nix-support/dynamic-linker)"
+                rc=0
+                for f in zig-out/test-bins/*; do
+                  [ -x "$f" ] || continue
+                  "$DL" "$f" || rc=1
+                done
+                [ $rc -eq 0 ] || { echo "Tests failed"; exit 1; }
+                ''}
+                ${lib.optionalString (!stdenv.isLinux) ''
                 zig build test -Doptimize=Debug
+                ''}
               '';
               installPhase = ''
                 mkdir -p $out

@@ -5,6 +5,7 @@ on:
     branches:
       - yolo
   pull_request:
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -14,10 +15,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  linux-x86_64:
-    name: Linux x86_64
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            system: x86_64-linux
+            name: linux-x86_64
+            timeout: 30
+          - runner: ubuntu-24.04-arm
+            system: aarch64-linux
+            name: linux-aarch64
+            timeout: 30
+          - runner: macos-latest
+            system: aarch64-darwin
+            name: macos-aarch64
+            timeout: 45
+
+    runs-on: ${{ matrix.runner }}
+    name: ${{ matrix.name }}
+    timeout-minutes: ${{ matrix.timeout }}
 
     steps:
       - name: Checkout
@@ -29,44 +47,14 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      - name: Run flake checks
-        run: nix flake check -L
+      - name: Build package
+        run: nix build .#packages.${{ matrix.system }}.default -L
 
-      - name: Run full test suite
-        run: nix develop -c ./test
-
-  linux-aarch64:
-    name: Linux aarch64
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-
-      - name: Run full test suite
-        run: nix develop -c ./test
-
-  macos-aarch64:
-    name: macOS aarch64
-    runs-on: macos-latest
-    timeout-minutes: 45
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
+      - name: Run flake test check
+        # Targets exactly checks.<system>.test so the windows-cross check
+        # (which is only relevant on x86_64-linux and exercises a separate
+        # mingw cross-build toolchain) does not gate the primary CI matrix.
+        run: nix build .#checks.${{ matrix.system }}.test -L
 
       - name: Run full test suite
         run: nix develop -c ./test
