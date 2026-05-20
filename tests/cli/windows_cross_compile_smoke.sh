@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: BSD-3-Clause
 set -u
 
+source ./tests/lib/zig_runner.bash
+
 TARGET="x86_64-windows-gnu"
 BUILD_LOG="${TMPDIR}/libjxlz_windows_build.log"
 CAPI_LOG="${TMPDIR}/libjxlz_windows_capi.log"
@@ -61,47 +63,47 @@ BROTLI_ZIG_FLAGS=(
 	-lbrotlicommon
 )
 
-if ! zig build -Dtarget="${TARGET}" -Doptimize=ReleaseFast -Dpng_input=false -Dgif_input=false -Dgif_output=false >"${BUILD_LOG}" 2>&1; then
+if ! run_project_zig build -Dtarget="${TARGET}" -Doptimize=ReleaseFast -Dpng_input=false -Dgif_input=false -Dgif_output=false >"${BUILD_LOG}" 2>&1; then
 	cat "${BUILD_LOG}"
 	exit 1
 fi
 
-if ! zig build capi -Dtarget="${TARGET}" -Doptimize=ReleaseFast >"${CAPI_LOG}" 2>&1; then
+if ! run_project_zig build capi -Dtarget="${TARGET}" -Doptimize=ReleaseFast >"${CAPI_LOG}" 2>&1; then
 	cat "${CAPI_LOG}"
 	exit 1
 fi
 
-if ! zig build djxlz -Dtarget="${TARGET}" -Doptimize=ReleaseFast -Dgif_output=false >"${DJXLZ_LOG}" 2>&1; then
+if ! run_project_zig build djxlz -Dtarget="${TARGET}" -Doptimize=ReleaseFast -Dgif_output=false >"${DJXLZ_LOG}" 2>&1; then
 	cat "${DJXLZ_LOG}"
 	exit 1
 fi
 
-if ! zig build cjxlz -Dtarget="${TARGET}" -Doptimize=ReleaseFast -Dpng_input=false -Dgif_input=false >"${CJXLZ_LOG}" 2>&1; then
+if ! run_project_zig build cjxlz -Dtarget="${TARGET}" -Doptimize=ReleaseFast -Dpng_input=false -Dgif_input=false >"${CJXLZ_LOG}" 2>&1; then
 	cat "${CJXLZ_LOG}"
 	exit 1
 fi
 
-if ! zig test src/lib/root.zig -target "${TARGET}" -fno-emit-bin "${BROTLI_ZIG_FLAGS[@]}" >"${LIB_TEST_LOG}" 2>&1; then
+if ! run_project_zig test src/lib/root.zig -target "${TARGET}" -fno-emit-bin "${BROTLI_ZIG_FLAGS[@]}" >"${LIB_TEST_LOG}" 2>&1; then
 	cat "${LIB_TEST_LOG}"
 	exit 1
 fi
 
-if ! zig test bench_modular_encode_prep.zig -target "${TARGET}" -fno-emit-bin "${BROTLI_ZIG_FLAGS[@]}" >"${ENCODE_PREP_TEST_LOG}" 2>&1; then
+if ! run_project_zig test bench_modular_encode_prep.zig -target "${TARGET}" -fno-emit-bin "${BROTLI_ZIG_FLAGS[@]}" >"${ENCODE_PREP_TEST_LOG}" 2>&1; then
 	cat "${ENCODE_PREP_TEST_LOG}"
 	exit 1
 fi
 
-if ! zig build-exe bench_modular_encode_prep.zig -O ReleaseFast -target "${TARGET}" -fno-emit-bin "${BROTLI_ZIG_FLAGS[@]}" >"${ENCODE_PREP_BUILD_LOG}" 2>&1; then
+if ! run_project_zig build-exe bench_modular_encode_prep.zig -O ReleaseFast -target "${TARGET}" -fno-emit-bin "${BROTLI_ZIG_FLAGS[@]}" >"${ENCODE_PREP_BUILD_LOG}" 2>&1; then
 	cat "${ENCODE_PREP_BUILD_LOG}"
 	exit 1
 fi
 
-if ! zig test bench_modular_encode_codestream.zig -target "${TARGET}" -fno-emit-bin "${BROTLI_ZIG_FLAGS[@]}" >"${ENCODE_CODESTREAM_TEST_LOG}" 2>&1; then
+if ! run_project_zig test bench_modular_encode_codestream.zig -target "${TARGET}" -fno-emit-bin "${BROTLI_ZIG_FLAGS[@]}" >"${ENCODE_CODESTREAM_TEST_LOG}" 2>&1; then
 	cat "${ENCODE_CODESTREAM_TEST_LOG}"
 	exit 1
 fi
 
-if ! zig build-exe bench_modular_encode_codestream.zig -O ReleaseFast -target "${TARGET}" -fno-emit-bin "${BROTLI_ZIG_FLAGS[@]}" >"${ENCODE_CODESTREAM_BUILD_LOG}" 2>&1; then
+if ! run_project_zig build-exe bench_modular_encode_codestream.zig -O ReleaseFast -target "${TARGET}" -fno-emit-bin "${BROTLI_ZIG_FLAGS[@]}" >"${ENCODE_CODESTREAM_BUILD_LOG}" 2>&1; then
 	cat "${ENCODE_CODESTREAM_BUILD_LOG}"
 	exit 1
 fi

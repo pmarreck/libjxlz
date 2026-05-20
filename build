@@ -4,6 +4,8 @@ set -E
 
 trap 'echo "ERR at ${BASH_SOURCE[0]}:${LINENO}: $BASH_COMMAND" >&2' ERR
 
+source ./tests/lib/zig_runner.bash
+
 run() {
   "$@" || {
     echo "FAILED: $*" >&2
@@ -18,8 +20,7 @@ if [[ "${1:-}" == "debug" ]]; then
 fi
 
 if [[ "$optimize" != "ReleaseFast" ]]; then
-  # Non-release builds use zig directly (local dev, no need for Nix reproducibility)
-  run zig build "-Doptimize=$optimize" "$@"
+  run run_project_zig build "-Doptimize=$optimize" "$@"
 elif command -v nix >/dev/null 2>&1; then
   out="$(nix build --print-out-paths "$@")" || {
     echo "FAILED: nix build $*" >&2
@@ -32,5 +33,5 @@ elif command -v nix >/dev/null 2>&1; then
   fi
   run cp -R "$out/bin/." zig-out/bin/
 else
-  run zig build "-Doptimize=$optimize" "$@"
+  run run_project_zig build "-Doptimize=$optimize" "$@"
 fi

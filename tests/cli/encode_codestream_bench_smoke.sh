@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: BSD-3-Clause
 set -u
 
+source ./tests/lib/zig_runner.bash
+
 SYSTEM="$(nix eval --impure --raw --expr builtins.currentSystem)"
 BUILD_LOG="${TMPDIR}/libjxlz_encode_codestream_bench_build.log"
 LINUX_COMPILE_LOG="${TMPDIR}/libjxlz_encode_codestream_bench_linux_compile.log"
@@ -16,7 +18,7 @@ fi
 
 TMP_BIN="${PACKAGE_OUT}/bin/bench_modular_encode_codestream"
 
-if ! zig build-exe bench_modular_encode_codestream.zig -O ReleaseFast -target x86_64-linux -fno-emit-bin >"${LINUX_COMPILE_LOG}" 2>&1; then
+if ! run_project_zig build-exe bench_modular_encode_codestream.zig -O ReleaseFast -target x86_64-linux -fno-emit-bin >"${LINUX_COMPILE_LOG}" 2>&1; then
 	cat "${LINUX_COMPILE_LOG}"
 	exit 1
 fi
