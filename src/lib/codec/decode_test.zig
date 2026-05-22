@@ -8,6 +8,7 @@ const headers = @import("headers.zig");
 const image_metadata = @import("image_metadata.zig");
 const frame_header_mod = @import("frame_header.zig");
 const dec_frame = @import("dec_frame.zig");
+const container = @import("container.zig");
 const toc = @import("toc.zig");
 const encoding = @import("../modular/encoding.zig");
 const modular_image = @import("../modular/modular_image.zig");
@@ -25,6 +26,18 @@ fn expectedRgbFixturePixel(x: usize, y: usize) [3]i32 {
         @intCast(y * 255 / 299),
         @intCast((x + y) * 255 / 898),
     };
+}
+
+fn appendU32BE(list: *std.ArrayListUnmanaged(u8), value: u32) !void {
+	var bytes: [4]u8 = undefined;
+	std.mem.writeInt(u32, &bytes, value, .big);
+	try list.appendSlice(testing.allocator, &bytes);
+}
+
+fn appendU64BE(list: *std.ArrayListUnmanaged(u8), value: u64) !void {
+	var bytes: [8]u8 = undefined;
+	std.mem.writeInt(u64, &bytes, value, .big);
+	try list.appendSlice(testing.allocator, &bytes);
 }
 
 fn prepareFrame(data: []const u8) !PreparedFrame {
@@ -448,6 +461,75 @@ test "decode lossless 600x300 multi-group rgb fixture" {
         try testing.expectEqual(expected[1], img.channels.items[1].rowConst(point[1])[point[0]]);
         try testing.expectEqual(expected[2], img.channels.items[2].rowConst(point[1])[point[0]]);
     }
+}
+
+test "decodeFrame rejects unsupported VarDCT codestream instead of producing zeroed output" {
+	const data = @embedFile("../testdata/small_test_codestream.jxl");
+	const allocator = testing.allocator;
+	const prepared = try prepareFrame(data);
+
+	var br = BitReader.init(prepared.frame_data);
+	defer br.close() catch {};
+	const fh = try frame_header_mod.FrameHeader.readFromBitStream(&br, &prepared.codec_meta, false);
+	try testing.expectEqual(frame_header_mod.FrameEncoding.var_dct, fh.encoding);
+
+	var frame_dec = dec_frame.FrameDecoder.init(allocator, &prepared.codec_meta);
+	defer frame_dec.deinit();
+	try testing.expectError(error.Unsupported, frame_dec.decodeFrame(prepared.frame_data));
+}
+
+test "metadata container wrapping VarDCT codestream stays explicitly unsupported" {
+	const allocator = testing.allocator;
+	const codestream = @embedFile("../testdata/small_test_codestream.jxl");
+	const boxes = [_]container.Box{
+		.{ .box_type = .{ 'E', 'x', 'i', 'f' }, .contents = "synthetic-exif" },
+		.{ .box_type = .{ 'x', 'm', 'l', ' ' }, .contents = "<xmpmeta/>" },
+	};
+	const wrapped = try container.wrapCodestreamWithBoxes(allocator, codestream, &boxes);
+	defer allocator.free(wrapped);
+	const extracted = try container.extractCodestream(allocator, wrapped);
+	defer allocator.free(extracted);
+	const prepared = try prepareFrame(extracted);
+
+	var br = BitReader.init(prepared.frame_data);
+	defer br.close() catch {};
+	const fh = try frame_header_mod.FrameHeader.readFromBitStream(&br, &prepared.codec_meta, false);
+	try testing.expectEqual(frame_header_mod.FrameEncoding.var_dct, fh.encoding);
+
+	var frame_dec = dec_frame.FrameDecoder.init(allocator, &prepared.codec_meta);
+	defer frame_dec.deinit();
+	try testing.expectError(error.Unsupported, frame_dec.decodeFrame(prepared.frame_data));
+}
+
+test "extended-size container wrapping VarDCT codestream stays explicitly unsupported" {
+	const allocator = testing.allocator;
+	const codestream = @embedFile("../testdata/small_test_codestream.jxl");
+	var wrapped: std.ArrayListUnmanaged(u8) = .empty;
+	defer wrapped.deinit(allocator);
+
+	try wrapped.appendSlice(allocator, &container.signature_box);
+	try appendU32BE(&wrapped, 20);
+	try wrapped.appendSlice(allocator, "ftyp");
+	try wrapped.appendSlice(allocator, &container.ftyp_payload);
+	try appendU32BE(&wrapped, 1);
+	try wrapped.appendSlice(allocator, "jxlc");
+	try appendU64BE(&wrapped, 16 + codestream.len);
+	try wrapped.appendSlice(allocator, codestream);
+
+	const wrapped_bytes = try wrapped.toOwnedSlice(allocator);
+	defer allocator.free(wrapped_bytes);
+	const extracted = try container.extractCodestream(allocator, wrapped_bytes);
+	defer allocator.free(extracted);
+	const prepared = try prepareFrame(extracted);
+
+	var br = BitReader.init(prepared.frame_data);
+	defer br.close() catch {};
+	const fh = try frame_header_mod.FrameHeader.readFromBitStream(&br, &prepared.codec_meta, false);
+	try testing.expectEqual(frame_header_mod.FrameEncoding.var_dct, fh.encoding);
+
+	var frame_dec = dec_frame.FrameDecoder.init(allocator, &prepared.codec_meta);
+	defer frame_dec.deinit();
+	try testing.expectError(error.Unsupported, frame_dec.decodeFrame(prepared.frame_data));
 }
 
 test "reference and specialized reader strategies decode identical lossless corpus" {

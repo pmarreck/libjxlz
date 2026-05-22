@@ -570,6 +570,10 @@ pub const FrameDecoder = struct {
         const header_byte_offset = self.headerBytes(&header_br);
         try header_br.close();
 
+        if (self.frame_header.encoding != .modular) {
+            return error.Unsupported;
+        }
+
         const layout = try computeSectionLayout(self.allocator, header_byte_offset, data.len, self.toc_entries);
         defer self.allocator.free(layout.offsets);
 

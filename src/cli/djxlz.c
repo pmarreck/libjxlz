@@ -39,6 +39,29 @@ typedef struct {
 	JxlPixelFormat format;
 } DecodedImage;
 
+/* Chooses the narrowest PNM/PAM sample type that can represent the decoded
+ * integer image without throwing away source precision, while honoring the
+ * binary PNM requirement that 16-bit samples be big-endian on disk. */
+static int configure_pnm_pixel_format(const JxlBasicInfo* info, JxlPixelFormat* format, char* err, size_t err_cap) {
+	if (info->exponent_bits_per_sample != 0) {
+		snprintf(err, err_cap, "floating-point PNM output is not supported");
+		return 0;
+	}
+
+	format->data_type = JXL_TYPE_UINT8;
+	format->endianness = JXL_NATIVE_ENDIAN;
+	if (info->bits_per_sample > 8) {
+		if (info->bits_per_sample > 16) {
+			snprintf(err, err_cap, "integer PNM output above 16 bits is not supported");
+			return 0;
+		}
+		format->data_type = JXL_TYPE_UINT16;
+		format->endianness = JXL_BIG_ENDIAN;
+	}
+
+	return 1;
+}
+
 static const char* platform_name(void) {
 #if defined(__APPLE__)
 	return "macos";
@@ -199,8 +222,10 @@ static int decode_image(const uint8_t* data, size_t size, const char* output_for
 				JxlDecoderDestroy(dec);
 				return 0;
 			}
-			out->format.data_type = JXL_TYPE_UINT8;
-			out->format.endianness = JXL_NATIVE_ENDIAN;
+			if (!configure_pnm_pixel_format(&out->info, &out->format, err, err_cap)) {
+				JxlDecoderDestroy(dec);
+				return 0;
+			}
 			out->format.align = 0;
 
 			if (strcmp(output_format, "pgm") == 0) {
@@ -654,6 +679,7 @@ static int write_pnm(FILE* out, const DecodedImage* image, const char* output_fo
 	uint32_t channels = image->format.num_channels;
 	uint32_t width = image->info.xsize;
 	uint32_t height = image->info.ysize;
+	unsigned maxval = image->format.data_type == JXL_TYPE_UINT16 ? 65535u : 255u;
 
 	if ((strcmp(output_format, "ppm") == 0 || strcmp(output_format, "pnm") == 0) && channels != 3) return 0;
 	if (strcmp(output_format, "pgm") == 0 && channels != 1) return 0;
@@ -661,15 +687,16 @@ static int write_pnm(FILE* out, const DecodedImage* image, const char* output_fo
 	if (strcmp(output_format, "pam") == 0) {
 		const char* tuple = channels == 1 ? "GRAYSCALE" : channels == 2 ? "GRAYSCALE_ALPHA" : channels == 3 ? "RGB" : "RGB_ALPHA";
 		if (fprintf(out,
-			"P7\nWIDTH %u\nHEIGHT %u\nDEPTH %u\nMAXVAL 255\nTUPLTYPE %s\nENDHDR\n",
+			"P7\nWIDTH %u\nHEIGHT %u\nDEPTH %u\nMAXVAL %u\nTUPLTYPE %s\nENDHDR\n",
 			width,
 			height,
 			channels,
+			maxval,
 			tuple) < 0) return 0;
 	} else if (channels == 1) {
-		if (fprintf(out, "P5\n%u %u\n255\n", width, height) < 0) return 0;
+		if (fprintf(out, "P5\n%u %u\n%u\n", width, height, maxval) < 0) return 0;
 	} else if (channels == 3) {
-		if (fprintf(out, "P6\n%u %u\n255\n", width, height) < 0) return 0;
+		if (fprintf(out, "P6\n%u %u\n%u\n", width, height, maxval) < 0) return 0;
 	} else {
 		return 0;
 	}
