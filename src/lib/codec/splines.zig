@@ -1,6 +1,9 @@
 const std = @import("std");
+const BitReader = @import("../base/bit_reader.zig").BitReader;
 const bits = @import("../base/bits.zig");
 const common = @import("../base/common.zig");
+const pack_signed = @import("../base/pack_signed.zig");
+const dec_ans = @import("../entropy/dec_ans.zig");
 
 pub const Dct32 = [32]f32;
 
@@ -64,6 +67,38 @@ const kMaxNumControlPoints: usize = 1 << 20;
 const kMaxNumControlPointsPerPixelRatio: usize = 2;
 const kDistanceExp: f32 = 3.0;
 
+const SplineEntropyContext = enum(usize) {
+	quantization_adjustment = 0,
+	starting_position = 1,
+	num_splines = 2,
+	num_control_points = 3,
+	control_points = 4,
+	dct = 5,
+};
+
+const kNumSplineContexts: usize = 6;
+const kDeltaLimit: i32 = 1 << 30;
+
+fn readHybrid(reader: anytype, context: SplineEntropyContext) !usize {
+	return try reader.read(@intFromEnum(context));
+}
+
+fn unpackSignedHybrid(raw: usize) !i32 {
+	if (raw > std.math.maxInt(u32)) return error.GenericError;
+	return pack_signed.unpackSigned(@intCast(raw));
+}
+
+const AnsHybridReader = struct {
+	decoder: *dec_ans.ANSSymbolReader,
+	br: *BitReader,
+	context_map: []const u8,
+
+	fn read(self: *AnsHybridReader, context: usize) !usize {
+		if (context >= self.context_map.len) return error.GenericError;
+		return self.decoder.readHybridUint(context, self.br, self.context_map);
+	}
+};
+
 pub const SplineSegment = struct {
 	center_x: f32,
 	center_y: f32,
@@ -113,6 +148,40 @@ pub const QuantizedSpline = struct {
 	pub fn deinit(self: *QuantizedSpline, allocator: std.mem.Allocator) void {
 		allocator.free(self.control_points);
 		self.* = .{};
+	}
+
+	/// Decodes one upstream quantized spline from a hybrid-uint token source,
+	/// preserving entropy-context order while keeping bit IO outside the model.
+	pub fn decodeFromHybridReader(
+		allocator: std.mem.Allocator,
+		reader: anytype,
+		max_control_points: usize,
+		total_num_control_points: *usize,
+	) !QuantizedSpline {
+		const num_control_points = try readHybrid(reader, .num_control_points);
+		if (num_control_points > max_control_points) return error.GenericError;
+		total_num_control_points.* = common.safeAdd(total_num_control_points.*, num_control_points) orelse return error.GenericError;
+		if (total_num_control_points.* > max_control_points) return error.GenericError;
+
+		var result = QuantizedSpline{};
+		result.control_points = try allocator.alloc(PointDelta, num_control_points);
+		errdefer result.deinit(allocator);
+
+		for (result.control_points) |*point| {
+			const dx = try unpackSignedHybrid(try readHybrid(reader, .control_points));
+			const dy = try unpackSignedHybrid(try readHybrid(reader, .control_points));
+			if (dx >= kDeltaLimit or dx <= -kDeltaLimit or dy >= kDeltaLimit or dy <= -kDeltaLimit) {
+				return error.GenericError;
+			}
+			point.* = .{ .x = dx, .y = dy };
+		}
+
+		for (0..3) |c| {
+			try decodeDct(reader, &result.color_dct[c]);
+		}
+		try decodeDct(reader, &result.sigma_dct);
+
+		return result;
 	}
 
 	/// Encodes a dequantized spline into upstream-compatible delta-delta control
@@ -249,6 +318,14 @@ pub const QuantizedSpline = struct {
 
 		return result;
 	}
+
+	fn decodeDct(reader: anytype, out: *[32]i32) !void {
+		for (out) |*coeff| {
+			const value = try unpackSignedHybrid(try readHybrid(reader, .dct));
+			if (value == std.math.minInt(i32)) return error.GenericError;
+			coeff.* = value;
+		}
+	}
 };
 
 pub const Splines = struct {
@@ -293,6 +370,66 @@ pub const Splines = struct {
 		self.quantization_adjustment = quantization_adjustment;
 		self.splines = splines;
 		self.starting_points = starting_points;
+	}
+
+	/// Decodes the frame-global spline payload from an abstract hybrid-uint
+	/// stream, mirroring libjxl's context order while deferring rendering.
+	pub fn decodeFromHybridReader(self: *Splines, reader: anytype, num_pixels: usize) !void {
+		self.clear();
+
+		const num_splines_raw = try readHybrid(reader, .num_splines);
+		const max_control_points = @min(kMaxNumControlPoints, num_pixels / kMaxNumControlPointsPerPixelRatio);
+		if (num_splines_raw > max_control_points or num_splines_raw +| 1 > max_control_points) return error.GenericError;
+		const num_splines = num_splines_raw + 1;
+
+		const starting_points = try self.allocator.alloc(Point, num_splines);
+		errdefer self.allocator.free(starting_points);
+		try decodeAllStartingPoints(reader, starting_points);
+
+		const quantization_adjustment = try unpackSignedHybrid(try readHybrid(reader, .quantization_adjustment));
+
+		var decoded_splines = try self.allocator.alloc(QuantizedSpline, num_splines);
+		@memset(decoded_splines, QuantizedSpline{});
+		var decoded_count: usize = 0;
+		errdefer {
+			for (decoded_splines[0..decoded_count]) |*spline| spline.deinit(self.allocator);
+			self.allocator.free(decoded_splines);
+		}
+
+		var total_control_points: usize = num_splines;
+		for (decoded_splines) |*spline| {
+			spline.* = try QuantizedSpline.decodeFromHybridReader(
+				self.allocator,
+				reader,
+				max_control_points,
+				&total_control_points,
+			);
+			decoded_count += 1;
+		}
+
+		self.assignOwned(quantization_adjustment, decoded_splines, starting_points);
+	}
+
+	/// Decodes the real ANS-coded spline bitstream section into decoder-owned
+	/// state; final image output remains gated until the float render seam lands.
+	pub fn decode(self: *Splines, br: *BitReader, num_pixels: usize) !void {
+		var code = dec_ans.ANSCode.init(self.allocator);
+		defer code.deinit();
+
+		const context_map = try dec_ans.decodeHistograms(self.allocator, br, kNumSplineContexts, &code);
+		defer self.allocator.free(context_map);
+
+		var ans_reader = try dec_ans.ANSSymbolReader.create(&code, br, 0, self.allocator);
+		defer ans_reader.deinit();
+		var reader = AnsHybridReader{
+			.decoder = &ans_reader,
+			.br = br,
+			.context_map = context_map,
+		};
+
+		try self.decodeFromHybridReader(&reader, num_pixels);
+		if (!ans_reader.checkANSFinalState()) return error.GenericError;
+		if (!self.hasAny()) return error.GenericError;
 	}
 
 	/// Builds the per-row spline segment cache used by the render stage by
@@ -586,6 +723,30 @@ fn drawSegment(segment: SplineSegment, add: bool, row_x: []f32, row_y: []f32, ro
 	}
 }
 
+fn decodeAllStartingPoints(reader: anytype, points: []Point) !void {
+	var last_x: i64 = 0;
+	var last_y: i64 = 0;
+	for (points, 0..) |*point, i| {
+		const dx_raw = try readHybrid(reader, .starting_position);
+		const dy_raw = try readHybrid(reader, .starting_position);
+		const x: i64 = if (i == 0)
+			blk: {
+				try validateSplinePointPos(dx_raw, dy_raw);
+				break :blk @intCast(dx_raw);
+			}
+		else
+			last_x + try unpackSignedHybrid(dx_raw);
+		const y: i64 = if (i == 0)
+			@intCast(dy_raw)
+		else
+			last_y + try unpackSignedHybrid(dy_raw);
+		try validateSplinePointPos(x, y);
+		point.* = .{ .x = @floatFromInt(x), .y = @floatFromInt(y) };
+		last_x = x;
+		last_y = y;
+	}
+}
+
 /// Uses a compact Abramowitz-Stegun approximation for the Gaussian error
 /// function, matching the spirit of upstream's fast spline hot-path math.
 fn erfApprox(x: f32) f32 {
@@ -704,4 +865,89 @@ test "Splines initializeDrawCache builds drawable segments for simple spline" {
 		}
 	}
 	try testing.expect(touched);
+}
+
+const FakeHybridValue = struct {
+	context: usize,
+	value: usize,
+};
+
+const FakeHybridReader = struct {
+	values: []const FakeHybridValue,
+	index: usize = 0,
+
+	fn read(self: *FakeHybridReader, context: usize) !usize {
+		if (self.index >= self.values.len) return error.EndOfStream;
+		const entry = self.values[self.index];
+		self.index += 1;
+		try testing.expectEqual(entry.context, context);
+		return entry.value;
+	}
+};
+
+test "QuantizedSpline decodeFromHybridReader reads control deltas and DCT payload" {
+	var values = [_]FakeHybridValue{.{ .context = 3, .value = 2 }} ++
+		[_]FakeHybridValue{
+			.{ .context = 4, .value = pack_signed.packSigned(5) },
+			.{ .context = 4, .value = pack_signed.packSigned(-2) },
+			.{ .context = 4, .value = pack_signed.packSigned(0) },
+			.{ .context = 4, .value = pack_signed.packSigned(7) },
+			.{ .context = 5, .value = pack_signed.packSigned(11) },
+		} ++ [_]FakeHybridValue{.{ .context = 5, .value = 0 }} ** 127;
+	var reader = FakeHybridReader{ .values = &values };
+	var total_control_points: usize = 0;
+
+	var quantized = try QuantizedSpline.decodeFromHybridReader(
+		testing.allocator,
+		&reader,
+		kMaxNumControlPoints,
+		&total_control_points,
+	);
+	defer quantized.deinit(testing.allocator);
+
+	try testing.expectEqual(@as(usize, values.len), reader.index);
+	try testing.expectEqual(@as(usize, 2), total_control_points);
+	try testing.expectEqual(@as(i64, 5), quantized.control_points[0].x);
+	try testing.expectEqual(@as(i64, -2), quantized.control_points[0].y);
+	try testing.expectEqual(@as(i64, 0), quantized.control_points[1].x);
+	try testing.expectEqual(@as(i64, 7), quantized.control_points[1].y);
+	try testing.expectEqual(@as(i32, 11), quantized.color_dct[0][0]);
+	try testing.expectEqual(@as(i32, 0), quantized.sigma_dct[31]);
+}
+
+test "Splines decodeFromHybridReader populates upstream-shaped spline payload" {
+	var values = [_]FakeHybridValue{
+		.{ .context = 2, .value = 0 },
+		.{ .context = 1, .value = 10 },
+		.{ .context = 1, .value = 20 },
+		.{ .context = 0, .value = pack_signed.packSigned(-3) },
+		.{ .context = 3, .value = 2 },
+		.{ .context = 4, .value = pack_signed.packSigned(5) },
+		.{ .context = 4, .value = pack_signed.packSigned(0) },
+		.{ .context = 4, .value = pack_signed.packSigned(0) },
+		.{ .context = 4, .value = pack_signed.packSigned(5) },
+	} ++ [_]FakeHybridValue{.{ .context = 5, .value = 0 }} ** 128;
+	var reader = FakeHybridReader{ .values = &values };
+
+	var decoded = Splines.init(testing.allocator);
+	defer decoded.deinit();
+	try decoded.decodeFromHybridReader(&reader, 64 * 64);
+
+	try testing.expectEqual(@as(usize, values.len), reader.index);
+	try testing.expect(decoded.hasAny());
+	try testing.expectEqual(@as(i32, -3), decoded.quantization_adjustment);
+	try testing.expectEqual(@as(usize, 1), decoded.splines.len);
+	try testing.expect(decoded.starting_points[0].approxEq(.{ .x = 10, .y = 20 }, 1.0e-3));
+	try testing.expectEqual(@as(usize, 2), decoded.splines[0].control_points.len);
+}
+
+test "Splines decodeFromHybridReader rejects more splines than image permits" {
+	var values = [_]FakeHybridValue{
+		.{ .context = 2, .value = 8 },
+	};
+	var reader = FakeHybridReader{ .values = &values };
+
+	var decoded = Splines.init(testing.allocator);
+	defer decoded.deinit();
+	try testing.expectError(error.GenericError, decoded.decodeFromHybridReader(&reader, 4));
 }

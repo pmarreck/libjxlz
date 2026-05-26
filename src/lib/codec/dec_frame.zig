@@ -14,6 +14,7 @@ const image_metadata = @import("image_metadata.zig");
 const CodecMetadata = image_metadata.CodecMetadata;
 const toc = @import("toc.zig");
 const TocEntry = toc.TocEntry;
+const splines_mod = @import("splines.zig");
 
 // Modular decoding imports
 const dec_ma = @import("../modular/dec_ma.zig");
@@ -488,6 +489,7 @@ pub const FrameDecoder = struct {
     frame_dim: FrameDimensions = .{},
     toc_entries: []TocEntry = &.{},
     modular_decoder: ModularFrameDecoder,
+    splines: splines_mod.Splines,
     metadata: *const CodecMetadata,
     decoded_dc_global: bool = false,
     allocator: std.mem.Allocator,
@@ -495,6 +497,7 @@ pub const FrameDecoder = struct {
     pub fn init(allocator: std.mem.Allocator, metadata: *const CodecMetadata) FrameDecoder {
         return .{
             .modular_decoder = ModularFrameDecoder.init(allocator),
+            .splines = splines_mod.Splines.init(allocator),
             .metadata = metadata,
             .allocator = allocator,
         };
@@ -502,6 +505,7 @@ pub const FrameDecoder = struct {
 
     pub fn deinit(self: *FrameDecoder) void {
         self.modular_decoder.deinit();
+        self.splines.deinit();
         if (self.toc_entries.len > 0) {
             self.allocator.free(self.toc_entries);
             self.toc_entries = &.{};
@@ -513,6 +517,7 @@ pub const FrameDecoder = struct {
         self.frame_header = try FrameHeader.readFromBitStream(br, self.metadata, false);
         self.frame_dim = self.frame_header.toFrameDimensions(self.metadata, false);
         self.modular_decoder.initFrame(self.frame_dim);
+        self.splines.clear();
 
         const num_passes = self.frame_header.passes.num_passes;
         const num_groups = self.frame_dim.num_groups;
@@ -535,9 +540,13 @@ pub const FrameDecoder = struct {
         br: *BitReader,
     ) JxlError!void {
         const unsupported_flags = frame_header_mod.FrameFlags.noise |
-            frame_header_mod.FrameFlags.patches |
-            frame_header_mod.FrameFlags.splines;
+            frame_header_mod.FrameFlags.patches;
         if ((self.frame_header.flags & unsupported_flags) != 0) {
+            return error.Unsupported;
+        }
+
+        if ((self.frame_header.flags & frame_header_mod.FrameFlags.splines) != 0) {
+            try self.splines.decode(br, self.frame_dim.xsize * self.frame_dim.ysize);
             return error.Unsupported;
         }
 
@@ -710,6 +719,84 @@ test "processDCGlobal rejects unsupported frame features" {
     var br = BitReader.init(&data);
 
     try testing.expectError(error.Unsupported, dec.processDCGlobalWithReaderStrategy(.specialized, &br));
+}
+
+fn makeSplinePayloadForTest(allocator: std.mem.Allocator) ![]u8 {
+	const enc_ans = @import("../entropy/enc_ans.zig");
+	const HybridUintConfig = @import("../entropy/hybrid_uint.zig").HybridUintConfig;
+	const BitWriter = @import("../base/bit_writer.zig").BitWriter;
+	const pack_signed = @import("../base/pack_signed.zig");
+
+	var tokens: [137]enc_ans.Token = undefined;
+	var token_count: usize = 0;
+	tokens[token_count] = enc_ans.Token.init(2, 0);
+	token_count += 1;
+	tokens[token_count] = enc_ans.Token.init(1, 10);
+	token_count += 1;
+	tokens[token_count] = enc_ans.Token.init(1, 20);
+	token_count += 1;
+	tokens[token_count] = enc_ans.Token.init(0, pack_signed.packSigned(-3));
+	token_count += 1;
+	tokens[token_count] = enc_ans.Token.init(3, 2);
+	token_count += 1;
+	tokens[token_count] = enc_ans.Token.init(4, pack_signed.packSigned(5));
+	token_count += 1;
+	tokens[token_count] = enc_ans.Token.init(4, pack_signed.packSigned(0));
+	token_count += 1;
+	tokens[token_count] = enc_ans.Token.init(4, pack_signed.packSigned(0));
+	token_count += 1;
+	tokens[token_count] = enc_ans.Token.init(4, pack_signed.packSigned(5));
+	token_count += 1;
+	while (token_count < tokens.len) : (token_count += 1) {
+		tokens[token_count] = enc_ans.Token.init(5, 0);
+	}
+
+	const ctx_map = [_]u8{ 0, 1, 2, 3, 4, 5 };
+	const uint_configs = [_]HybridUintConfig{HybridUintConfig.init(5, 0, 0)} ** 6;
+	var bundle = try enc_ans.buildContextualHistogramBundle(allocator, &tokens, &ctx_map, &uint_configs, 5);
+	defer bundle.deinit(allocator);
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try enc_ans.writeSimpleContextMapNormalizedHistograms(
+		bundle.context_map,
+		bundle.normalized_counts.len,
+		bundle.normalized_counts,
+		bundle.uint_configs,
+		5,
+		&writer,
+	);
+	_ = try enc_ans.writeContextualHistogramTokens(
+		&tokens,
+		bundle.infos,
+		bundle.context_map,
+		bundle.uint_configs,
+		&writer,
+	);
+	try writer.zeroPadToByte();
+	return allocator.dupe(u8, writer.bytes());
+}
+
+test "processDCGlobal decodes spline state before unsupported output gate" {
+	const allocator = testing.allocator;
+	var metadata = CodecMetadata{};
+	var dec = FrameDecoder.init(allocator, &metadata);
+	defer dec.deinit();
+	dec.frame_header.flags = frame_header_mod.FrameFlags.splines;
+	dec.frame_header.encoding = .modular;
+	dec.frame_dim.set(64, 64, 1, 0, 0, true, 1);
+
+	const payload = try makeSplinePayloadForTest(allocator);
+	defer allocator.free(payload);
+	var br = BitReader.init(payload);
+
+	try testing.expectError(error.Unsupported, dec.processDCGlobalWithReaderStrategy(.specialized, &br));
+	try br.jumpToByteBoundary();
+	try br.close();
+	try testing.expect(dec.splines.hasAny());
+	try testing.expectEqual(@as(i32, -3), dec.splines.quantization_adjustment);
+	try testing.expectEqual(@as(usize, 1), dec.splines.splines.len);
+	try testing.expect(dec.splines.starting_points[0].approxEq(.{ .x = 10, .y = 20 }, 1.0e-3));
 }
 
 test "applyYCbCrChromaSubsampling shrinks chroma channels" {
