@@ -15,6 +15,7 @@ const CodecMetadata = image_metadata.CodecMetadata;
 const toc = @import("toc.zig");
 const TocEntry = toc.TocEntry;
 const splines_mod = @import("splines.zig");
+const render_mod = @import("render.zig");
 
 // Modular decoding imports
 const dec_ma = @import("../modular/dec_ma.zig");
@@ -490,6 +491,7 @@ pub const FrameDecoder = struct {
     toc_entries: []TocEntry = &.{},
     modular_decoder: ModularFrameDecoder,
     splines: splines_mod.Splines,
+    rendered_image: ?render_mod.FloatImage = null,
     metadata: *const CodecMetadata,
     decoded_dc_global: bool = false,
     allocator: std.mem.Allocator,
@@ -504,6 +506,7 @@ pub const FrameDecoder = struct {
     }
 
     pub fn deinit(self: *FrameDecoder) void {
+        self.clearRenderedImage();
         self.modular_decoder.deinit();
         self.splines.deinit();
         if (self.toc_entries.len > 0) {
@@ -518,6 +521,7 @@ pub const FrameDecoder = struct {
         self.frame_dim = self.frame_header.toFrameDimensions(self.metadata, false);
         self.modular_decoder.initFrame(self.frame_dim);
         self.splines.clear();
+        self.clearRenderedImage();
 
         const num_passes = self.frame_header.passes.num_passes;
         const num_groups = self.frame_dim.num_groups;
@@ -547,7 +551,6 @@ pub const FrameDecoder = struct {
 
         if ((self.frame_header.flags & frame_header_mod.FrameFlags.splines) != 0) {
             try self.splines.decode(br, self.frame_dim.xsize * self.frame_dim.ysize);
-            return error.Unsupported;
         }
 
         // DequantMatrices::DecodeDC — always called, even for modular frames
@@ -627,6 +630,7 @@ pub const FrameDecoder = struct {
 
         // Finalize: undo transforms on full image
         try self.modular_decoder.finalizeDecoding();
+        try self.renderSplineOverlays();
     }
 
     /// Decode an entire frame using the default hot-path reader strategy.
@@ -637,6 +641,32 @@ pub const FrameDecoder = struct {
     /// Get the decoded image (after decodeFrame).
     pub fn getDecodedImage(self: *FrameDecoder) *Image {
         return &self.modular_decoder.full_image;
+    }
+
+    fn clearRenderedImage(self: *FrameDecoder) void {
+        if (self.rendered_image) |*image| {
+            image.deinit();
+            self.rendered_image = null;
+        }
+    }
+
+    /// Builds the narrow float render output for already-decoded full-resolution
+    /// modular color planes and applies parsed spline overlays after transforms.
+    pub fn renderSplineOverlays(self: *FrameDecoder) JxlError!void {
+        self.clearRenderedImage();
+        if (!self.splines.hasAny()) return;
+        if (self.frame_header.color_transform != .xyb) return error.Unsupported;
+        if (self.modular_decoder.full_image.channels.items.len < 3) return error.Unsupported;
+
+        try self.splines.initializeDrawCache(self.frame_dim.xsize, self.frame_dim.ysize, .{});
+        var rendered = try render_mod.FloatImage.fromModularImage(
+            self.allocator,
+            &self.modular_decoder.full_image,
+            3,
+        );
+        errdefer rendered.deinit();
+        try rendered.applySplines(&self.splines);
+        self.rendered_image = rendered;
     }
 };
 
@@ -777,7 +807,7 @@ fn makeSplinePayloadForTest(allocator: std.mem.Allocator) ![]u8 {
 	return allocator.dupe(u8, writer.bytes());
 }
 
-test "processDCGlobal decodes spline state before unsupported output gate" {
+test "processDCGlobal decodes spline state before continuing to DC data" {
 	const allocator = testing.allocator;
 	var metadata = CodecMetadata{};
 	var dec = FrameDecoder.init(allocator, &metadata);
@@ -790,13 +820,55 @@ test "processDCGlobal decodes spline state before unsupported output gate" {
 	defer allocator.free(payload);
 	var br = BitReader.init(payload);
 
-	try testing.expectError(error.Unsupported, dec.processDCGlobalWithReaderStrategy(.specialized, &br));
-	try br.jumpToByteBoundary();
-	try br.close();
+	try testing.expectError(error.GenericError, dec.processDCGlobalWithReaderStrategy(.specialized, &br));
 	try testing.expect(dec.splines.hasAny());
 	try testing.expectEqual(@as(i32, -3), dec.splines.quantization_adjustment);
 	try testing.expectEqual(@as(usize, 1), dec.splines.splines.len);
 	try testing.expect(dec.splines.starting_points[0].approxEq(.{ .x = 10, .y = 20 }, 1.0e-3));
+}
+
+test "renderSplineOverlays creates float image when parsed splines are present" {
+	const allocator = testing.allocator;
+	var metadata = CodecMetadata{};
+	var dec = FrameDecoder.init(allocator, &metadata);
+	defer dec.deinit();
+	dec.frame_dim.set(64, 64, 1, 0, 0, true, 1);
+	dec.modular_decoder.full_image.deinit();
+	dec.modular_decoder.full_image = try Image.create(allocator, 64, 64, 8, 3);
+
+	var color = splines_mod.zero_dct32;
+	color[0] = 0.49497476;
+	var sigma = splines_mod.zero_dct32;
+	sigma[0] = 2.357;
+	var spline = splines_mod.Spline{
+		.control_points = try allocator.dupe(splines_mod.Point, &.{
+			.{ .x = 10, .y = 10 },
+			.{ .x = 20, .y = 10 },
+			.{ .x = 30, .y = 10 },
+		}),
+		.color_dct = .{ splines_mod.zero_dct32, splines_mod.zero_dct32, color },
+		.sigma_dct = sigma,
+	};
+	defer spline.deinit(allocator);
+
+	const quantized = try splines_mod.QuantizedSpline.create(allocator, &spline, 0, 0.0, 1.0);
+	var owned_splines = try allocator.alloc(splines_mod.QuantizedSpline, 1);
+	owned_splines[0] = quantized;
+	const starting_points = try allocator.dupe(splines_mod.Point, &.{spline.control_points[0]});
+	dec.splines.assignOwned(0, owned_splines, starting_points);
+
+	try dec.renderSplineOverlays();
+
+	try testing.expect(dec.rendered_image != null);
+	const rendered = &dec.rendered_image.?;
+	var touched = false;
+	for (0..64) |x| {
+		if (@abs(rendered.rowConst(10, 2)[x]) > 0.0) {
+			touched = true;
+			break;
+		}
+	}
+	try testing.expect(touched);
 }
 
 test "applyYCbCrChromaSubsampling shrinks chroma channels" {

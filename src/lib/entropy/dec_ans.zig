@@ -349,6 +349,7 @@ pub fn decodeUintConfigs(log_alpha_size: u5, configs: []HybridUintConfig, br: *B
 pub const ANSSymbolReader = struct {
     alias_tables: [*]const AliasTable.Entry,
     huffman_data: []const HuffmanDecodingData,
+    degenerate_symbols: []const i32,
     use_prefix_code: bool,
     state: u32 = params.ans_signature << 16,
     configs: []const HybridUintConfig,
@@ -378,6 +379,7 @@ pub const ANSSymbolReader = struct {
         var self = ANSSymbolReader{
             .alias_tables = if (code.alias_tables.len > 0) code.alias_tables.ptr else undefined_entry_ptr,
             .huffman_data = code.huffman_data,
+            .degenerate_symbols = code.degenerate_symbols,
             .use_prefix_code = code.use_prefix_code,
             .configs = code.uint_config,
             .allocator = allocator,
@@ -437,10 +439,15 @@ pub const ANSSymbolReader = struct {
     }
 
     pub fn readSymbolHuffWithoutRefill(self: *ANSSymbolReader, histo_idx: usize, br: *BitReader) usize {
+        if (histo_idx >= self.huffman_data.len) return 0;
+        if (self.huffman_data[histo_idx].table.len == 0) return 0;
         return self.huffman_data[histo_idx].readSymbol(br);
     }
 
     pub fn readSymbolWithoutRefill(self: *ANSSymbolReader, histo_idx: usize, br: *BitReader) usize {
+        if (histo_idx < self.degenerate_symbols.len and self.degenerate_symbols[histo_idx] >= 0) {
+            return @intCast(self.degenerate_symbols[histo_idx]);
+        }
         if (self.use_prefix_code) {
             return self.readSymbolHuffWithoutRefill(histo_idx, br);
         }
@@ -453,6 +460,9 @@ pub const ANSSymbolReader = struct {
         histo_idx: usize,
         br: *BitReader,
     ) usize {
+        if (histo_idx < self.degenerate_symbols.len and self.degenerate_symbols[histo_idx] >= 0) {
+            return @intCast(self.degenerate_symbols[histo_idx]);
+        }
         if (use_prefix_code) {
             return self.readSymbolHuffWithoutRefill(histo_idx, br);
         }
@@ -707,6 +717,11 @@ pub fn decodeHistograms(
 
         // Read Huffman tables
         for (0..num_histograms) |c| {
+            if (alphabet_sizes[c] == 1) {
+                degenerate_syms[c] = 0;
+                code.updateMaxNumBits(c, 0);
+                continue;
+            }
             if (alphabet_sizes[c] > 1) {
                 const ok = huff_data[c].readFromBitStream(alphabet_sizes[c], br) catch return error.GenericError;
                 if (!ok) return error.GenericError;
@@ -838,4 +853,30 @@ test "ANSCode init and deinit" {
     defer code.deinit();
     try testing.expect(!code.use_prefix_code);
     try testing.expectEqual(@as(usize, 0), code.max_num_bits);
+}
+
+test "prefix-code single-symbol histogram reads as degenerate token" {
+	const allocator = testing.allocator;
+	const BitWriter = @import("../base/bit_writer.zig").BitWriter;
+	const enc_ans = @import("enc_ans.zig");
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writer.write(1, 0); // LZ77 disabled
+	try writer.write(1, 1); // prefix-code mode
+	try enc_ans.encodeUintConfig(HybridUintConfig.init(0, 0, 0), &writer, params.prefix_max_bits);
+	try enc_ans.storeVarLenUint16(0, &writer); // alphabet_size = 1
+	try writer.zeroPadToByte();
+
+	var br = BitReader.init(writer.bytes());
+	var code = ANSCode.init(allocator);
+	defer code.deinit();
+	const context_map = try decodeHistograms(allocator, &br, 1, &code);
+	defer allocator.free(context_map);
+	var reader = try ANSSymbolReader.create(&code, &br, 0, allocator);
+	defer reader.deinit();
+
+	try testing.expect(code.use_prefix_code);
+	try testing.expectEqual(@as(i32, 0), code.degenerate_symbols[0]);
+	try testing.expectEqual(@as(usize, 0), reader.readHybridUint(0, &br, context_map));
 }
