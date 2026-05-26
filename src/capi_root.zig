@@ -14,6 +14,7 @@ const container_mod = @import("lib/codec/container.zig");
 const brotli = @import("lib/base/brotli.zig");
 const frame_header_mod = @import("lib/codec/frame_header.zig");
 const dec_frame = @import("lib/codec/dec_frame.zig");
+const render_mod = @import("lib/codec/render.zig");
 const enc_api = @import("lib/codec/enc_api.zig");
 const Image = @import("lib/modular/modular_image.zig").Image;
 
@@ -1585,6 +1586,22 @@ fn scaleToU8(value: i32, max_value: u32) u8 {
 	return @intCast((@as(u64, clamped) * 255 + max_value / 2) / max_value);
 }
 
+fn clampFloatSample(value: f32, max_value: u32) f32 {
+	if (max_value == 0 or !std.math.isFinite(value)) return 0.0;
+	return std.math.clamp(value, 0.0, @as(f32, @floatFromInt(max_value)));
+}
+
+fn normalizedFloatSample(value: f32, max_value: u32) f32 {
+	if (max_value == 0) return 0.0;
+	return clampFloatSample(value, max_value) / @as(f32, @floatFromInt(max_value));
+}
+
+fn scaleFloatToU8(value: f32, max_value: u32) u8 {
+	if (max_value == 0) return 0;
+	const scaled = @round(normalizedFloatSample(value, max_value) * 255.0);
+	return @intFromFloat(scaled);
+}
+
 fn outputValue(img: *const Image, metadata: *const image_metadata.ImageMetadata, color_channels: usize, x: usize, y: usize, requested_channel: usize) i32 {
 	const alpha_idx = alphaChannelIndex(metadata);
 
@@ -1603,6 +1620,18 @@ fn outputValue(img: *const Image, metadata: *const image_metadata.ImageMetadata,
 		3 => if (alpha_idx) |idx| img.channels.items[color_channels + idx].rowConst(y)[x] else @intCast(bitDepthMax(metadata.bit_depth.bits_per_sample)),
 		else => 0,
 	};
+}
+
+fn renderedOutputValue(rendered: *const render_mod.FloatImage, alpha_img: ?*const Image, metadata: *const image_metadata.ImageMetadata, x: usize, y: usize, requested_channel: usize) f32 {
+	if (requested_channel < 3) return rendered.rowConst(y, requested_channel)[x];
+	if (alpha_img) |img| {
+		const max_value = bitDepthMax(metadata.bit_depth.bits_per_sample);
+		if (alphaChannelIndex(metadata)) |idx| {
+			return @floatFromInt(img.channels.items[3 + idx].rowConst(y)[x]);
+		}
+		return @floatFromInt(max_value);
+	}
+	return @floatFromInt(bitDepthMax(metadata.bit_depth.bits_per_sample));
 }
 
 /// Writes the decoded planar modular image into the caller-owned interleaved
@@ -1688,6 +1717,72 @@ fn writeImageToOutput(img: *const Image, metadata: *const image_metadata.ImageMe
 			}
 		}
 	}
+}
+
+/// Writes a post-render float RGB image into the public C API output buffer.
+/// This expects output-domain sample values; XYB-to-output color conversion is a separate stage.
+fn writeRenderedImageToOutput(rendered: *const render_mod.FloatImage, alpha_img: ?*const Image, metadata: *const image_metadata.ImageMetadata, format: JxlPixelFormat, buffer: [*]u8, buffer_size: usize) JxlError!void {
+	if (metadata.color_encoding.channels() != 3) return error.Unsupported;
+	if (rendered.channels < 3) return error.Unsupported;
+	if (!(format.num_channels == 3 or format.num_channels == 4)) return error.Unsupported;
+
+	const stride = rowStrideBytes(rendered.xsize, format) orelse return error.Unsupported;
+	if (stride * rendered.ysize > buffer_size) return error.GenericError;
+
+	const bytes_per_channel = bytesPerChannel(format.data_type) orelse return error.Unsupported;
+	const max_value = bitDepthMax(metadata.bit_depth.bits_per_sample);
+	const num_channels: usize = @intCast(format.num_channels);
+
+	if (format.data_type == .JXL_TYPE_UINT8 and format.num_channels == 3) {
+		for (0..rendered.ysize) |y| {
+			const dst = buffer[y * stride .. y * stride + rendered.xsize * 3];
+			const row_r = rendered.rowConst(y, 0);
+			const row_g = rendered.rowConst(y, 1);
+			const row_b = rendered.rowConst(y, 2);
+			for (0..rendered.xsize) |x| {
+				dst[x * 3 + 0] = scaleFloatToU8(row_r[x], max_value);
+				dst[x * 3 + 1] = scaleFloatToU8(row_g[x], max_value);
+				dst[x * 3 + 2] = scaleFloatToU8(row_b[x], max_value);
+			}
+		}
+		return;
+	}
+
+	for (0..rendered.ysize) |y| {
+		const row = buffer[y * stride .. y * stride + stride];
+		for (0..rendered.xsize) |x| {
+			const pixel = row[x * num_channels * bytes_per_channel ..];
+			for (0..num_channels) |c| {
+				const value = renderedOutputValue(rendered, alpha_img, metadata, x, y, c);
+				switch (format.data_type) {
+					.JXL_TYPE_UINT8 => {
+						pixel[c] = scaleFloatToU8(value, max_value);
+					},
+					.JXL_TYPE_UINT16 => {
+						const scaled: u32 = @intFromFloat(@round(normalizedFloatSample(value, max_value) * 65535.0));
+						storeU16(pixel[c * 2 .. c * 2 + 2], format.endianness, @intCast(scaled));
+					},
+					.JXL_TYPE_FLOAT => {
+						const raw: u32 = @bitCast(normalizedFloatSample(value, max_value));
+						storeU32(pixel[c * 4 .. c * 4 + 4], format.endianness, raw);
+					},
+					.JXL_TYPE_FLOAT16 => {
+						const half: f16 = @floatCast(normalizedFloatSample(value, max_value));
+						const raw: u16 = @bitCast(half);
+						storeU16(pixel[c * 2 .. c * 2 + 2], format.endianness, raw);
+					},
+				}
+			}
+		}
+	}
+}
+
+fn writeFrameDecoderOutput(frame_dec: *dec_frame.FrameDecoder, metadata: *const image_metadata.ImageMetadata, format: JxlPixelFormat, buffer: [*]u8, buffer_size: usize) JxlError!void {
+	if (frame_dec.rendered_image) |*rendered| {
+		if (metadata.xyb_encoded or frame_dec.frame_header.color_transform == .xyb) return error.Unsupported;
+		return writeRenderedImageToOutput(rendered, frame_dec.getDecodedImage(), metadata, format, buffer, buffer_size);
+	}
+	return writeImageToOutput(frame_dec.getDecodedImage(), metadata, format, buffer, buffer_size);
 }
 
 fn populateBasicInfo(metadata: *const image_metadata.CodecMetadata, have_container: bool) JxlBasicInfo {
@@ -1941,7 +2036,7 @@ fn ensureDecoded(dec: *DecoderImpl) JxlDecoderStatus {
 	defer frame_dec.deinit();
 	frame_dec.decodeFrame(dec.frame_data[dec.frame_offset .. dec.frame_offset + dec.frame_size]) catch return .JXL_DEC_ERROR;
 
-	writeImageToOutput(frame_dec.getDecodedImage(), &dec.codec_meta.m, dec.output_format, dec.output_buffer.?, dec.output_buffer_size) catch return .JXL_DEC_ERROR;
+	writeFrameDecoderOutput(&frame_dec, &dec.codec_meta.m, dec.output_format, dec.output_buffer.?, dec.output_buffer_size) catch return .JXL_DEC_ERROR;
 	dec.frame_decoded = true;
 	return .JXL_DEC_SUCCESS;
 }
@@ -3547,6 +3642,85 @@ test "writeImageToOutput scales grayscale to uint8 rgb" {
 	var buffer: [9]u8 = undefined;
 	try writeImageToOutput(&img, &metadata, format, buffer[0..].ptr, buffer.len);
 	try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 128, 128, 128, 255, 255, 255 }, &buffer);
+}
+
+test "writeRenderedImageToOutput scales float RGB rows to uint8 output" {
+	const allocator = std.testing.allocator;
+	var rendered = try render_mod.FloatImage.init(allocator, 2, 1, 3);
+	defer rendered.deinit();
+	rendered.row(0, 0)[0] = 0.0;
+	rendered.row(0, 1)[0] = 512.0;
+	rendered.row(0, 2)[0] = 1023.0;
+	rendered.row(0, 0)[1] = 1023.0;
+	rendered.row(0, 1)[1] = -10.0;
+	rendered.row(0, 2)[1] = 2048.0;
+
+	var metadata = image_metadata.ImageMetadata{};
+	metadata.bit_depth.bits_per_sample = 10;
+	metadata.color_encoding.color_space = .rgb;
+
+	const format = JxlPixelFormat{
+		.num_channels = 3,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	var buffer: [6]u8 = undefined;
+	try writeRenderedImageToOutput(&rendered, null, &metadata, format, buffer[0..].ptr, buffer.len);
+	try std.testing.expectEqualSlices(u8, &.{ 0, 128, 255, 255, 0, 255 }, &buffer);
+}
+
+test "writeFrameDecoderOutput prefers non-XYB rendered image over modular fallback" {
+	const allocator = std.testing.allocator;
+	var metadata = image_metadata.CodecMetadata{};
+	metadata.m.xyb_encoded = false;
+	metadata.m.bit_depth.bits_per_sample = 8;
+	metadata.m.color_encoding.color_space = .rgb;
+	var frame_dec = dec_frame.FrameDecoder.init(allocator, &metadata);
+	defer frame_dec.deinit();
+	frame_dec.frame_header.color_transform = .none;
+	frame_dec.modular_decoder.full_image.deinit();
+	frame_dec.modular_decoder.full_image = try Image.create(allocator, 1, 1, 8, 3);
+	frame_dec.modular_decoder.full_image.channels.items[0].row(0)[0] = 10;
+	frame_dec.modular_decoder.full_image.channels.items[1].row(0)[0] = 20;
+	frame_dec.modular_decoder.full_image.channels.items[2].row(0)[0] = 30;
+	frame_dec.rendered_image = try render_mod.FloatImage.init(allocator, 1, 1, 3);
+	frame_dec.rendered_image.?.row(0, 0)[0] = 1.0;
+	frame_dec.rendered_image.?.row(0, 1)[0] = 2.0;
+	frame_dec.rendered_image.?.row(0, 2)[0] = 3.0;
+
+	const format = JxlPixelFormat{
+		.num_channels = 3,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	var buffer: [3]u8 = undefined;
+	try writeFrameDecoderOutput(&frame_dec, &metadata.m, format, buffer[0..].ptr, buffer.len);
+	try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3 }, &buffer);
+}
+
+test "writeFrameDecoderOutput keeps XYB rendered image unsupported until color conversion lands" {
+	const allocator = std.testing.allocator;
+	var metadata = image_metadata.CodecMetadata{};
+	metadata.m.xyb_encoded = true;
+	metadata.m.bit_depth.bits_per_sample = 8;
+	metadata.m.color_encoding.color_space = .rgb;
+	var frame_dec = dec_frame.FrameDecoder.init(allocator, &metadata);
+	defer frame_dec.deinit();
+	frame_dec.frame_header.color_transform = .xyb;
+	frame_dec.modular_decoder.full_image.deinit();
+	frame_dec.modular_decoder.full_image = try Image.create(allocator, 1, 1, 8, 3);
+	frame_dec.rendered_image = try render_mod.FloatImage.init(allocator, 1, 1, 3);
+
+	const format = JxlPixelFormat{
+		.num_channels = 3,
+		.data_type = .JXL_TYPE_UINT8,
+		.endianness = .JXL_NATIVE_ENDIAN,
+		.@"align" = 0,
+	};
+	var buffer: [3]u8 = undefined;
+	try std.testing.expectError(error.Unsupported, writeFrameDecoderOutput(&frame_dec, &metadata.m, format, buffer[0..].ptr, buffer.len));
 }
 
 test "JxlEncoder encodes a selection-mask extra channel buffer" {
