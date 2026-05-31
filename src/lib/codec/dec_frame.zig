@@ -655,7 +655,6 @@ pub const FrameDecoder = struct {
     pub fn renderSplineOverlays(self: *FrameDecoder) JxlError!void {
         self.clearRenderedImage();
         if (!self.splines.hasAny()) return;
-        if (self.frame_header.color_transform != .xyb) return error.Unsupported;
         if (self.modular_decoder.full_image.channels.items.len < 3) return error.Unsupported;
 
         try self.splines.initializeDrawCache(self.frame_dim.xsize, self.frame_dim.ysize, .{});

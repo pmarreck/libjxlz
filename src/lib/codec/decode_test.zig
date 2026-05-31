@@ -393,6 +393,32 @@ test "decode lossless 300x200 single-section" {
     try testing.expectEqual(@as(i32, 152), img.channels.items[2].rowConst(100)[150]);
 }
 
+test "decode spline fixture reaches rendered float image" {
+	const data = @embedFile("../testdata/splines.jxl");
+	const allocator = testing.allocator;
+	const prepared = try prepareFrame(data);
+
+	var frame_dec = dec_frame.FrameDecoder.init(allocator, &prepared.codec_meta);
+	defer frame_dec.deinit();
+
+	try frame_dec.decodeFrame(prepared.frame_data);
+	try testing.expect(frame_dec.splines.hasAny());
+	try testing.expect(frame_dec.rendered_image != null);
+}
+
+test "decode spline-on-first-frame fixture reaches rendered float image" {
+	const data = @embedFile("../testdata/spline_on_first_frame.jxl");
+	const allocator = testing.allocator;
+	const prepared = try prepareFrame(data);
+
+	var frame_dec = dec_frame.FrameDecoder.init(allocator, &prepared.codec_meta);
+	defer frame_dec.deinit();
+
+	try frame_dec.decodeFrame(prepared.frame_data);
+	try testing.expect(frame_dec.splines.hasAny());
+	try testing.expect(frame_dec.rendered_image != null);
+}
+
 test "decode lossless 600x10 multi-section grayscale" {
     const data = @embedFile("../testdata/lossless_600x10_multisection.jxl");
     const allocator = testing.allocator;

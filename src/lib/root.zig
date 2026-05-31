@@ -32,6 +32,7 @@ pub const codec = struct {
 	pub const color_encoding = @import("codec/color_encoding.zig");
 	pub const splines = @import("codec/splines.zig");
 	pub const render = @import("codec/render.zig");
+	pub const xyb = @import("codec/xyb.zig");
 	pub const icc_codec_common = @import("codec/icc_codec_common.zig");
 	pub const icc_codec = @import("codec/icc_codec.zig");
 	pub const icc_profiles = @import("codec/icc_profiles.zig");
@@ -97,6 +98,7 @@ test {
 	_ = @import("codec/color_encoding.zig");
 	_ = @import("codec/splines.zig");
 	_ = @import("codec/render.zig");
+	_ = @import("codec/xyb.zig");
 	_ = @import("codec/icc_codec_common.zig");
 	_ = @import("codec/icc_codec.zig");
 	_ = @import("codec/icc_profiles.zig");
