@@ -24,6 +24,16 @@
 - [ ] Near-term direction: keep porting upstream lossless modular encode structure in narrow tested slices, prefer real roundtrip coverage first, and only keep performance changes that survive `./bm`
 - [ ] Near-term decoder direction: close the remaining `+/-1` output-quantization diffs for the two spline fixtures so they can move into the passing oracle bucket
 - [ ] Current step checklist:
+- [ ] 1. C API pixel-format seam: extract `JxlDataType`, `JxlEndianness`, `JxlPixelFormat`, row-stride, endian stores, and sample-scaling helpers into `src/capi/pixel_format.zig`; keep `capi_root.zig` as the public export/re-export surface; prove with focused helper tests plus full `./test`
+- [ ] 2. C API output-buffer seam: move `writeImageToOutput`, `writeRenderedImageToOutput`, and `writeXYBRenderedImageToOutput` into `src/capi/output_buffer.zig` behind a small context struct so the remaining spline `+/-1` quantization issue has a narrower home
+- [ ] 3. Close spline `+/-1` oracle diffs: compare packed output against upstream `djxl` and isolate whether the residual is final quantization, FMA/rounding, or PNM/C API conversion behavior; promote `splines.jxl` and `spline_on_first_frame.jxl` only after byte-exact parity
+- [ ] 4. C API memory-manager seam: extract `JxlMemoryManager` validation/allocation/copy-out helpers into `src/capi/memory_manager.zig`; add ownership and error-path tests
+- [ ] 5. C API extra-channel staging seam: extract staged alpha/extra-channel validation and buffer staging into `src/capi/extra_channels.zig`; keep existing subsampled alpha/depth C smokes green
+- [ ] 6. C API color-profile seam: extract structured color plus ICC profile adapter logic into `src/capi/color_profile.zig`; preserve embedded ICC, CMYK+black, and built-in structured-profile smokes
+- [ ] 7. Encoder parity next slice: continue upstream-shaped lossless modular encode parity, prioritizing real roundtrips and reference comparisons over speculative optimization
+- [ ] 8. Decoder parity next slice after splines: expand known-supported corpus from checked-in fixtures and optional `~/Pictures/big-desktops/` crops, keeping oracle evidence separate from implementation
+- [ ] 9. BMFF/ICC follow-up: broaden container box parity and compressed/embedded ICC coverage only through reference-backed tests
+- [ ] 10. Performance gate: after each behavior milestone, run `./bm` only for accepted performance checkpoints; do not optimize without a measured regression or clear asymptotic win
 - [x] Windows/Nix Brotli parity: replace the temporary Windows `error.Unsupported` Brotli gate with a deterministic Nix-provided cross-target Brotli package wired through `flake.nix` + `build.zig`, and prove it with a failing-then-passing Windows cross smoke that asserts the Brotli backend is available — 2026-04-30 ~estimated EDT
 - [x] BMFF parity follow-up: after Brotli is real on Windows again, tighten the next smallest container gap around decoder-side BMFF box visibility/ordering/core-box filtering with a failing test first — 2026-04-30 ~estimated EDT
 - [x] ICC first slice: after the BMFF follow-up, start the first real ICC profile surface with the smallest honest public API slice and reference-backed tests — 2026-04-30 ~estimated EDT
