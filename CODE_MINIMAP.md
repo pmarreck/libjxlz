@@ -117,7 +117,7 @@
 ### src/lib/base/
 - `status.zig` — StatusCode enum, JxlError error set, Status struct for FFI bridging
 - `bits.zig` — CLZ, CTZ, floorLog2, ceilLog2 via @clz/@ctz builtins
-- `common.zig` — Constants (pi, bits_per_byte), divCeil, roundUp, clamp, safeAdd
+- `common.zig` — Constants (pi, bits_per_byte), divCeil, shared signed-shift `subsampledSize` for chroma/extra-channel plane geometry, roundUp, clamp, safeAdd
 - `byte_order.zig` — Endian load/store for 16/32/64-bit ints and floats via std.mem
 - `random.zig` — Xorshift128+ PRNG matching C++ jxl::Rng exactly
 - `rect.zig` — Rect type for rectangular image regions with intersection/translate/shift

@@ -390,10 +390,6 @@ pub fn writeEmptyModularGroupWithPalette(palette: Transform, writer: *BitWriter)
 	try writeSinglePaletteTransform(palette, writer);
 }
 
-fn subsampledSize(size: usize, shift: i32) usize {
-	if (shift < 0) return size;
-	return common.divCeil(size, @as(usize, 1) << @intCast(shift));
-}
 
 /// Copies a group-sized source rect into a standalone temporary image so the
 /// existing local single-node writer can be reused for multigroup frame tiles.
@@ -424,8 +420,8 @@ fn extractImageRect(
 
 		const rx0 = rect.x0() >> shift_x;
 		const ry0 = rect.y0() >> shift_y;
-		const rw = subsampledSize(rect.xsize(), source_ch.hshift);
-		const rh = subsampledSize(rect.ysize(), source_ch.vshift);
+		const rw = common.subsampledSize(rect.xsize(), source_ch.hshift);
+		const rh = common.subsampledSize(rect.ysize(), source_ch.vshift);
 		var tile_ch = try Channel.create(allocator, rw, rh, source_ch.hshift, source_ch.vshift);
 		errdefer tile_ch.deinit();
 
@@ -461,8 +457,8 @@ fn tokenizeSingleNodeChannelRect(
 
 	const rx0 = rect.x0() >> shift_x;
 	const ry0 = rect.y0() >> shift_y;
-	const rw = subsampledSize(rect.xsize(), channel.hshift);
-	const rh = subsampledSize(rect.ysize(), channel.vshift);
+	const rw = common.subsampledSize(rect.xsize(), channel.hshift);
+	const rh = common.subsampledSize(rect.ysize(), channel.vshift);
 	const tokens = try allocator.alloc(Token, rw * rh);
 	var token_index: usize = 0;
 
@@ -532,7 +528,7 @@ fn precomputeReferencesRect(
 	const shift_y: u6 = @intCast(channel.vshift);
 	const rx0 = rect.x0() >> shift_x;
 	const ry0 = rect.y0() >> shift_y;
-	const rw = subsampledSize(rect.xsize(), channel.hshift);
+	const rw = common.subsampledSize(rect.xsize(), channel.hshift);
 
 	var offset: usize = 0;
 	const num_extra_props = references.w;
@@ -628,8 +624,8 @@ fn tokenizeGlobalTreeChannelRectImpl(
 
 	const rx0 = rect.x0() >> shift_x;
 	const ry0 = rect.y0() >> shift_y;
-	const rw = subsampledSize(rect.xsize(), channel.hshift);
-	const rh = subsampledSize(rect.ysize(), channel.vshift);
+	const rw = common.subsampledSize(rect.xsize(), channel.hshift);
+	const rh = common.subsampledSize(rect.ysize(), channel.vshift);
 	const tokens = try allocator.alloc(Token, rw * rh);
 	var token_index: usize = 0;
 

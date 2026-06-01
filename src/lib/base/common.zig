@@ -29,6 +29,14 @@ pub fn divCeil(a: anytype, b: anytype) @TypeOf(a) {
 	return @divTrunc(a + b - 1, b);
 }
 
+/// Computes the reduced dimension for a signed chroma/extra-channel shift.
+/// Negative shifts mean no subsampling; oversized positive shifts collapse nonzero sizes to one sample.
+pub fn subsampledSize(size: usize, shift: i32) usize {
+	if (shift <= 0) return size;
+	if (shift >= @bitSizeOf(usize)) return if (size == 0) 0 else 1;
+	return divCeil(size, @as(usize, 1) << @intCast(shift));
+}
+
 /// Round `what` up to the next multiple of `align`.
 pub fn roundUpTo(what: usize, alignment: usize) usize {
 	return divCeil(what, alignment) * alignment;
@@ -77,6 +85,17 @@ test "divCeil" {
 	try testing.expectEqual(@as(usize, 2), divCeil(@as(usize, 9), @as(usize, 8)));
 	try testing.expectEqual(@as(usize, 2), divCeil(@as(usize, 16), @as(usize, 8)));
 	try testing.expectEqual(@as(usize, 3), divCeil(@as(usize, 17), @as(usize, 8)));
+}
+
+test "subsampledSize handles signed channel shifts" {
+	const testing = std.testing;
+	try testing.expectEqual(@as(usize, 0), subsampledSize(0, 0));
+	try testing.expectEqual(@as(usize, 13), subsampledSize(13, -1));
+	try testing.expectEqual(@as(usize, 13), subsampledSize(13, 0));
+	try testing.expectEqual(@as(usize, 7), subsampledSize(13, 1));
+	try testing.expectEqual(@as(usize, 2), subsampledSize(13, 3));
+	try testing.expectEqual(@as(usize, 1), subsampledSize(13, @bitSizeOf(usize)));
+	try testing.expectEqual(@as(usize, 0), subsampledSize(0, @bitSizeOf(usize)));
 }
 
 test "roundUpTo" {

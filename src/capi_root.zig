@@ -1123,10 +1123,6 @@ fn populateExtraChannelInfo(info: *JxlExtraChannelInfo, extra: *const image_meta
 	info.cfa_channel = extra.cfa_channel;
 }
 
-fn subsampledSize(size: u32, shift: u32) usize {
-	return common.divCeil(@as(usize, size), @as(usize, 1) << @intCast(shift));
-}
-
 /// Keeps the public encoder slice intentionally narrow: full-size uint8 extra
 /// channels only, with only the metadata shapes the current Zig codestream writer can serialize.
 fn validateExtraChannelInfoForSimpleEncode(
@@ -1228,8 +1224,8 @@ fn prepareSimplePackedInput(allocator: std.mem.Allocator, impl: *const EncoderIm
 	const color_pixels = try allocator.alloc(u8, color_row_stride * height);
 	errdefer allocator.free(color_pixels);
 
-	const alpha_width = subsampledSize(impl.basic_info.xsize, staged_alpha_dim_shift);
-	const alpha_height = subsampledSize(impl.basic_info.ysize, staged_alpha_dim_shift);
+	const alpha_width = common.subsampledSize(@intCast(impl.basic_info.xsize), @intCast(staged_alpha_dim_shift));
+	const alpha_height = common.subsampledSize(@intCast(impl.basic_info.ysize), @intCast(staged_alpha_dim_shift));
 	const alpha_row_stride = if (has_interleaved_alpha) width else alpha_width;
 	var alpha_pixels: []u8 = &.{};
 	if (has_alpha) {
@@ -1314,8 +1310,8 @@ fn prepareQueuedPackedInput(
 	const color_pixels = try allocator.alloc(u8, color_row_stride * height);
 	errdefer allocator.free(color_pixels);
 
-	const alpha_width = subsampledSize(impl.basic_info.xsize, staged_alpha_dim_shift);
-	const alpha_height = subsampledSize(impl.basic_info.ysize, staged_alpha_dim_shift);
+	const alpha_width = common.subsampledSize(@intCast(impl.basic_info.xsize), @intCast(staged_alpha_dim_shift));
+	const alpha_height = common.subsampledSize(@intCast(impl.basic_info.ysize), @intCast(staged_alpha_dim_shift));
 	const alpha_row_stride = if (has_interleaved_alpha) width else alpha_width;
 	var alpha_pixels: []u8 = &.{};
 	if (has_alpha) {
@@ -2919,8 +2915,8 @@ pub export fn JxlEncoderSetExtraChannelBuffer(
 	var extra_format = format.*;
 	extra_format.num_channels = 1;
 	const dim_shift = if (is_staged_alpha and !pending.info_set) 0 else pending.info.dim_shift;
-	const plane_width: u32 = @intCast(subsampledSize(impl.basic_info.xsize, dim_shift));
-	const plane_height: usize = subsampledSize(impl.basic_info.ysize, dim_shift);
+	const plane_width: u32 = @intCast(common.subsampledSize(@intCast(impl.basic_info.xsize), @intCast(dim_shift)));
+	const plane_height: usize = common.subsampledSize(@intCast(impl.basic_info.ysize), @intCast(dim_shift));
 	const stride = rowStrideBytes(plane_width, extra_format) orelse return .JXL_ENC_ERROR;
 	const needed = stride * plane_height;
 	if (size < needed) return .JXL_ENC_ERROR;

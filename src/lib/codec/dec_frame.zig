@@ -103,12 +103,6 @@ pub fn frameByteCount(
 	return @intCast(total_u64);
 }
 
-fn subsampledSize(size: usize, shift: i32) usize {
-    return if (shift >= 0)
-        common.divCeil(size, @as(usize, 1) << @intCast(shift))
-    else
-        size;
-}
 
 /// Resizes the color channels for modular YCbCr so the in-memory image matches
 /// the chroma-subsampled geometry expected by per-group decoding and transforms.
@@ -122,8 +116,8 @@ fn applyYCbCrChromaSubsampling(
     for (0..nb_chans) |c| {
         const hshift: i32 = @intCast(chroma_subsampling.hShift(@intCast(c)));
         const vshift: i32 = @intCast(chroma_subsampling.vShift(@intCast(c)));
-        const width = subsampledSize(frame_dim.xsize, hshift);
-        const height = subsampledSize(frame_dim.ysize, vshift);
+        const width = common.subsampledSize(frame_dim.xsize, hshift);
+        const height = common.subsampledSize(frame_dim.ysize, vshift);
 
         var ch = &image.channels.items[c];
         ch.hshift = hshift;
@@ -150,8 +144,8 @@ fn applyExtraChannelDimShift(
 		if (channel_index >= image.channels.items.len) return error.GenericError;
 
 		const shift: i32 = @intCast(metadata.m.extra_channel_info[extra_index].dim_shift);
-		const width = subsampledSize(frame_dim.xsize, shift);
-		const height = subsampledSize(frame_dim.ysize, shift);
+		const width = common.subsampledSize(frame_dim.xsize, shift);
+		const height = common.subsampledSize(frame_dim.ysize, shift);
 
 		var ch = &image.channels.items[channel_index];
 		ch.hshift = shift;
@@ -426,8 +420,8 @@ pub const ModularFrameDecoder = struct {
 
         while (c < self.full_image.channels.items.len) : (c += 1) {
             const fch = &self.full_image.channels.items[c];
-            const rw = subsampledSize(xsize, fch.hshift);
-            const rh = subsampledSize(ysize, fch.vshift);
+            const rw = common.subsampledSize(xsize, fch.hshift);
+            const rh = common.subsampledSize(ysize, fch.vshift);
             if (rw == 0 or rh == 0) continue;
             var gc = try Channel.create(self.allocator, rw, rh, fch.hshift, fch.vshift);
             _ = &gc;

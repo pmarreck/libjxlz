@@ -156,10 +156,6 @@ fn validateSimpleImage(image: SimpleInterleavedU8Image) !void {
 	if (image.pixels.len < needed) return error.InvalidArgs;
 }
 
-fn subsampledSize(size: u32, shift: u32) usize {
-	return common.divCeil(@as(usize, size), @as(usize, 1) << @intCast(shift));
-}
-
 fn validateSimplePackedImage(image: SimplePackedU8Image) !void {
 	if (image.width == 0 or image.height == 0) return error.InvalidArgs;
 	if (!(image.num_color_channels == 1 or image.num_color_channels == 3)) return error.Unsupported;
@@ -175,8 +171,8 @@ fn validateSimplePackedImage(image: SimplePackedU8Image) !void {
 
 	if (image.alpha_pixels.len != 0) {
 		const alpha_dim_shift = if (image.alpha_info) |alpha_info| alpha_info.dim_shift else 0;
-		const alpha_width = subsampledSize(image.width, alpha_dim_shift);
-		const alpha_height = subsampledSize(image.height, alpha_dim_shift);
+		const alpha_width = common.subsampledSize(@intCast(image.width), @intCast(alpha_dim_shift));
+		const alpha_height = common.subsampledSize(@intCast(image.height), @intCast(alpha_dim_shift));
 		if (image.alpha_row_stride < alpha_width) return error.InvalidArgs;
 		if (image.alpha_pixels.len < image.alpha_row_stride * alpha_height) return error.InvalidArgs;
 		if (image.alpha_info) |alpha_info| {
@@ -190,8 +186,8 @@ fn validateSimplePackedImage(image: SimplePackedU8Image) !void {
 
 	for (image.extra_planes) |extra| {
 		if (extra.info.type == .alpha) return error.InvalidArgs;
-		const plane_width = subsampledSize(image.width, extra.info.dim_shift);
-		const plane_height = subsampledSize(image.height, extra.info.dim_shift);
+		const plane_width = common.subsampledSize(@intCast(image.width), @intCast(extra.info.dim_shift));
+		const plane_height = common.subsampledSize(@intCast(image.height), @intCast(extra.info.dim_shift));
 		if (extra.row_stride < plane_width) return error.InvalidArgs;
 		if (extra.pixels.len < extra.row_stride * plane_height) return error.InvalidArgs;
 	}
@@ -356,8 +352,8 @@ fn buildPackedSourceImage(allocator: std.mem.Allocator, image: SimplePackedU8Ima
 	}
 	if (image.alpha_pixels.len != 0) {
 		const alpha_dim_shift = if (image.alpha_info) |alpha_info| alpha_info.dim_shift else 0;
-		const alpha_width = subsampledSize(image.width, alpha_dim_shift);
-		const alpha_height = subsampledSize(image.height, alpha_dim_shift);
+		const alpha_width = common.subsampledSize(@intCast(image.width), @intCast(alpha_dim_shift));
+		const alpha_height = common.subsampledSize(@intCast(image.height), @intCast(alpha_dim_shift));
 		try source.channels.append(
 			allocator,
 			try modular_image.Channel.create(
@@ -370,8 +366,8 @@ fn buildPackedSourceImage(allocator: std.mem.Allocator, image: SimplePackedU8Ima
 		);
 	}
 	for (image.extra_planes) |extra| {
-		const plane_width = subsampledSize(image.width, extra.info.dim_shift);
-		const plane_height = subsampledSize(image.height, extra.info.dim_shift);
+		const plane_width = common.subsampledSize(@intCast(image.width), @intCast(extra.info.dim_shift));
+		const plane_height = common.subsampledSize(@intCast(image.height), @intCast(extra.info.dim_shift));
 		try source.channels.append(
 			allocator,
 			try modular_image.Channel.create(
