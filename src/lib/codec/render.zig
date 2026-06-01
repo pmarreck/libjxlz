@@ -2,6 +2,13 @@ const std = @import("std");
 const modular_image = @import("../modular/modular_image.zig");
 const splines_mod = @import("splines.zig");
 
+fn bitDepthMax(bits: i32) f32 {
+	if (bits <= 0) return 1.0;
+	if (bits >= 31) return @floatFromInt(std.math.maxInt(u31));
+	const shift: u5 = @intCast(bits);
+	return @floatFromInt((@as(u32, 1) << shift) - 1);
+}
+
 pub const FloatImage = struct {
 	data: []f32 = &.{},
 	xsize: usize = 0,
@@ -28,12 +35,13 @@ pub const FloatImage = struct {
 		};
 	}
 
-	/// Lifts modular integer output into planar float rows so later render stages
-	/// can apply XYB splines and blending without mutating entropy-decoded state.
+	/// Lifts modular integer output into normalized planar float rows so later
+	/// render stages can apply splines and blending in the render-pipeline domain.
 	pub fn fromModularImage(allocator: std.mem.Allocator, image: *const modular_image.Image, channels: usize) !FloatImage {
 		if (channels > image.channels.items.len) return error.GenericError;
 		var result = try FloatImage.init(allocator, image.w, image.h, channels);
 		errdefer result.deinit();
+		const max_value = bitDepthMax(image.bitdepth);
 
 		for (0..channels) |c| {
 			const src_ch = &image.channels.items[c];
@@ -42,7 +50,7 @@ pub const FloatImage = struct {
 				const src = src_ch.rowConst(y);
 				const dst = result.row(y, c);
 				for (src, 0..) |value, x| {
-					dst[x] = @floatFromInt(value);
+					dst[x] = @as(f32, @floatFromInt(value)) / max_value;
 				}
 			}
 		}
@@ -72,7 +80,7 @@ pub const FloatImage = struct {
 
 const testing = std.testing;
 
-test "FloatImage fromModularImage copies integer color channels into float planes" {
+test "FloatImage fromModularImage normalizes integer color channels into float planes" {
 	const allocator = testing.allocator;
 	var image = try modular_image.Image.create(allocator, 3, 2, 8, 3);
 	defer image.deinit();
@@ -91,8 +99,8 @@ test "FloatImage fromModularImage copies integer color channels into float plane
 	try testing.expectEqual(@as(usize, 2), rendered.ysize);
 	try testing.expectEqual(@as(usize, 3), rendered.channels);
 	try testing.expectEqual(@as(f32, 0), rendered.rowConst(0, 0)[0]);
-	try testing.expectEqual(@as(f32, 112), rendered.rowConst(1, 1)[2]);
-	try testing.expectEqual(@as(f32, 211), rendered.rowConst(1, 2)[1]);
+	try testing.expectApproxEqAbs(@as(f32, 112.0 / 255.0), rendered.rowConst(1, 1)[2], 1.0e-6);
+	try testing.expectApproxEqAbs(@as(f32, 211.0 / 255.0), rendered.rowConst(1, 2)[1], 1.0e-6);
 }
 
 test "FloatImage applySplines uses parsed draw cache to modify XYB rows" {

@@ -554,13 +554,32 @@ fn pointSub(a: Point, b: Point) Vector {
 	return .{ .x = a.x - b.x, .y = a.y - b.y };
 }
 
+/// Approximates cosine with upstream libjxl's FastCosf polynomial/range
+/// reduction so spline DCT interpolation follows oracle-visible rounding.
+fn fastCos(x: f32) f32 {
+	const pi2 = std.math.pi * 2.0;
+	const pi2_inv = 0.5 / std.math.pi;
+	const npi2 = @floor(x * pi2_inv) * pi2;
+	const xmodpi2 = x - npi2;
+	const x_pi = @min(xmodpi2, pi2 - xmodpi2);
+	const above_pihalf = x_pi >= std.math.pi / 2.0;
+	const x_pihalf = if (above_pihalf) std.math.pi - x_pi else x_pi;
+	const xs = x_pihalf * 0.25;
+	const x2 = xs * xs;
+	const x4 = x2 * x2;
+	const cosx_prescaling = @mulAdd(f32, x4, 0.06960438, @mulAdd(f32, x2, -0.84087373, 1.68179268));
+	const cosx_scale1 = @mulAdd(f32, cosx_prescaling, cosx_prescaling, -1.414213562);
+	const cosx_scale2 = @mulAdd(f32, cosx_scale1, cosx_scale1, -1.0);
+	return if (above_pihalf) -cosx_scale2 else cosx_scale2;
+}
+
 /// Interpolates the spline's 32 DCT coefficients continuously so draw-cache
 /// construction can sample color and sigma at arbitrary arc-length positions.
 fn continuousIDCT(dct: Dct32, t: f32) f32 {
 	var result: f32 = 0.0;
 	for (dct, 0..) |coeff, i| {
 		const multiplier = std.math.pi / 32.0 * @as(f32, @floatFromInt(i));
-		result += kSqrt2 * coeff * @cos(multiplier * (t + 0.5));
+		result = @mulAdd(f32, kSqrt2, coeff * fastCos(multiplier * (t + 0.5)), result);
 	}
 	return result;
 }
@@ -589,7 +608,9 @@ fn drawCentripetalCatmullRomSpline(allocator: std.mem.Allocator, points_in: []co
 		var d: [3]f32 = undefined;
 		var t: [4]f32 = .{ 0.0, 0.0, 0.0, 0.0 };
 		for (0..3) |k| {
-			d[k] = @sqrt(std.math.pow(f32, p[k + 1].x - p[k].x, 2) + std.math.pow(f32, p[k + 1].y - p[k].y, 2));
+			const dx = p[k + 1].x - p[k].x;
+			const dy = p[k + 1].y - p[k].y;
+			d[k] = @sqrt(@sqrt(dx * dx + dy * dy));
 			t[k + 1] = t[k] + d[k];
 		}
 
@@ -747,15 +768,18 @@ fn decodeAllStartingPoints(reader: anytype, points: []Point) !void {
 	}
 }
 
-/// Uses a compact Abramowitz-Stegun approximation for the Gaussian error
-/// function, matching the spirit of upstream's fast spline hot-path math.
+/// Uses upstream libjxl's FastErff denominator polynomial so spline Gaussian
+/// integration follows the same approximation family as the SIMD render path.
 fn erfApprox(x: f32) f32 {
-	const sign: f32 = if (x < 0.0) -1.0 else 1.0;
+	const sign: f32 = if (x <= 0.0) -1.0 else 1.0;
 	const ax = @abs(x);
-	const t = 1.0 / (1.0 + 0.3275911 * ax);
-	const poly = (((((1.061405429 * t) - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592;
-	const y = 1.0 - poly * t * @exp(-(ax * ax));
-	return sign * y;
+	const denom1 = @mulAdd(f32, ax, 7.77394369e-02, 2.05260015e-04);
+	const denom2 = @mulAdd(f32, denom1, ax, 2.32120216e-01);
+	const denom3 = @mulAdd(f32, denom2, ax, 2.77820801e-01);
+	const denom4 = @mulAdd(f32, denom3, ax, 1.0);
+	const denom5 = denom4 * denom4;
+	const inv_denom5 = 1.0 / denom5;
+	return sign * @mulAdd(f32, -inv_denom5, inv_denom5, 1.0);
 }
 
 const testing = std.testing;
@@ -820,6 +844,35 @@ test "Splines initializeDrawCache rejects duplicate successive control points" {
 	splines.assignOwned(0, owned_splines, starting_points);
 
 	try testing.expectError(error.GenericError, splines.initializeDrawCache(320, 320, .{}));
+}
+
+test "drawCentripetalCatmullRomSpline uses square-root chord lengths" {
+	const points = [_]Point{
+		.{ .x = 0.0, .y = 0.0 },
+		.{ .x = 100.0, .y = 0.0 },
+		.{ .x = 100.0, .y = 4.0 },
+		.{ .x = 120.0, .y = 4.0 },
+	};
+	const smoothed = try drawCentripetalCatmullRomSpline(testing.allocator, &points);
+	defer testing.allocator.free(smoothed);
+
+	try testing.expectEqual(@as(usize, 49), smoothed.len);
+	try testing.expectApproxEqAbs(@as(f32, 60.416667), smoothed[8].x, 1.0e-5);
+	try testing.expectApproxEqAbs(@as(f32, -2.0833333), smoothed[8].y, 1.0e-5);
+	try testing.expectApproxEqAbs(@as(f32, 108.27254), smoothed[40].x, 1.0e-5);
+	try testing.expectApproxEqAbs(@as(f32, 4.7725425), smoothed[40].y, 1.0e-5);
+}
+
+test "erfApprox uses upstream FastErff constants" {
+	try testing.expectApproxEqAbs(@as(f32, 0.5206692), erfApprox(0.5), 1.0e-6);
+	try testing.expectApproxEqAbs(@as(f32, -0.8427021), erfApprox(-1.0), 1.0e-6);
+	try testing.expectApproxEqAbs(@as(f32, 0.9948316), erfApprox(2.0), 1.0e-6);
+}
+
+test "fastCos uses upstream FastCosf constants" {
+	try testing.expectApproxEqAbs(@as(f32, 0.8775844), fastCos(0.5), 2.0e-7);
+	try testing.expectApproxEqAbs(@as(f32, 0.07073936), fastCos(1.5), 2.0e-7);
+	try testing.expectApproxEqAbs(@as(f32, -0.4161461), fastCos(2.0), 2.0e-7);
 }
 
 test "Splines initializeDrawCache builds drawable segments for simple spline" {

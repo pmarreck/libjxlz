@@ -870,6 +870,51 @@ test "renderSplineOverlays creates float image when parsed splines are present" 
 	try testing.expect(touched);
 }
 
+test "renderSplineOverlays uses upstream decoder default spline color correlation" {
+	const allocator = testing.allocator;
+	var metadata = CodecMetadata{};
+	metadata.m.xyb_encoded = false;
+	var dec = FrameDecoder.init(allocator, &metadata);
+	defer dec.deinit();
+	dec.frame_header.color_transform = .none;
+	dec.frame_dim.set(64, 64, 1, 0, 0, true, 1);
+	dec.modular_decoder.full_image.deinit();
+	dec.modular_decoder.full_image = try Image.create(allocator, 64, 64, 8, 3);
+
+	var y_color = splines_mod.zero_dct32;
+	y_color[0] = 0.49497476;
+	var sigma = splines_mod.zero_dct32;
+	sigma[0] = 2.357;
+	var spline = splines_mod.Spline{
+		.control_points = try allocator.dupe(splines_mod.Point, &.{
+			.{ .x = 10, .y = 10 },
+			.{ .x = 20, .y = 10 },
+			.{ .x = 30, .y = 10 },
+		}),
+		.color_dct = .{ splines_mod.zero_dct32, y_color, splines_mod.zero_dct32 },
+		.sigma_dct = sigma,
+	};
+	defer spline.deinit(allocator);
+
+	const quantized = try splines_mod.QuantizedSpline.create(allocator, &spline, 0, 0.0, 0.0);
+	var owned_splines = try allocator.alloc(splines_mod.QuantizedSpline, 1);
+	owned_splines[0] = quantized;
+	const starting_points = try allocator.dupe(splines_mod.Point, &.{spline.control_points[0]});
+	dec.splines.assignOwned(0, owned_splines, starting_points);
+
+	try dec.renderSplineOverlays();
+
+	const rendered = &dec.rendered_image.?;
+	var y_touched = false;
+	var b_touched = false;
+	for (0..64) |x| {
+		y_touched = y_touched or @abs(rendered.rowConst(10, 1)[x]) > 0.0;
+		b_touched = b_touched or @abs(rendered.rowConst(10, 2)[x]) > 0.0;
+	}
+	try testing.expect(y_touched);
+	try testing.expect(b_touched);
+}
+
 test "applyYCbCrChromaSubsampling shrinks chroma channels" {
     const allocator = testing.allocator;
     var image = try Image.create(allocator, 13, 9, 8, 3);
