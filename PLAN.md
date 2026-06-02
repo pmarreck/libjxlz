@@ -25,7 +25,7 @@
 - [ ] Near-term decoder direction: close the remaining `+/-1` output-quantization diffs for the two spline fixtures so they can move into the passing oracle bucket
 - [ ] Current step checklist:
 - [x] 1. C API pixel-format seam: extract `JxlDataType`, `JxlEndianness`, `JxlPixelFormat`, row-stride, endian stores, and sample-scaling helpers into `src/capi/pixel_format.zig`; keep `capi_root.zig` as the public export/re-export surface; prove with focused helper tests plus full `./test` — 2026-06-02 09:39 AM EDT
-- [ ] 2. C API output-buffer seam: move `writeImageToOutput`, `writeRenderedImageToOutput`, and `writeXYBRenderedImageToOutput` into `src/capi/output_buffer.zig` behind a small context struct so the remaining spline `+/-1` quantization issue has a narrower home
+- [x] 2. C API output-buffer seam: move `writeImageToOutput`, `writeRenderedImageToOutput`, and `writeXYBRenderedImageToOutput` into `src/capi/output_buffer.zig` while keeping `capi_root.zig` as the alias/call-site owner, so the remaining spline `+/-1` quantization issue has a narrower home — 2026-06-02 09:46 AM EDT
 - [ ] 3. Close spline `+/-1` oracle diffs: compare packed output against upstream `djxl` and isolate whether the residual is final quantization, FMA/rounding, or PNM/C API conversion behavior; promote `splines.jxl` and `spline_on_first_frame.jxl` only after byte-exact parity
 - [ ] 4. C API memory-manager seam: extract `JxlMemoryManager` validation/allocation/copy-out helpers into `src/capi/memory_manager.zig`; add ownership and error-path tests
 - [ ] 5. C API extra-channel staging seam: extract staged alpha/extra-channel validation and buffer staging into `src/capi/extra_channels.zig`; keep existing subsampled alpha/depth C smokes green
