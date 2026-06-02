@@ -19,6 +19,7 @@ const enc_api = @import("lib/codec/enc_api.zig");
 const Image = @import("lib/modular/modular_image.zig").Image;
 const capi_pixel = @import("capi/pixel_format.zig");
 const capi_output = @import("capi/output_buffer.zig");
+const capi_memory = @import("capi/memory_manager.zig");
 
 pub const JXL_BOOL = c_int;
 
@@ -31,6 +32,8 @@ const alphaChannelIndex = capi_output.alphaChannelIndex;
 const writeImageToOutput = capi_output.writeImageToOutput;
 const writeRenderedImageToOutput = capi_output.writeRenderedImageToOutput;
 const writeFrameDecoderOutput = capi_output.writeFrameDecoderOutput;
+const validateMemoryManager = capi_memory.validate;
+const exportOwnedBytes = capi_memory.exportOwnedBytes;
 
 pub const JxlOrientation = enum(c_int) {
 	JXL_ORIENT_IDENTITY = 1,
@@ -234,14 +237,9 @@ pub const JxlColorEncoding = extern struct {
 	rendering_intent: JxlRenderingIntent,
 };
 
-pub const jpegxl_alloc_func = *const fn (?*anyopaque, usize) callconv(.c) ?*anyopaque;
-pub const jpegxl_free_func = *const fn (?*anyopaque, ?*anyopaque) callconv(.c) void;
-
-pub const JxlMemoryManager = extern struct {
-	@"opaque": ?*anyopaque,
-	alloc: ?jpegxl_alloc_func,
-	free: ?jpegxl_free_func,
-};
+pub const jpegxl_alloc_func = capi_memory.jpegxl_alloc_func;
+pub const jpegxl_free_func = capi_memory.jpegxl_free_func;
+pub const JxlMemoryManager = capi_memory.JxlMemoryManager;
 
 pub const JxlParallelRetCode = c_int;
 pub const JxlParallelRunInit = *const fn (?*anyopaque, usize) callconv(.c) JxlParallelRetCode;
@@ -418,20 +416,9 @@ fn statusFromError(err: JxlError, input_closed: bool) JxlDecoderStatus {
 }
 
 fn allocDecoder(mm: ?*const JxlMemoryManager) ?*DecoderImpl {
-	if (mm) |manager| {
-		if (manager.alloc != null and manager.free != null) {
-			const raw = manager.alloc.?(manager.@"opaque", @sizeOf(DecoderImpl)) orelse return null;
-			const dec: *DecoderImpl = @ptrCast(@alignCast(raw));
-			dec.* = .{ .memory_manager = manager.* };
-			return dec;
-		}
-		if ((manager.alloc == null) != (manager.free == null)) return null;
-	}
-
-	const dec = std.heap.c_allocator.create(DecoderImpl) catch return null;
-	dec.* = .{};
-	if (mm) |manager| dec.memory_manager = manager.*;
-	return dec;
+	var value = DecoderImpl{};
+	if (mm) |manager| value.memory_manager = manager.*;
+	return capi_memory.createValue(DecoderImpl, mm, value);
 }
 
 fn freeDecoder(dec: *DecoderImpl) void {
@@ -450,71 +437,17 @@ fn freeDecoder(dec: *DecoderImpl) void {
 	}
 	if (dec.memory_manager) |manager| {
 		if (manager.alloc != null and manager.free != null) {
-			manager.free.?(manager.@"opaque", dec);
+			capi_memory.destroyValue(DecoderImpl, dec, manager);
 			return;
 		}
 	}
-	std.heap.c_allocator.destroy(dec);
+	capi_memory.destroyValue(DecoderImpl, dec, null);
 }
 
 fn allocEncoder(mm: ?*const JxlMemoryManager) ?*EncoderImpl {
-	if (mm) |manager| {
-		if (manager.alloc != null and manager.free != null) {
-			const raw = manager.alloc.?(manager.@"opaque", @sizeOf(EncoderImpl)) orelse return null;
-			const enc: *EncoderImpl = @ptrCast(@alignCast(raw));
-			enc.* = .{ .memory_manager = manager.* };
-			return enc;
-		}
-		if ((manager.alloc == null) != (manager.free == null)) return null;
-	}
-
-	const enc = std.heap.c_allocator.create(EncoderImpl) catch return null;
-	enc.* = .{};
-	if (mm) |manager| enc.memory_manager = manager.*;
-	return enc;
-}
-
-/// Validates the optional C memory-manager pair so public buffer-returning APIs
-/// can share the same ownership rules as the encoder/decoder constructors.
-fn validateMemoryManager(mm: ?*const JxlMemoryManager) bool {
-	if (mm) |manager| {
-		if ((manager.alloc == null) != (manager.free == null)) return false;
-	}
-	return true;
-}
-
-/// Copies Zig-owned bytes into caller-owned storage using the optional C memory
-/// manager, bridging pure-Zig codec results to stable FFI ownership semantics.
-fn exportOwnedBytes(
-	mm: ?*const JxlMemoryManager,
-	bytes: []const u8,
-	out_ptr: *?[*]u8,
-	out_size: *usize,
-) bool {
-	if (!validateMemoryManager(mm)) return false;
-
-	if (bytes.len == 0) {
-		out_ptr.* = null;
-		out_size.* = 0;
-		return true;
-	}
-
-	if (mm) |manager| {
-		if (manager.alloc != null) {
-			const raw = manager.alloc.?(manager.@"opaque", bytes.len) orelse return false;
-			const dst: [*]u8 = @ptrCast(raw);
-			@memcpy(dst[0..bytes.len], bytes);
-			out_ptr.* = dst;
-			out_size.* = bytes.len;
-			return true;
-		}
-	}
-
-	const owned = std.heap.c_allocator.alloc(u8, bytes.len) catch return false;
-	@memcpy(owned, bytes);
-	out_ptr.* = owned.ptr;
-	out_size.* = owned.len;
-	return true;
+	var value = EncoderImpl{};
+	if (mm) |manager| value.memory_manager = manager.*;
+	return capi_memory.createValue(EncoderImpl, mm, value);
 }
 
 fn freeEncoderState(enc: *EncoderImpl) void {
@@ -545,11 +478,11 @@ fn freeEncoder(enc: *EncoderImpl) void {
 	freeEncoderState(enc);
 	if (enc.memory_manager) |manager| {
 		if (manager.alloc != null and manager.free != null) {
-			manager.free.?(manager.@"opaque", enc);
+			capi_memory.destroyValue(EncoderImpl, enc, manager);
 			return;
 		}
 	}
-	std.heap.c_allocator.destroy(enc);
+	capi_memory.destroyValue(EncoderImpl, enc, null);
 }
 
 fn defaultWhitePointXY() [2]f64 {
