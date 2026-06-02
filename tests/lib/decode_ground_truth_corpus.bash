@@ -71,6 +71,60 @@ run_decode_ground_truth_manifest() {
 	done < "${manifest_path}"
 }
 
+assert_pam_known_diff_is_byte_close() {
+	local upstream_out="$1"
+	local our_out="$2"
+	local relpath="$3"
+
+	perl - "$upstream_out" "$our_out" "$relpath" <<'PERL'
+use strict;
+use warnings;
+my ($upstream_path, $ours_path, $relpath) = @ARGV;
+open my $ufh, '<:raw', $upstream_path or die "open upstream: $!\n";
+open my $ofh, '<:raw', $ours_path or die "open ours: $!\n";
+local $/;
+my $u = <$ufh>;
+my $o = <$ofh>;
+my $marker = "ENDHDR\n";
+my $uh = index($u, $marker);
+my $oh = index($o, $marker);
+if ($uh < 0 || $oh < 0) {
+	print STDERR "known-diff case ${relpath} did not produce PAM headers\n";
+	exit 1;
+}
+$uh += length($marker);
+$oh += length($marker);
+my $u_header = substr($u, 0, $uh);
+my $o_header = substr($o, 0, $oh);
+if ($u_header ne $o_header) {
+	print STDERR "known-diff case ${relpath} changed PAM header shape\n";
+	exit 1;
+}
+my $u_payload = substr($u, $uh);
+my $o_payload = substr($o, $oh);
+if (length($u_payload) != length($o_payload)) {
+	print STDERR "known-diff case ${relpath} changed payload size\n";
+	exit 1;
+}
+my $mismatches = 0;
+my $max_delta = 0;
+for (my $i = 0; $i < length($u_payload); $i++) {
+	my $delta = abs(ord(substr($u_payload, $i, 1)) - ord(substr($o_payload, $i, 1)));
+	next if $delta == 0;
+	$mismatches++;
+	$max_delta = $delta if $delta > $max_delta;
+}
+if ($mismatches == 0) {
+	print STDERR "known-diff case ${relpath} unexpectedly matched upstream\n";
+	exit 1;
+}
+if ($max_delta > 1) {
+	print STDERR "known-diff case ${relpath} widened beyond +/-1 byte deltas (max ${max_delta})\n";
+	exit 1;
+}
+PERL
+}
+
 # Records known decoder-parity gaps where upstream `djxl` succeeds and packaged
 # `djxlz` also emits pixels, but the decoded PAM bytes still differ. This keeps
 # real-oracle coverage on current mismatches without pretending they are fixed.
@@ -119,6 +173,7 @@ run_decode_ground_truth_manifest_expect_diff() {
 			echo "known-diff case unexpectedly matched upstream for ${relpath} (${index}/${total})" >&2
 			return 1
 		fi
+		assert_pam_known_diff_is_byte_close "${upstream_out}" "${our_out}" "${relpath}" || return 1
 	done < "${manifest_path}"
 }
 
