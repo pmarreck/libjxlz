@@ -18,28 +18,22 @@ const render_mod = @import("lib/codec/render.zig");
 const xyb_mod = @import("lib/codec/xyb.zig");
 const enc_api = @import("lib/codec/enc_api.zig");
 const Image = @import("lib/modular/modular_image.zig").Image;
+const capi_pixel = @import("capi/pixel_format.zig");
 
 pub const JXL_BOOL = c_int;
 
-pub const JxlDataType = enum(c_int) {
-	JXL_TYPE_FLOAT = 0,
-	JXL_TYPE_UINT8 = 2,
-	JXL_TYPE_UINT16 = 3,
-	JXL_TYPE_FLOAT16 = 5,
-};
+pub const JxlDataType = capi_pixel.JxlDataType;
+pub const JxlEndianness = capi_pixel.JxlEndianness;
+pub const JxlPixelFormat = capi_pixel.JxlPixelFormat;
 
-pub const JxlEndianness = enum(c_int) {
-	JXL_NATIVE_ENDIAN = 0,
-	JXL_LITTLE_ENDIAN = 1,
-	JXL_BIG_ENDIAN = 2,
-};
-
-pub const JxlPixelFormat = extern struct {
-	num_channels: u32,
-	data_type: JxlDataType,
-	endianness: JxlEndianness,
-	@"align": usize,
-};
+const bytesPerChannel = capi_pixel.bytesPerChannel;
+const rowStrideBytes = capi_pixel.rowStrideBytes;
+const storeU16 = capi_pixel.storeU16;
+const storeU32 = capi_pixel.storeU32;
+const normalizedFloat = capi_pixel.normalizedFloat;
+const scaleToU8 = capi_pixel.scaleToU8;
+const clampNormalizedSample = capi_pixel.clampNormalizedSample;
+const scaleNormalizedToU8 = capi_pixel.scaleNormalizedToU8;
 
 pub const JxlOrientation = enum(c_int) {
 	JXL_ORIENT_IDENTITY = 1,
@@ -931,23 +925,6 @@ test "toInternalColorEncoding accepts custom primaries" {
 	try std.testing.expectEqual(@as(i32, 45000), internal.blue.y);
 }
 
-fn bytesPerChannel(data_type: JxlDataType) ?usize {
-	return switch (data_type) {
-		.JXL_TYPE_UINT8 => 1,
-		.JXL_TYPE_UINT16, .JXL_TYPE_FLOAT16 => 2,
-		.JXL_TYPE_FLOAT => 4,
-	};
-}
-
-/// Converts pixel-format alignment into a concrete row stride so callers can
-/// size and write output buffers exactly like libjxl's image buffer API.
-fn rowStrideBytes(width: usize, format: JxlPixelFormat) ?usize {
-	const bytes_per_channel = bytesPerChannel(format.data_type) orelse return null;
-	const row_bytes = width * format.num_channels * bytes_per_channel;
-	const row_align = if (format.@"align" <= 1) 1 else format.@"align";
-	return common.roundUpTo(row_bytes, row_align);
-}
-
 /// Validates the narrow one-shot encoder surface: 8-bit grayscale/RGB with an
 /// optional 8-bit alpha plus full-size/subsampled uint8 sidecar extras, no container,
 /// plus simple orientation/intrinsic-size, tone-mapping, and animation metadata.
@@ -1531,82 +1508,6 @@ fn alphaChannelIndex(metadata: *const image_metadata.ImageMetadata) ?usize {
 		}
 	}
 	return null;
-}
-
-fn storeU16(dst: []u8, endianness: JxlEndianness, value: u16) void {
-	const actual = switch (endianness) {
-		.JXL_NATIVE_ENDIAN => if (builtinEndian() == .little) JxlEndianness.JXL_LITTLE_ENDIAN else JxlEndianness.JXL_BIG_ENDIAN,
-		else => endianness,
-	};
-	var raw: [2]u8 = undefined;
-	switch (actual) {
-		.JXL_LITTLE_ENDIAN => byte_order.storeLE16(value, &raw),
-		.JXL_BIG_ENDIAN => byte_order.storeBE16(value, &raw),
-		else => unreachable,
-	}
-	@memcpy(dst[0..2], &raw);
-}
-
-fn storeU32(dst: []u8, endianness: JxlEndianness, value: u32) void {
-	const actual = switch (endianness) {
-		.JXL_NATIVE_ENDIAN => if (builtinEndian() == .little) JxlEndianness.JXL_LITTLE_ENDIAN else JxlEndianness.JXL_BIG_ENDIAN,
-		else => endianness,
-	};
-	var raw: [4]u8 = undefined;
-	switch (actual) {
-		.JXL_LITTLE_ENDIAN => byte_order.storeLE32(value, &raw),
-		.JXL_BIG_ENDIAN => byte_order.storeBE32(value, &raw),
-		else => unreachable,
-	}
-	@memcpy(dst[0..4], &raw);
-}
-
-fn builtinEndian() std.builtin.Endian {
-	return @import("builtin").target.cpu.arch.endian();
-}
-
-fn clampU32(value: i32, max_value: u32) u32 {
-	if (value <= 0) return 0;
-	const unsigned: u32 = @intCast(value);
-	return @min(unsigned, max_value);
-}
-
-fn normalizedFloat(value: i32, max_value: u32) f32 {
-	if (max_value == 0) return 0.0;
-	return @as(f32, @floatFromInt(clampU32(value, max_value))) / @as(f32, @floatFromInt(max_value));
-}
-
-fn scaleToU8(value: i32, max_value: u32) u8 {
-	if (max_value == 0) return 0;
-	const clamped = clampU32(value, max_value);
-	if (max_value == 255) return @intCast(clamped);
-	return @intCast((@as(u64, clamped) * 255 + max_value / 2) / max_value);
-}
-
-fn clampFloatSample(value: f32, max_value: u32) f32 {
-	if (max_value == 0 or !std.math.isFinite(value)) return 0.0;
-	return std.math.clamp(value, 0.0, @as(f32, @floatFromInt(max_value)));
-}
-
-fn normalizedFloatSample(value: f32, max_value: u32) f32 {
-	if (max_value == 0) return 0.0;
-	return clampFloatSample(value, max_value) / @as(f32, @floatFromInt(max_value));
-}
-
-fn clampNormalizedSample(value: f32) f32 {
-	if (!std.math.isFinite(value)) return 0.0;
-	return std.math.clamp(value, 0.0, 1.0);
-}
-
-fn scaleFloatToU8(value: f32, max_value: u32) u8 {
-	if (max_value == 0) return 0;
-	const scaled = @round(normalizedFloatSample(value, max_value) * 255.0);
-	return @intFromFloat(scaled);
-}
-
-fn scaleNormalizedToU8(value: f32) u8 {
-	const scaled = @round(clampNormalizedSample(value) * 255.0);
-	return @intFromFloat(scaled);
 }
 
 fn outputValue(img: *const Image, metadata: *const image_metadata.ImageMetadata, color_channels: usize, x: usize, y: usize, requested_channel: usize) i32 {
