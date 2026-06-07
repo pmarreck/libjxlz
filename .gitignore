@@ -41,3 +41,6 @@ AGENTS.md
 .mcp.json
 result
 .direnv/
+
+# Local Codex MCP/tool configuration
+.codex/config.toml
