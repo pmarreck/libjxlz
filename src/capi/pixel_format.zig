@@ -75,6 +75,20 @@ pub fn builtinEndian() std.builtin.Endian {
 	return @import("builtin").target.cpu.arch.endian();
 }
 
+/// Loads 16-bit C API samples from caller-declared byte order so input staging
+/// can normalize public buffers before handing them to narrower codec internals.
+pub fn loadU16(src: []const u8, endianness: JxlEndianness) u16 {
+	const actual = switch (endianness) {
+		.JXL_NATIVE_ENDIAN => if (builtinEndian() == .little) JxlEndianness.JXL_LITTLE_ENDIAN else JxlEndianness.JXL_BIG_ENDIAN,
+		else => endianness,
+	};
+	return switch (actual) {
+		.JXL_LITTLE_ENDIAN => std.mem.readInt(u16, src[0..2], .little),
+		.JXL_BIG_ENDIAN => std.mem.readInt(u16, src[0..2], .big),
+		else => unreachable,
+	};
+}
+
 pub fn clampU32(value: i32, max_value: u32) u32 {
 	if (value <= 0) return 0;
 	const unsigned: u32 = @intCast(value);
@@ -141,6 +155,8 @@ test "pixel format helpers store explicit endian integers" {
 	try std.testing.expectEqualSlices(u8, &.{ 0x12, 0x34 }, two[0..]);
 	storeU16(two[0..], .JXL_LITTLE_ENDIAN, 0x1234);
 	try std.testing.expectEqualSlices(u8, &.{ 0x34, 0x12 }, two[0..]);
+	try std.testing.expectEqual(@as(u16, 0x1234), loadU16(&.{ 0x12, 0x34 }, .JXL_BIG_ENDIAN));
+	try std.testing.expectEqual(@as(u16, 0x1234), loadU16(&.{ 0x34, 0x12 }, .JXL_LITTLE_ENDIAN));
 
 	var four: [4]u8 = undefined;
 	storeU32(four[0..], .JXL_BIG_ENDIAN, 0x12345678);

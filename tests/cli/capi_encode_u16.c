@@ -20,13 +20,9 @@ static int append_chunk(uint8_t** out, size_t* size, size_t* cap, const uint8_t*
 	return 1;
 }
 
-int main(void) {
-	const uint8_t pixels[12] = {
-		0x00, 0x00, 0x12, 0x34, 0xff, 0xff,
-		0x01, 0x00, 0x80, 0x00, 0xab, 0xcd,
-	};
-	JxlPixelFormat format = {3, JXL_TYPE_UINT16, JXL_BIG_ENDIAN, 0};
-
+static int roundtrip_u16(const uint8_t* pixels, JxlEndianness input_endianness, const uint8_t* expected_big_endian) {
+	JxlPixelFormat input_format = {3, JXL_TYPE_UINT16, input_endianness, 0};
+	JxlPixelFormat output_format = {3, JXL_TYPE_UINT16, JXL_BIG_ENDIAN, 0};
 	JxlBasicInfo info;
 	JxlEncoderInitBasicInfo(&info);
 	info.xsize = 2;
@@ -56,7 +52,7 @@ int main(void) {
 		JxlEncoderDestroy(enc);
 		return 1;
 	}
-	if (JxlEncoderAddImageFrame(settings, &format, pixels, sizeof(pixels)) != JXL_ENC_SUCCESS) {
+	if (JxlEncoderAddImageFrame(settings, &input_format, pixels, 12) != JXL_ENC_SUCCESS) {
 		fprintf(stderr, "add 16-bit image frame failed\n");
 		JxlEncoderDestroy(enc);
 		return 1;
@@ -104,12 +100,12 @@ int main(void) {
 		}
 		if (status == JXL_DEC_NEED_IMAGE_OUT_BUFFER) {
 			size_t decoded_size = 0;
-			if (JxlDecoderImageOutBufferSize(dec, &format, &decoded_size) != JXL_DEC_SUCCESS) return 1;
+			if (JxlDecoderImageOutBufferSize(dec, &output_format, &decoded_size) != JXL_DEC_SUCCESS) return 1;
 			if (decoded_size != sizeof(decoded_pixels)) {
 				fprintf(stderr, "unexpected 16-bit buffer size %zu\n", decoded_size);
 				return 1;
 			}
-			if (JxlDecoderSetImageOutBuffer(dec, &format, decoded_pixels, sizeof(decoded_pixels)) != JXL_DEC_SUCCESS) return 1;
+			if (JxlDecoderSetImageOutBuffer(dec, &output_format, decoded_pixels, sizeof(decoded_pixels)) != JXL_DEC_SUCCESS) return 1;
 			continue;
 		}
 		if (status == JXL_DEC_FULL_IMAGE) continue;
@@ -122,12 +118,27 @@ int main(void) {
 		fprintf(stderr, "unexpected decoded bit depth %u\n", decoded_info.bits_per_sample);
 		return 1;
 	}
-	if (memcmp(decoded_pixels, pixels, sizeof(pixels)) != 0) {
+	if (memcmp(decoded_pixels, expected_big_endian, sizeof(decoded_pixels)) != 0) {
 		fprintf(stderr, "16-bit pixel roundtrip mismatch\n");
 		return 1;
 	}
 
 	JxlDecoderDestroy(dec);
 	free(encoded);
+	return 0;
+}
+
+int main(void) {
+	const uint8_t big_endian_pixels[12] = {
+		0x00, 0x00, 0x12, 0x34, 0xff, 0xff,
+		0x01, 0x00, 0x80, 0x00, 0xab, 0xcd,
+	};
+	const uint8_t little_endian_pixels[12] = {
+		0x00, 0x00, 0x34, 0x12, 0xff, 0xff,
+		0x00, 0x01, 0x00, 0x80, 0xcd, 0xab,
+	};
+
+	if (roundtrip_u16(big_endian_pixels, JXL_BIG_ENDIAN, big_endian_pixels) != 0) return 1;
+	if (roundtrip_u16(little_endian_pixels, JXL_LITTLE_ENDIAN, big_endian_pixels) != 0) return 1;
 	return 0;
 }

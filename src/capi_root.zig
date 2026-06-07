@@ -38,6 +38,7 @@ pub const JxlColorEncoding = capi_color.JxlColorEncoding;
 
 const rowStrideBytes = capi_pixel.rowStrideBytes;
 const bytesPerChannel = capi_pixel.bytesPerChannel;
+const loadU16 = capi_pixel.loadU16;
 const alphaChannelIndex = capi_output.alphaChannelIndex;
 const writeImageToOutput = capi_output.writeImageToOutput;
 const writeRenderedImageToOutput = capi_output.writeRenderedImageToOutput;
@@ -571,6 +572,20 @@ fn validateExtraChannelInfoForSimpleEncode(
 	}, index, info);
 }
 
+/// Normalizes public C API color samples into the encoder core's packed color
+/// row layout, including endian conversion for 16-bit caller buffers.
+fn copyColorRowForSimpleEncode(dst: []u8, src: []const u8, format: JxlPixelFormat) void {
+	if (format.data_type != .JXL_TYPE_UINT16 or format.endianness == .JXL_BIG_ENDIAN) {
+		@memcpy(dst, src[0..dst.len]);
+		return;
+	}
+	var offset: usize = 0;
+	while (offset < dst.len) : (offset += 2) {
+		const value = loadU16(src[offset..][0..2], format.endianness);
+		std.mem.writeInt(u16, dst[offset..][0..2], value, .big);
+	}
+}
+
 /// Converts staged public-API image and sidecar buffers into the packed plane
 /// layout the Zig encoder core expects, preserving alpha-first extra ordering.
 fn prepareSimplePackedInput(allocator: std.mem.Allocator, impl: *const EncoderImpl) !PreparedSimplePackedInput {
@@ -631,7 +646,7 @@ fn prepareSimplePackedInput(allocator: std.mem.Allocator, impl: *const EncoderIm
 				alpha_row[x] = src_row[(src_pixel + num_color_channels) * sample_bytes];
 			}
 		} else {
-			@memcpy(color_row, src_row[0..color_row_stride]);
+			copyColorRowForSimpleEncode(color_row, src_row[0..color_row_stride], impl.image_format);
 		}
 	}
 	if (has_alpha and has_staged_alpha) {
@@ -719,7 +734,7 @@ fn prepareQueuedPackedInput(
 				alpha_row[x] = src_row[(src_pixel + num_color_channels) * sample_bytes];
 			}
 		} else {
-			@memcpy(color_row, src_row[0..color_row_stride]);
+			copyColorRowForSimpleEncode(color_row, src_row[0..color_row_stride], frame.image_format);
 		}
 	}
 	if (has_alpha and has_staged_alpha) {
@@ -1884,7 +1899,9 @@ pub export fn JxlEncoderAddImageFrame(
 		8 => if (format.data_type != .JXL_TYPE_UINT8) return .JXL_ENC_ERROR,
 		16 => {
 			if (format.data_type != .JXL_TYPE_UINT16) return .JXL_ENC_ERROR;
-			if (format.endianness != .JXL_BIG_ENDIAN) return .JXL_ENC_ERROR;
+			switch (format.endianness) {
+				.JXL_NATIVE_ENDIAN, .JXL_LITTLE_ENDIAN, .JXL_BIG_ENDIAN => {},
+			}
 		},
 		else => return .JXL_ENC_ERROR,
 	}
