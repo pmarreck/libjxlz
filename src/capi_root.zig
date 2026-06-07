@@ -37,6 +37,7 @@ pub const JxlRenderingIntent = capi_color.JxlRenderingIntent;
 pub const JxlColorEncoding = capi_color.JxlColorEncoding;
 
 const rowStrideBytes = capi_pixel.rowStrideBytes;
+const bytesPerChannel = capi_pixel.bytesPerChannel;
 const alphaChannelIndex = capi_output.alphaChannelIndex;
 const writeImageToOutput = capi_output.writeImageToOutput;
 const writeRenderedImageToOutput = capi_output.writeRenderedImageToOutput;
@@ -440,7 +441,7 @@ fn validateBasicInfoForSimpleEncode(info: *const JxlBasicInfo) !void {
 	if ((info.preview.xsize == 0) != (info.preview.ysize == 0)) return error.InvalidArgs;
 	if ((info.have_preview != 0) != (info.preview.xsize != 0)) return error.InvalidArgs;
 	if ((info.intrinsic_xsize == 0) != (info.intrinsic_ysize == 0)) return error.InvalidArgs;
-	if (info.bits_per_sample != 8 or info.exponent_bits_per_sample != 0) return error.Unsupported;
+	if (!(info.bits_per_sample == 8 or info.bits_per_sample == 16) or info.exponent_bits_per_sample != 0) return error.Unsupported;
 	if (!(info.intensity_target > 0.0)) return error.InvalidArgs;
 	if (info.min_nits < 0.0 or info.min_nits > info.intensity_target) return error.InvalidArgs;
 	if (!(info.relative_to_max_display == 0 or info.relative_to_max_display == 1)) return error.InvalidArgs;
@@ -453,6 +454,7 @@ fn validateBasicInfoForSimpleEncode(info: *const JxlBasicInfo) !void {
 		if (info.animation.have_timecodes != 0) return error.InvalidArgs;
 	}
 	if (!(info.num_color_channels == 1 or info.num_color_channels == 3)) return error.Unsupported;
+	if (info.bits_per_sample != 8 and info.num_extra_channels != 0) return error.Unsupported;
 	if (info.num_extra_channels == 0) {
 		if (info.alpha_bits != 0 or info.alpha_exponent_bits != 0 or info.alpha_premultiplied != 0) return error.Unsupported;
 		return;
@@ -462,6 +464,7 @@ fn validateBasicInfoForSimpleEncode(info: *const JxlBasicInfo) !void {
 		return;
 	}
 	if (info.alpha_bits != 8 or info.alpha_exponent_bits != 0) return error.Unsupported;
+	if (info.bits_per_sample != 8) return error.Unsupported;
 	if (!(info.alpha_premultiplied == 0 or info.alpha_premultiplied == 1)) return error.Unsupported;
 }
 
@@ -579,7 +582,8 @@ fn prepareSimplePackedInput(allocator: std.mem.Allocator, impl: *const EncoderIm
 	const has_interleaved_alpha = has_alpha and impl.image_format.num_channels == num_color_channels + 1;
 	const staged_alpha_dim_shift: u32 = if (has_alpha and impl.pending_extra_channels[0].info_set) impl.pending_extra_channels[0].info.dim_shift else 0;
 	const image_stride = rowStrideBytes(width, impl.image_format) orelse return error.GenericError;
-	const color_row_stride = width * num_color_channels;
+	const sample_bytes = bytesPerChannel(impl.image_format.data_type) orelse return error.GenericError;
+	const color_row_stride = width * num_color_channels * sample_bytes;
 	const color_pixels = try allocator.alloc(u8, color_row_stride * height);
 	errdefer allocator.free(color_pixels);
 
@@ -619,12 +623,12 @@ fn prepareSimplePackedInput(allocator: std.mem.Allocator, impl: *const EncoderIm
 			const alpha_row = alpha_pixels[alpha_row_start .. alpha_row_start + alpha_row_stride];
 			for (0..width) |x| {
 				const src_pixel = x * (num_color_channels + 1);
-				const dst_pixel = x * num_color_channels;
+				const dst_pixel = x * num_color_channels * sample_bytes;
 				@memcpy(
-					color_row[dst_pixel .. dst_pixel + num_color_channels],
-					src_row[src_pixel .. src_pixel + num_color_channels],
+					color_row[dst_pixel .. dst_pixel + num_color_channels * sample_bytes],
+					src_row[src_pixel * sample_bytes .. src_pixel * sample_bytes + num_color_channels * sample_bytes],
 				);
-				alpha_row[x] = src_row[src_pixel + num_color_channels];
+				alpha_row[x] = src_row[(src_pixel + num_color_channels) * sample_bytes];
 			}
 		} else {
 			@memcpy(color_row, src_row[0..color_row_stride]);
@@ -665,7 +669,8 @@ fn prepareQueuedPackedInput(
 	const has_interleaved_alpha = has_alpha and frame.image_format.num_channels == num_color_channels + 1;
 	const staged_alpha_dim_shift: u32 = if (has_alpha and impl.pending_extra_channels[0].info_set) impl.pending_extra_channels[0].info.dim_shift else 0;
 	const image_stride = rowStrideBytes(width, frame.image_format) orelse return error.GenericError;
-	const color_row_stride = width * num_color_channels;
+	const sample_bytes = bytesPerChannel(frame.image_format.data_type) orelse return error.GenericError;
+	const color_row_stride = width * num_color_channels * sample_bytes;
 	const color_pixels = try allocator.alloc(u8, color_row_stride * height);
 	errdefer allocator.free(color_pixels);
 
@@ -706,12 +711,12 @@ fn prepareQueuedPackedInput(
 			const alpha_row = alpha_pixels[alpha_row_start .. alpha_row_start + alpha_row_stride];
 			for (0..width) |x| {
 				const src_pixel = x * (num_color_channels + 1);
-				const dst_pixel = x * num_color_channels;
+				const dst_pixel = x * num_color_channels * sample_bytes;
 				@memcpy(
-					color_row[dst_pixel .. dst_pixel + num_color_channels],
-					src_row[src_pixel .. src_pixel + num_color_channels],
+					color_row[dst_pixel .. dst_pixel + num_color_channels * sample_bytes],
+					src_row[src_pixel * sample_bytes .. src_pixel * sample_bytes + num_color_channels * sample_bytes],
 				);
-				alpha_row[x] = src_row[src_pixel + num_color_channels];
+				alpha_row[x] = src_row[(src_pixel + num_color_channels) * sample_bytes];
 			}
 		} else {
 			@memcpy(color_row, src_row[0..color_row_stride]);
@@ -751,6 +756,7 @@ fn finalizeSimpleEncode(impl: *EncoderImpl) !void {
 			.width = impl.basic_info.xsize,
 			.height = impl.basic_info.ysize,
 			.num_color_channels = impl.basic_info.num_color_channels,
+			.bits_per_sample = impl.basic_info.bits_per_sample,
 			.embedded_icc = impl.owned_icc,
 			.color_row_stride = prepared.color_row_stride,
 			.color_pixels = prepared.color_pixels,
@@ -829,6 +835,7 @@ fn finalizeSimpleEncode(impl: *EncoderImpl) !void {
 		.width = impl.basic_info.xsize,
 		.height = impl.basic_info.ysize,
 		.num_color_channels = impl.basic_info.num_color_channels,
+		.bits_per_sample = impl.basic_info.bits_per_sample,
 		.embedded_icc = impl.owned_icc,
 		.use_container = impl.basic_info.have_container != 0 and impl.staged_boxes.items.len == 0,
 		.alpha_associated = impl.basic_info.alpha_premultiplied != 0,
@@ -1873,7 +1880,14 @@ pub export fn JxlEncoderAddImageFrame(
 	const data = buffer orelse return .JXL_ENC_ERROR;
 
 	if (!impl.basic_info_set or !impl.color_encoding_set or impl.frames_closed or impl.started_processing) return .JXL_ENC_ERROR;
-	if (format.data_type != .JXL_TYPE_UINT8) return .JXL_ENC_ERROR;
+	switch (impl.basic_info.bits_per_sample) {
+		8 => if (format.data_type != .JXL_TYPE_UINT8) return .JXL_ENC_ERROR,
+		16 => {
+			if (format.data_type != .JXL_TYPE_UINT16) return .JXL_ENC_ERROR;
+			if (format.endianness != .JXL_BIG_ENDIAN) return .JXL_ENC_ERROR;
+		},
+		else => return .JXL_ENC_ERROR,
+	}
 
 	const min_channels = impl.basic_info.num_color_channels;
 	const max_channels = min_channels + @as(u32, @intFromBool(impl.basic_info.alpha_bits != 0));

@@ -47,6 +47,7 @@ pub const SimplePackedU8Image = struct {
 	width: u32,
 	height: u32,
 	num_color_channels: u32,
+	bits_per_sample: u32 = 8,
 	embedded_icc: []const u8 = &.{},
 	color_row_stride: usize,
 	color_pixels: []const u8,
@@ -82,6 +83,7 @@ pub const SimplePackedU8Animation = struct {
 	width: u32,
 	height: u32,
 	num_color_channels: u32,
+	bits_per_sample: u32 = 8,
 	embedded_icc: []const u8 = &.{},
 	alpha_associated: bool = false,
 	use_container: bool = false,
@@ -159,13 +161,17 @@ fn validateSimpleImage(image: SimpleInterleavedU8Image) !void {
 fn validateSimplePackedImage(image: SimplePackedU8Image) !void {
 	if (image.width == 0 or image.height == 0) return error.InvalidArgs;
 	if (!(image.num_color_channels == 1 or image.num_color_channels == 3)) return error.Unsupported;
+	if (!(image.bits_per_sample == 8 or image.bits_per_sample == 16)) return error.Unsupported;
+	if (image.bits_per_sample != 8 and image.alpha_pixels.len != 0) return error.Unsupported;
+	if (image.bits_per_sample != 8 and image.extra_planes.len != 0) return error.Unsupported;
 	if (image.alpha_pixels.len == 0 and image.alpha_associated) return error.Unsupported;
 	if (image.alpha_pixels.len == 0 and image.alpha_info != null) return error.InvalidArgs;
 	try validateMetadataGeometry(image.orientation, image.preview_width, image.preview_height, image.intrinsic_width, image.intrinsic_height);
 	try validateAnimation(image.have_animation, image.animation, image.frame_duration, image.frame_timecode);
 	try validateToneMapping(image.tone_mapping);
 
-	const min_color_row_stride = @as(usize, image.width) * image.num_color_channels;
+	const bytes_per_sample: usize = if (image.bits_per_sample <= 8) 1 else 2;
+	const min_color_row_stride = @as(usize, image.width) * image.num_color_channels * bytes_per_sample;
 	if (image.color_row_stride < min_color_row_stride) return error.InvalidArgs;
 	if (image.color_pixels.len < image.color_row_stride * @as(usize, image.height)) return error.InvalidArgs;
 
@@ -209,6 +215,7 @@ fn validateSimplePackedAnimation(image: SimplePackedU8Animation) !void {
 			.width = image.width,
 			.height = image.height,
 			.num_color_channels = image.num_color_channels,
+			.bits_per_sample = image.bits_per_sample,
 			.color_row_stride = frame.color_row_stride,
 			.color_pixels = frame.color_pixels,
 			.alpha_row_stride = frame.alpha_row_stride,
@@ -231,6 +238,7 @@ fn validateSimplePackedAnimation(image: SimplePackedU8Animation) !void {
 fn buildCodecMetadata(
 	width: u32,
 	height: u32,
+	bits_per_sample: u32,
 	num_extra_channels: u32,
 	embedded_icc: []const u8,
 	alpha_associated: bool,
@@ -253,7 +261,7 @@ fn buildCodecMetadata(
 		.xsize_raw = width,
 	};
 	codec_meta.m = .{
-		.bit_depth = .{},
+		.bit_depth = .{ .bits_per_sample = bits_per_sample },
 		.modular_16_bit_buffer_sufficient = true,
 		.xyb_encoded = false,
 		.orientation = orientation,
@@ -344,7 +352,7 @@ fn buildSourceImage(allocator: std.mem.Allocator, image: SimpleInterleavedU8Imag
 }
 
 fn buildPackedSourceImage(allocator: std.mem.Allocator, image: SimplePackedU8Image) !modular_image.Image {
-	var source = try modular_image.Image.create(allocator, image.width, image.height, 8, 0);
+	var source = try modular_image.Image.create(allocator, image.width, image.height, @intCast(image.bits_per_sample), 0);
 	errdefer source.deinit();
 
 	for (0..image.num_color_channels) |_| {
@@ -383,9 +391,14 @@ fn buildPackedSourceImage(allocator: std.mem.Allocator, image: SimplePackedU8Ima
 	for (0..source.h) |y| {
 		const row = image.color_pixels[y * image.color_row_stride .. y * image.color_row_stride + image.color_row_stride];
 		for (0..source.w) |x| {
-			const pixel_base = x * @as(usize, image.num_color_channels);
+			const bytes_per_sample: usize = if (image.bits_per_sample <= 8) 1 else 2;
+			const pixel_base = x * @as(usize, image.num_color_channels) * bytes_per_sample;
 			for (0..image.num_color_channels) |c| {
-				source.channels.items[c].row(y)[x] = row[pixel_base + c];
+				const sample_base = pixel_base + c * bytes_per_sample;
+				source.channels.items[c].row(y)[x] = if (bytes_per_sample == 1)
+					row[sample_base]
+				else
+					std.mem.readInt(u16, row[sample_base..][0..2], .big);
 			}
 		}
 	}
@@ -541,6 +554,7 @@ pub fn encodeSimplePackedU8(
 	const codec_meta = buildCodecMetadata(
 		image.width,
 		image.height,
+		image.bits_per_sample,
 		num_extra_channels,
 		image.embedded_icc,
 		image.alpha_associated,
@@ -601,6 +615,7 @@ pub fn encodeSimplePackedU8Animation(
 	const codec_meta = buildCodecMetadata(
 		image.width,
 		image.height,
+		image.bits_per_sample,
 		num_extra_channels,
 		image.embedded_icc,
 		image.alpha_associated,
@@ -630,6 +645,7 @@ pub fn encodeSimplePackedU8Animation(
 			.width = image.width,
 			.height = image.height,
 			.num_color_channels = image.num_color_channels,
+			.bits_per_sample = image.bits_per_sample,
 			.use_container = image.use_container,
 			.color_row_stride = frame.color_row_stride,
 			.color_pixels = frame.color_pixels,
@@ -686,6 +702,7 @@ pub fn encodeSimpleInterleavedU8(
 	const codec_meta = buildCodecMetadata(
 		image.width,
 		image.height,
+		8,
 		image.num_extra_channels,
 		image.embedded_icc,
 		image.alpha_associated,
