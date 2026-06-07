@@ -20,6 +20,7 @@ typedef struct {
 	uint32_t channels;
 	uint32_t num_color_channels;
 	uint32_t num_extra_channels;
+	uint32_t bits_per_sample;
 	const uint8_t* pixels;
 	size_t pixels_size;
 	uint8_t* owned_pixels;
@@ -139,8 +140,8 @@ static void print_help(FILE* out) {
 #ifdef JXLZ_HAVE_PNG_INPUT
 		"PNG, "
 #endif
-		"raw binary P5/P6 with MAXVAL 255, or narrow P7 PAM with\n"
-		"  TUPLTYPE GRAYSCALE, RGB, GRAYSCALE_ALPHA, or RGB_ALPHA and MAXVAL 255\n"
+		"raw binary P5/P6 with MAXVAL 255 or 65535, or narrow P7 PAM with\n"
+		"  TUPLTYPE GRAYSCALE/RGB at MAXVAL 255 or 65535, or alpha PAM at MAXVAL 255\n"
 		"  --extra PATH must be a "
 #ifdef JXLZ_HAVE_PNG_INPUT
 		"PNG or "
@@ -285,6 +286,22 @@ static int parse_u32_token(const char* token, uint32_t* value) {
 	if (!end || *end != '\0' || parsed > 0xffffffffUL) return 0;
 	*value = (uint32_t)parsed;
 	return 1;
+}
+
+static int bits_per_sample_from_maxval(uint32_t maxval, uint32_t* bits_per_sample) {
+	if (maxval == 255) {
+		*bits_per_sample = 8;
+		return 1;
+	}
+	if (maxval == 65535) {
+		*bits_per_sample = 16;
+		return 1;
+	}
+	return 0;
+}
+
+static size_t bytes_per_sample_for_bits(uint32_t bits_per_sample) {
+	return bits_per_sample <= 8 ? 1 : 2;
 }
 
 static int parse_ratio_token(const char* token, uint32_t* num, uint32_t* den) {
@@ -653,8 +670,8 @@ static int parse_pnm(const uint8_t* data, size_t size, ParsedImage* image, char*
 				continue;
 			}
 			if (strcmp(token, "MAXVAL") == 0) {
-				if (!read_token(data, size, &pos, token, sizeof(token)) || !parse_u32_token(token, &maxval) || maxval != 255) {
-					snprintf(err, err_cap, "only PAM MAXVAL 255 is supported");
+				if (!read_token(data, size, &pos, token, sizeof(token)) || !parse_u32_token(token, &maxval) || !bits_per_sample_from_maxval(maxval, &image->bits_per_sample)) {
+					snprintf(err, err_cap, "only PAM MAXVAL 255 or 65535 is supported");
 					return 0;
 				}
 				have_maxval = 1;
@@ -701,11 +718,15 @@ static int parse_pnm(const uint8_t* data, size_t size, ParsedImage* image, char*
 			snprintf(err, err_cap, "unexpected PAM depth for tuple type");
 			return 0;
 		}
+		if (image->bits_per_sample != 8 && image->num_extra_channels != 0) {
+			snprintf(err, err_cap, "16-bit PAM alpha is not supported yet");
+			return 0;
+		}
 
 		skip_space_and_comments(data, size, &pos);
 		image->pixels = data + pos;
 		image->pixels_size = size - pos;
-		if (image->pixels_size != (size_t)image->width * image->height * image->channels) {
+		if (image->pixels_size != (size_t)image->width * image->height * image->channels * bytes_per_sample_for_bits(image->bits_per_sample)) {
 			snprintf(err, err_cap, "unexpected PAM pixel payload size");
 			return 0;
 		}
@@ -724,15 +745,15 @@ static int parse_pnm(const uint8_t* data, size_t size, ParsedImage* image, char*
 		return 0;
 	}
 	uint32_t maxval = 0;
-	if (!read_token(data, size, &pos, token, sizeof(token)) || !parse_u32_token(token, &maxval) || maxval != 255) {
-		snprintf(err, err_cap, "only MAXVAL 255 is supported");
+	if (!read_token(data, size, &pos, token, sizeof(token)) || !parse_u32_token(token, &maxval) || !bits_per_sample_from_maxval(maxval, &image->bits_per_sample)) {
+		snprintf(err, err_cap, "only MAXVAL 255 or 65535 is supported");
 		return 0;
 	}
 
 	skip_space_and_comments(data, size, &pos);
 	image->pixels = data + pos;
 	image->pixels_size = size - pos;
-	if (image->pixels_size != (size_t)image->width * image->height * image->channels) {
+	if (image->pixels_size != (size_t)image->width * image->height * image->channels * bytes_per_sample_for_bits(image->bits_per_sample)) {
 		snprintf(err, err_cap, "unexpected pixel payload size");
 		return 0;
 	}
@@ -791,6 +812,7 @@ static int parse_png(const uint8_t* data, size_t size, ParsedImage* image, char*
 	image->channels = is_color ? (has_alpha ? 4 : 3) : (has_alpha ? 2 : 1);
 	image->num_color_channels = is_color ? 3 : 1;
 	image->num_extra_channels = has_alpha ? 1 : 0;
+	image->bits_per_sample = 8;
 	image->pixels = pixels;
 	image->pixels_size = pixels_size;
 	image->owned_pixels = pixels;
@@ -987,6 +1009,7 @@ static int parse_gif_animation(const uint8_t* data, size_t size, ParsedAnimation
 		frames[image_index].image.channels = 4;
 		frames[image_index].image.num_color_channels = 3;
 		frames[image_index].image.num_extra_channels = 1;
+		frames[image_index].image.bits_per_sample = 8;
 		frames[image_index].image.pixels_size = pixel_count * 4;
 		frames[image_index].image.owned_pixels = (uint8_t*)malloc(pixel_count * 4);
 		if (!frames[image_index].image.owned_pixels) {
@@ -1050,6 +1073,7 @@ static int parse_gif_animation(const uint8_t* data, size_t size, ParsedAnimation
 			frames[image_index].image.pixels = rgb;
 			frames[image_index].image.channels = 3;
 			frames[image_index].image.num_extra_channels = 0;
+			frames[image_index].image.bits_per_sample = 8;
 			frames[image_index].image.pixels_size = pixel_count * 3;
 		}
 	}
@@ -1131,7 +1155,8 @@ static int parse_extra_input(ParsedExtraInput* extra, uint32_t width, uint32_t h
 		extra->image.height != expected_height ||
 		extra->image.channels != 1 ||
 		extra->image.num_color_channels != 1 ||
-		extra->image.num_extra_channels != 0
+		extra->image.num_extra_channels != 0 ||
+		extra->image.bits_per_sample != 8
 	) {
 		snprintf(
 			err,
@@ -1204,7 +1229,8 @@ static int encode_animation(
 			frame->height != animation->height ||
 			frame->channels != animation->channels ||
 			frame->num_color_channels != animation->num_color_channels ||
-			frame->num_extra_channels != animation->num_extra_channels
+			frame->num_extra_channels != animation->num_extra_channels ||
+			frame->bits_per_sample != 8
 		) {
 			snprintf(err, err_cap, "all animation frames must share geometry and pixel format");
 			return 0;
@@ -1437,13 +1463,21 @@ static int encode_image(
 		}
 		staged_alpha_seen = 1;
 	}
+	if (image->bits_per_sample != 8 && image->num_extra_channels != 0) {
+		snprintf(err, err_cap, "16-bit alpha input is not supported yet");
+		return 0;
+	}
+	if (image->bits_per_sample != 8 && extra_count != 0) {
+		snprintf(err, err_cap, "16-bit sidecar extras are not supported yet");
+		return 0;
+	}
 
 	JxlBasicInfo info;
 	JxlEncoderInitBasicInfo(&info);
 	info.have_container = use_container ? 1 : 0;
 	info.xsize = image->width;
 	info.ysize = image->height;
-	info.bits_per_sample = 8;
+	info.bits_per_sample = image->bits_per_sample;
 	info.num_color_channels = image->num_color_channels;
 	info.num_extra_channels = image->num_extra_channels + (uint32_t)extra_count;
 	info.uses_original_profile = icc_profile ? 1 : 0;
@@ -1493,8 +1527,8 @@ static int encode_image(
 
 	JxlPixelFormat format = {
 		image->channels,
-		JXL_TYPE_UINT8,
-		JXL_NATIVE_ENDIAN,
+		image->bits_per_sample <= 8 ? JXL_TYPE_UINT8 : JXL_TYPE_UINT16,
+		image->bits_per_sample <= 8 ? JXL_NATIVE_ENDIAN : JXL_BIG_ENDIAN,
 		0,
 	};
 
