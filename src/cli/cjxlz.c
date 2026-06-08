@@ -141,7 +141,7 @@ static void print_help(FILE* out) {
 		"PNG, "
 #endif
 		"raw binary P5/P6 with MAXVAL 255 or 65535, or narrow P7 PAM with\n"
-		"  TUPLTYPE GRAYSCALE/RGB at MAXVAL 255 or 65535, or alpha PAM at MAXVAL 255\n"
+		"  TUPLTYPE GRAYSCALE/RGB/GRAYSCALE_ALPHA/RGB_ALPHA at MAXVAL 255 or 65535\n"
 		"  --extra PATH must be a "
 #ifdef JXLZ_HAVE_PNG_INPUT
 		"PNG or "
@@ -718,11 +718,6 @@ static int parse_pnm(const uint8_t* data, size_t size, ParsedImage* image, char*
 			snprintf(err, err_cap, "unexpected PAM depth for tuple type");
 			return 0;
 		}
-		if (image->bits_per_sample != 8 && image->num_extra_channels != 0) {
-			snprintf(err, err_cap, "16-bit PAM alpha is not supported yet");
-			return 0;
-		}
-
 		skip_space_and_comments(data, size, &pos);
 		image->pixels = data + pos;
 		image->pixels_size = size - pos;
@@ -1463,10 +1458,6 @@ static int encode_image(
 		}
 		staged_alpha_seen = 1;
 	}
-	if (image->bits_per_sample != 8 && image->num_extra_channels != 0) {
-		snprintf(err, err_cap, "16-bit alpha input is not supported yet");
-		return 0;
-	}
 	if (image->bits_per_sample != 8 && extra_count != 0) {
 		snprintf(err, err_cap, "16-bit sidecar extras are not supported yet");
 		return 0;
@@ -1481,7 +1472,7 @@ static int encode_image(
 	info.num_color_channels = image->num_color_channels;
 	info.num_extra_channels = image->num_extra_channels + (uint32_t)extra_count;
 	info.uses_original_profile = icc_profile ? 1 : 0;
-	info.alpha_bits = (image->num_extra_channels != 0 || staged_alpha_seen) ? 8 : 0;
+	info.alpha_bits = image->num_extra_channels != 0 ? image->bits_per_sample : staged_alpha_seen ? 8 : 0;
 	info.intensity_target = intensity_target;
 	info.min_nits = min_nits;
 	info.relative_to_max_display = relative_to_max_display ? 1 : 0;

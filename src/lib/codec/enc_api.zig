@@ -162,7 +162,6 @@ fn validateSimplePackedImage(image: SimplePackedU8Image) !void {
 	if (image.width == 0 or image.height == 0) return error.InvalidArgs;
 	if (!(image.num_color_channels == 1 or image.num_color_channels == 3)) return error.Unsupported;
 	if (!(image.bits_per_sample == 8 or image.bits_per_sample == 16)) return error.Unsupported;
-	if (image.bits_per_sample != 8 and image.alpha_pixels.len != 0) return error.Unsupported;
 	if (image.bits_per_sample != 8 and image.extra_planes.len != 0) return error.Unsupported;
 	if (image.alpha_pixels.len == 0 and image.alpha_associated) return error.Unsupported;
 	if (image.alpha_pixels.len == 0 and image.alpha_info != null) return error.InvalidArgs;
@@ -176,15 +175,17 @@ fn validateSimplePackedImage(image: SimplePackedU8Image) !void {
 	if (image.color_pixels.len < image.color_row_stride * @as(usize, image.height)) return error.InvalidArgs;
 
 	if (image.alpha_pixels.len != 0) {
+		const alpha_bits_per_sample = if (image.alpha_info) |alpha_info| alpha_info.bit_depth.bits_per_sample else image.bits_per_sample;
+		const alpha_bytes_per_sample: usize = if (alpha_bits_per_sample <= 8) 1 else 2;
 		const alpha_dim_shift = if (image.alpha_info) |alpha_info| alpha_info.dim_shift else 0;
 		const alpha_width = common.subsampledSize(@intCast(image.width), @intCast(alpha_dim_shift));
 		const alpha_height = common.subsampledSize(@intCast(image.height), @intCast(alpha_dim_shift));
-		if (image.alpha_row_stride < alpha_width) return error.InvalidArgs;
+		if (image.alpha_row_stride < alpha_width * alpha_bytes_per_sample) return error.InvalidArgs;
 		if (image.alpha_pixels.len < image.alpha_row_stride * alpha_height) return error.InvalidArgs;
 		if (image.alpha_info) |alpha_info| {
 			if (alpha_info.type != .alpha) return error.InvalidArgs;
 			if (alpha_info.bit_depth.floating_point_sample) return error.Unsupported;
-			if (alpha_info.bit_depth.bits_per_sample != 8 or alpha_info.bit_depth.exponent_bits_per_sample != 0) return error.Unsupported;
+			if (alpha_info.bit_depth.bits_per_sample != image.bits_per_sample or alpha_info.bit_depth.exponent_bits_per_sample != 0) return error.Unsupported;
 			if (alpha_info.dim_shift > 3) return error.Unsupported;
 			if (alpha_info.alpha_associated != image.alpha_associated) return error.InvalidArgs;
 		}
@@ -405,10 +406,16 @@ fn buildPackedSourceImage(allocator: std.mem.Allocator, image: SimplePackedU8Ima
 
 	if (image.alpha_pixels.len != 0) {
 		const alpha_channel: usize = @intCast(image.num_color_channels);
+		const alpha_bits_per_sample = if (image.alpha_info) |alpha_info| alpha_info.bit_depth.bits_per_sample else image.bits_per_sample;
+		const alpha_bytes_per_sample: usize = if (alpha_bits_per_sample <= 8) 1 else 2;
 		for (0..source.channels.items[alpha_channel].h) |y| {
 			const row = image.alpha_pixels[y * image.alpha_row_stride .. y * image.alpha_row_stride + image.alpha_row_stride];
 			for (0..source.channels.items[alpha_channel].w) |x| {
-				source.channels.items[alpha_channel].row(y)[x] = row[x];
+				const sample_base = x * alpha_bytes_per_sample;
+				source.channels.items[alpha_channel].row(y)[x] = if (alpha_bytes_per_sample == 1)
+					row[sample_base]
+				else
+					std.mem.readInt(u16, row[sample_base..][0..2], .big);
 			}
 		}
 	}
@@ -533,7 +540,7 @@ pub fn encodeSimplePackedU8(
 	if (image.alpha_pixels.len != 0) {
 		extra_info_storage[extra_info_len] = image.alpha_info orelse .{
 			.type = .alpha,
-			.bit_depth = .{},
+			.bit_depth = .{ .bits_per_sample = image.bits_per_sample },
 			.alpha_associated = image.alpha_associated,
 		};
 		extra_info_len += 1;
@@ -595,7 +602,7 @@ pub fn encodeSimplePackedU8Animation(
 	if (has_alpha) {
 		extra_info_slice[extra_index] = image.alpha_info orelse .{
 			.type = .alpha,
-			.bit_depth = .{},
+			.bit_depth = .{ .bits_per_sample = image.bits_per_sample },
 			.alpha_associated = image.alpha_associated,
 		};
 		extra_index += 1;
@@ -942,6 +949,29 @@ test "buildPackedSourceImage matches equivalent interleaved RGBA plus mask sourc
 		try testing.expectEqual(expected_channel.h, actual_channel.h);
 		try testing.expectEqualSlices(i32, expected_channel.data, actual_channel.data);
 	}
+}
+
+test "buildPackedSourceImage reads 16-bit alpha samples as big-endian" {
+	const color_pixels = [_]u8{
+		0x00, 0x01, 0x12, 0x34, 0xff, 0xff,
+		0x01, 0x00, 0x80, 0x00, 0xab, 0xcd,
+	};
+	const alpha_pixels = [_]u8{ 0x80, 0x00, 0x40, 0x00 };
+	var image = try buildPackedSourceImage(testing.allocator, .{
+		.width = 2,
+		.height = 1,
+		.num_color_channels = 3,
+		.bits_per_sample = 16,
+		.color_row_stride = color_pixels.len,
+		.color_pixels = &color_pixels,
+		.alpha_row_stride = alpha_pixels.len,
+		.alpha_pixels = &alpha_pixels,
+		.alpha_info = .{ .type = .alpha, .bit_depth = .{ .bits_per_sample = 16 } },
+	});
+	defer image.deinit();
+
+	try testing.expectEqual(@as(usize, 4), image.channels.items.len);
+	try testing.expectEqualSlices(i32, &.{ 0x8000, 0x4000 }, image.channels.items[3].data);
 }
 
 test "encodeSimplePackedU8 round-trips RGBA plus mask through FrameDecoder" {

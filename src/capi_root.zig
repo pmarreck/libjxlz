@@ -430,8 +430,8 @@ fn defaultBasicInfo() JxlBasicInfo {
 	return info;
 }
 
-/// Validates the narrow one-shot encoder surface: 8-bit grayscale/RGB with an
-/// optional 8-bit alpha plus full-size/subsampled uint8 sidecar extras, no container,
+/// Validates the narrow one-shot encoder surface: 8/16-bit grayscale/RGB with an
+/// optional matching-bit-depth alpha plus uint8 sidecar extras for 8-bit color, no container,
 /// plus simple orientation/intrinsic-size, tone-mapping, and animation metadata.
 fn validateBasicInfoForSimpleEncode(info: *const JxlBasicInfo) !void {
 	if (info.xsize == 0 or info.ysize == 0) return error.InvalidArgs;
@@ -455,7 +455,7 @@ fn validateBasicInfoForSimpleEncode(info: *const JxlBasicInfo) !void {
 		if (info.animation.have_timecodes != 0) return error.InvalidArgs;
 	}
 	if (!(info.num_color_channels == 1 or info.num_color_channels == 3)) return error.Unsupported;
-	if (info.bits_per_sample != 8 and info.num_extra_channels != 0) return error.Unsupported;
+	if (info.bits_per_sample != 8 and info.num_extra_channels > @as(u32, @intFromBool(info.alpha_bits != 0))) return error.Unsupported;
 	if (info.num_extra_channels == 0) {
 		if (info.alpha_bits != 0 or info.alpha_exponent_bits != 0 or info.alpha_premultiplied != 0) return error.Unsupported;
 		return;
@@ -464,8 +464,7 @@ fn validateBasicInfoForSimpleEncode(info: *const JxlBasicInfo) !void {
 		if (info.alpha_exponent_bits != 0 or info.alpha_premultiplied != 0) return error.Unsupported;
 		return;
 	}
-	if (info.alpha_bits != 8 or info.alpha_exponent_bits != 0) return error.Unsupported;
-	if (info.bits_per_sample != 8) return error.Unsupported;
+	if (info.alpha_bits != info.bits_per_sample or info.alpha_exponent_bits != 0) return error.Unsupported;
 	if (!(info.alpha_premultiplied == 0 or info.alpha_premultiplied == 1)) return error.Unsupported;
 }
 
@@ -598,13 +597,14 @@ fn prepareSimplePackedInput(allocator: std.mem.Allocator, impl: *const EncoderIm
 	const staged_alpha_dim_shift: u32 = if (has_alpha and impl.pending_extra_channels[0].info_set) impl.pending_extra_channels[0].info.dim_shift else 0;
 	const image_stride = rowStrideBytes(width, impl.image_format) orelse return error.GenericError;
 	const sample_bytes = bytesPerChannel(impl.image_format.data_type) orelse return error.GenericError;
+	const alpha_sample_bytes: usize = if (impl.basic_info.alpha_bits <= 8) 1 else 2;
 	const color_row_stride = width * num_color_channels * sample_bytes;
 	const color_pixels = try allocator.alloc(u8, color_row_stride * height);
 	errdefer allocator.free(color_pixels);
 
 	const alpha_width = common.subsampledSize(@intCast(impl.basic_info.xsize), @intCast(staged_alpha_dim_shift));
 	const alpha_height = common.subsampledSize(@intCast(impl.basic_info.ysize), @intCast(staged_alpha_dim_shift));
-	const alpha_row_stride = if (has_interleaved_alpha) width else alpha_width;
+	const alpha_row_stride = (if (has_interleaved_alpha) width else alpha_width) * alpha_sample_bytes;
 	var alpha_pixels: []u8 = &.{};
 	if (has_alpha) {
 		if (has_staged_alpha == has_interleaved_alpha) return error.InvalidArgs;
@@ -639,11 +639,16 @@ fn prepareSimplePackedInput(allocator: std.mem.Allocator, impl: *const EncoderIm
 			for (0..width) |x| {
 				const src_pixel = x * (num_color_channels + 1);
 				const dst_pixel = x * num_color_channels * sample_bytes;
-				@memcpy(
+				copyColorRowForSimpleEncode(
 					color_row[dst_pixel .. dst_pixel + num_color_channels * sample_bytes],
 					src_row[src_pixel * sample_bytes .. src_pixel * sample_bytes + num_color_channels * sample_bytes],
+					impl.image_format,
 				);
-				alpha_row[x] = src_row[(src_pixel + num_color_channels) * sample_bytes];
+				copyColorRowForSimpleEncode(
+					alpha_row[x * alpha_sample_bytes .. x * alpha_sample_bytes + alpha_sample_bytes],
+					src_row[(src_pixel + num_color_channels) * sample_bytes .. (src_pixel + num_color_channels + 1) * sample_bytes],
+					impl.image_format,
+				);
 			}
 		} else {
 			copyColorRowForSimpleEncode(color_row, src_row[0..color_row_stride], impl.image_format);
@@ -685,13 +690,14 @@ fn prepareQueuedPackedInput(
 	const staged_alpha_dim_shift: u32 = if (has_alpha and impl.pending_extra_channels[0].info_set) impl.pending_extra_channels[0].info.dim_shift else 0;
 	const image_stride = rowStrideBytes(width, frame.image_format) orelse return error.GenericError;
 	const sample_bytes = bytesPerChannel(frame.image_format.data_type) orelse return error.GenericError;
+	const alpha_sample_bytes: usize = if (impl.basic_info.alpha_bits <= 8) 1 else 2;
 	const color_row_stride = width * num_color_channels * sample_bytes;
 	const color_pixels = try allocator.alloc(u8, color_row_stride * height);
 	errdefer allocator.free(color_pixels);
 
 	const alpha_width = common.subsampledSize(@intCast(impl.basic_info.xsize), @intCast(staged_alpha_dim_shift));
 	const alpha_height = common.subsampledSize(@intCast(impl.basic_info.ysize), @intCast(staged_alpha_dim_shift));
-	const alpha_row_stride = if (has_interleaved_alpha) width else alpha_width;
+	const alpha_row_stride = (if (has_interleaved_alpha) width else alpha_width) * alpha_sample_bytes;
 	var alpha_pixels: []u8 = &.{};
 	if (has_alpha) {
 		if (has_staged_alpha == has_interleaved_alpha) return error.InvalidArgs;
@@ -727,11 +733,16 @@ fn prepareQueuedPackedInput(
 			for (0..width) |x| {
 				const src_pixel = x * (num_color_channels + 1);
 				const dst_pixel = x * num_color_channels * sample_bytes;
-				@memcpy(
+				copyColorRowForSimpleEncode(
 					color_row[dst_pixel .. dst_pixel + num_color_channels * sample_bytes],
 					src_row[src_pixel * sample_bytes .. src_pixel * sample_bytes + num_color_channels * sample_bytes],
+					frame.image_format,
 				);
-				alpha_row[x] = src_row[(src_pixel + num_color_channels) * sample_bytes];
+				copyColorRowForSimpleEncode(
+					alpha_row[x * alpha_sample_bytes .. x * alpha_sample_bytes + alpha_sample_bytes],
+					src_row[(src_pixel + num_color_channels) * sample_bytes .. (src_pixel + num_color_channels + 1) * sample_bytes],
+					frame.image_format,
+				);
 			}
 		} else {
 			copyColorRowForSimpleEncode(color_row, src_row[0..color_row_stride], frame.image_format);
@@ -784,7 +795,7 @@ fn finalizeSimpleEncode(impl: *EncoderImpl) !void {
 			else if (impl.basic_info.alpha_bits != 0)
 				image_metadata.ExtraChannelInfo{
 					.type = .alpha,
-					.bit_depth = .{},
+					.bit_depth = .{ .bits_per_sample = impl.basic_info.alpha_bits },
 					.alpha_associated = impl.basic_info.alpha_premultiplied != 0,
 				}
 			else
@@ -859,7 +870,7 @@ fn finalizeSimpleEncode(impl: *EncoderImpl) !void {
 		else if (impl.basic_info.alpha_bits != 0)
 			image_metadata.ExtraChannelInfo{
 				.type = .alpha,
-				.bit_depth = .{},
+				.bit_depth = .{ .bits_per_sample = impl.basic_info.alpha_bits },
 				.alpha_associated = impl.basic_info.alpha_premultiplied != 0,
 			}
 		else
