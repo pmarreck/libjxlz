@@ -1962,7 +1962,15 @@ pub export fn JxlEncoderSetExtraChannelBuffer(
 	const pending = &impl.pending_extra_channels[index];
 	const is_staged_alpha = impl.basic_info.alpha_bits != 0 and index == 0;
 	if (!is_staged_alpha and !pending.info_set) return .JXL_ENC_ERROR;
-	if (format.data_type != .JXL_TYPE_UINT8) return .JXL_ENC_ERROR;
+	if (is_staged_alpha) {
+		switch (impl.basic_info.alpha_bits) {
+			8 => if (format.data_type != .JXL_TYPE_UINT8) return .JXL_ENC_ERROR,
+			16 => if (format.data_type != .JXL_TYPE_UINT16) return .JXL_ENC_ERROR,
+			else => return .JXL_ENC_ERROR,
+		}
+	} else if (format.data_type != .JXL_TYPE_UINT8) {
+		return .JXL_ENC_ERROR;
+	}
 
 	var extra_format = format.*;
 	extra_format.num_channels = 1;
@@ -1978,7 +1986,19 @@ pub export fn JxlEncoderSetExtraChannelBuffer(
 		pending.buffer = &.{};
 	}
 	const bytes: [*]const u8 = @ptrCast(data);
-	pending.buffer = std.heap.c_allocator.dupe(u8, bytes[0..needed]) catch return .JXL_ENC_ERROR;
+	pending.buffer = std.heap.c_allocator.alloc(u8, needed) catch return .JXL_ENC_ERROR;
+	if (is_staged_alpha and format.data_type == .JXL_TYPE_UINT16 and format.endianness != .JXL_BIG_ENDIAN) {
+		const sample_row_bytes = @as(usize, @intCast(plane_width)) * 2;
+		for (0..plane_height) |y| {
+			const row_start = y * stride;
+			const src_row = bytes[row_start .. row_start + stride];
+			const dst_row = pending.buffer[row_start .. row_start + stride];
+			copyColorRowForSimpleEncode(dst_row[0..sample_row_bytes], src_row[0..sample_row_bytes], extra_format);
+			if (stride > sample_row_bytes) @memcpy(dst_row[sample_row_bytes..stride], src_row[sample_row_bytes..stride]);
+		}
+	} else {
+		@memcpy(pending.buffer, bytes[0..needed]);
+	}
 	pending.row_stride = stride;
 	pending.buffer_set = true;
 	return .JXL_ENC_SUCCESS;

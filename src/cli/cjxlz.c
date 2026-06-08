@@ -1130,7 +1130,7 @@ static void free_parsed_animation(ParsedAnimation* animation) {
 	memset(animation, 0, sizeof(*animation));
 }
 
-static int parse_extra_input(ParsedExtraInput* extra, uint32_t width, uint32_t height, char* err, size_t err_cap) {
+static int parse_extra_input(ParsedExtraInput* extra, uint32_t width, uint32_t height, uint32_t main_bits_per_sample, char* err, size_t err_cap) {
 	if (strcmp(extra->path, "-") == 0 || strcmp(extra->path, "@stdin") == 0) {
 		snprintf(err, err_cap, "--extra paths cannot use stdin");
 		return 0;
@@ -1145,13 +1145,14 @@ static int parse_extra_input(ParsedExtraInput* extra, uint32_t width, uint32_t h
 	}
 	const uint32_t expected_width = subsampled_size(width, extra->info.dim_shift);
 	const uint32_t expected_height = subsampled_size(height, extra->info.dim_shift);
+	const uint32_t expected_bits = extra->type == JXL_CHANNEL_ALPHA ? main_bits_per_sample : 8;
 	if (
 		extra->image.width != expected_width ||
 		extra->image.height != expected_height ||
 		extra->image.channels != 1 ||
 		extra->image.num_color_channels != 1 ||
 		extra->image.num_extra_channels != 0 ||
-		extra->image.bits_per_sample != 8
+		extra->image.bits_per_sample != expected_bits
 	) {
 		snprintf(
 			err,
@@ -1160,13 +1161,15 @@ static int parse_extra_input(ParsedExtraInput* extra, uint32_t width, uint32_t h
 #ifdef JXLZ_HAVE_PNG_INPUT
 			"PNG or "
 #endif
-			"P5 image for dim_shift=%u (%ux%u expected)",
+			"P5 image for dim_shift=%u (%ux%u, %u-bit expected)",
 			extra->info.dim_shift,
 			expected_width,
-			expected_height
+			expected_height,
+			expected_bits
 		);
 		return 0;
 	}
+	extra->info.bits_per_sample = extra->image.bits_per_sample;
 	return 1;
 }
 
@@ -1326,6 +1329,7 @@ static int encode_animation(
 	if (alpha_name) {
 		JxlExtraChannelInfo alpha;
 		JxlEncoderInitExtraChannelInfo(JXL_CHANNEL_ALPHA, &alpha);
+		alpha.bits_per_sample = info.alpha_bits;
 		alpha.alpha_premultiplied = info.alpha_premultiplied;
 		if (JxlEncoderSetExtraChannelInfo(enc, 0, &alpha) != JXL_ENC_SUCCESS) {
 			snprintf(err, err_cap, "JxlEncoderSetExtraChannelInfo failed");
@@ -1458,9 +1462,13 @@ static int encode_image(
 		}
 		staged_alpha_seen = 1;
 	}
-	if (image->bits_per_sample != 8 && extra_count != 0) {
-		snprintf(err, err_cap, "16-bit sidecar extras are not supported yet");
-		return 0;
+	if (image->bits_per_sample != 8) {
+		for (size_t i = 0; i < extra_count; ++i) {
+			if (extras[i].type != JXL_CHANNEL_ALPHA) {
+				snprintf(err, err_cap, "16-bit sidecar extras are not supported yet");
+				return 0;
+			}
+		}
 	}
 
 	JxlBasicInfo info;
@@ -1472,7 +1480,7 @@ static int encode_image(
 	info.num_color_channels = image->num_color_channels;
 	info.num_extra_channels = image->num_extra_channels + (uint32_t)extra_count;
 	info.uses_original_profile = icc_profile ? 1 : 0;
-	info.alpha_bits = image->num_extra_channels != 0 ? image->bits_per_sample : staged_alpha_seen ? 8 : 0;
+	info.alpha_bits = (image->num_extra_channels != 0 || staged_alpha_seen) ? image->bits_per_sample : 0;
 	info.intensity_target = intensity_target;
 	info.min_nits = min_nits;
 	info.relative_to_max_display = relative_to_max_display ? 1 : 0;
@@ -1554,6 +1562,7 @@ static int encode_image(
 	if (alpha_name) {
 		JxlExtraChannelInfo alpha;
 		JxlEncoderInitExtraChannelInfo(JXL_CHANNEL_ALPHA, &alpha);
+		alpha.bits_per_sample = info.alpha_bits;
 		alpha.alpha_premultiplied = info.alpha_premultiplied;
 		if (JxlEncoderSetExtraChannelInfo(enc, 0, &alpha) != JXL_ENC_SUCCESS) {
 			snprintf(err, err_cap, "JxlEncoderSetExtraChannelInfo failed");
@@ -1617,13 +1626,13 @@ static int encode_image(
 		return 0;
 	}
 	if (extra_count != 0) {
-		JxlPixelFormat extra_format = {
-			1,
-			JXL_TYPE_UINT8,
-			JXL_NATIVE_ENDIAN,
-			0,
-		};
 		for (size_t i = 0; i < extra_count; ++i) {
+			JxlPixelFormat extra_format = {
+				1,
+				extras[i].image.bits_per_sample <= 8 ? JXL_TYPE_UINT8 : JXL_TYPE_UINT16,
+				extras[i].image.bits_per_sample <= 8 ? JXL_NATIVE_ENDIAN : JXL_BIG_ENDIAN,
+				0,
+			};
 			uint32_t extra_index = image->num_extra_channels + (uint32_t)i;
 			if (staged_alpha_seen && image->num_extra_channels == 0) {
 				if (extras[i].type == JXL_CHANNEL_ALPHA) {
@@ -2225,7 +2234,7 @@ int cjxlz_main(int argc, char** argv) {
 		}
 
 		for (size_t i = 0; i < extra_count; ++i) {
-			if (!parse_extra_input(&extras[i], image.width, image.height, err, sizeof(err))) {
+			if (!parse_extra_input(&extras[i], image.width, image.height, image.bits_per_sample, err, sizeof(err))) {
 				fprintf(stderr, "%s\n", err[0] ? err : "extra parse failed");
 				for (size_t j = 0; j < extra_count; ++j) {
 					free_parsed_image(&extras[j].image);

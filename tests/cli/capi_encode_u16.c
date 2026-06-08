@@ -23,14 +23,19 @@ static int append_chunk(uint8_t** out, size_t* size, size_t* cap, const uint8_t*
 static int roundtrip_u16(
 	const uint8_t* pixels,
 	uint32_t num_channels,
+	uint32_t output_channels,
 	uint32_t num_color_channels,
 	uint32_t alpha_bits,
 	JxlEndianness input_endianness,
+	const uint8_t* staged_alpha,
+	JxlEndianness staged_alpha_endianness,
 	const uint8_t* expected_big_endian
 ) {
 	JxlPixelFormat input_format = {num_channels, JXL_TYPE_UINT16, input_endianness, 0};
-	JxlPixelFormat output_format = {num_channels, JXL_TYPE_UINT16, JXL_BIG_ENDIAN, 0};
+	JxlPixelFormat output_format = {output_channels, JXL_TYPE_UINT16, JXL_BIG_ENDIAN, 0};
 	size_t pixel_bytes = (size_t)2 * 1 * num_channels * 2;
+	size_t output_bytes = (size_t)2 * 1 * output_channels * 2;
+	size_t staged_alpha_bytes = (size_t)2 * 1 * 2;
 	JxlBasicInfo info;
 	JxlEncoderInitBasicInfo(&info);
 	info.xsize = 2;
@@ -64,6 +69,14 @@ static int roundtrip_u16(
 		fprintf(stderr, "add 16-bit image frame failed\n");
 		JxlEncoderDestroy(enc);
 		return 1;
+	}
+	if (staged_alpha) {
+		JxlPixelFormat alpha_format = {1, JXL_TYPE_UINT16, staged_alpha_endianness, 0};
+		if (JxlEncoderSetExtraChannelBuffer(settings, &alpha_format, staged_alpha, staged_alpha_bytes, 0) != JXL_ENC_SUCCESS) {
+			fprintf(stderr, "add 16-bit staged alpha failed\n");
+			JxlEncoderDestroy(enc);
+			return 1;
+		}
 	}
 	JxlEncoderCloseInput(enc);
 
@@ -109,11 +122,11 @@ static int roundtrip_u16(
 		if (status == JXL_DEC_NEED_IMAGE_OUT_BUFFER) {
 			size_t decoded_size = 0;
 			if (JxlDecoderImageOutBufferSize(dec, &output_format, &decoded_size) != JXL_DEC_SUCCESS) return 1;
-			if (decoded_size != pixel_bytes) {
+			if (decoded_size != output_bytes) {
 				fprintf(stderr, "unexpected 16-bit buffer size %zu\n", decoded_size);
 				return 1;
 			}
-			if (JxlDecoderSetImageOutBuffer(dec, &output_format, decoded_pixels, pixel_bytes) != JXL_DEC_SUCCESS) return 1;
+			if (JxlDecoderSetImageOutBuffer(dec, &output_format, decoded_pixels, output_bytes) != JXL_DEC_SUCCESS) return 1;
 			continue;
 		}
 		if (status == JXL_DEC_FULL_IMAGE) continue;
@@ -134,7 +147,7 @@ static int roundtrip_u16(
 		fprintf(stderr, "unexpected decoded alpha bit depth %u\n", decoded_info.alpha_bits);
 		return 1;
 	}
-	if (memcmp(decoded_pixels, expected_big_endian, pixel_bytes) != 0) {
+	if (memcmp(decoded_pixels, expected_big_endian, output_bytes) != 0) {
 		fprintf(stderr, "16-bit pixel roundtrip mismatch\n");
 		return 1;
 	}
@@ -161,10 +174,12 @@ int main(void) {
 		0x00, 0x00, 0x34, 0x12, 0xff, 0xff, 0x00, 0x80,
 		0x00, 0x01, 0x00, 0x80, 0xcd, 0xab, 0x00, 0x40,
 	};
+	const uint8_t little_endian_alpha_pixels[4] = { 0x00, 0x80, 0x00, 0x40 };
 
-	if (roundtrip_u16(big_endian_pixels, 3, 3, 0, JXL_BIG_ENDIAN, big_endian_pixels) != 0) return 1;
-	if (roundtrip_u16(little_endian_pixels, 3, 3, 0, JXL_LITTLE_ENDIAN, big_endian_pixels) != 0) return 1;
-	if (roundtrip_u16(big_endian_rgba_pixels, 4, 3, 16, JXL_BIG_ENDIAN, big_endian_rgba_pixels) != 0) return 1;
-	if (roundtrip_u16(little_endian_rgba_pixels, 4, 3, 16, JXL_LITTLE_ENDIAN, big_endian_rgba_pixels) != 0) return 1;
+	if (roundtrip_u16(big_endian_pixels, 3, 3, 3, 0, JXL_BIG_ENDIAN, NULL, JXL_BIG_ENDIAN, big_endian_pixels) != 0) return 1;
+	if (roundtrip_u16(little_endian_pixels, 3, 3, 3, 0, JXL_LITTLE_ENDIAN, NULL, JXL_BIG_ENDIAN, big_endian_pixels) != 0) return 1;
+	if (roundtrip_u16(big_endian_rgba_pixels, 4, 4, 3, 16, JXL_BIG_ENDIAN, NULL, JXL_BIG_ENDIAN, big_endian_rgba_pixels) != 0) return 1;
+	if (roundtrip_u16(little_endian_rgba_pixels, 4, 4, 3, 16, JXL_LITTLE_ENDIAN, NULL, JXL_BIG_ENDIAN, big_endian_rgba_pixels) != 0) return 1;
+	if (roundtrip_u16(big_endian_pixels, 3, 4, 3, 16, JXL_BIG_ENDIAN, little_endian_alpha_pixels, JXL_LITTLE_ENDIAN, big_endian_rgba_pixels) != 0) return 1;
 	return 0;
 }

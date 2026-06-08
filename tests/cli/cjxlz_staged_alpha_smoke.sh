@@ -13,6 +13,11 @@ ALPHA_PGM="${TMPDIR}/cjxlz_staged_alpha_alpha.pgm"
 EXPECTED_PAM="${TMPDIR}/cjxlz_staged_alpha_expected.pam"
 ENCODED_JXL="${TMPDIR}/cjxlz_staged_alpha_output.jxl"
 ROUNDTRIP_PAM="${TMPDIR}/cjxlz_staged_alpha_roundtrip.pam"
+INPUT_U16_PPM="${TMPDIR}/cjxlz_staged_alpha_u16_input.ppm"
+ALPHA_U16_PGM="${TMPDIR}/cjxlz_staged_alpha_u16_alpha.pgm"
+EXPECTED_U16_PAM="${TMPDIR}/cjxlz_staged_alpha_u16_expected.pam"
+ENCODED_U16_JXL="${TMPDIR}/cjxlz_staged_alpha_u16_output.jxl"
+ROUNDTRIP_U16_PAM="${TMPDIR}/cjxlz_staged_alpha_u16_roundtrip.pam"
 
 if ! PACKAGE_OUT="$(nix build --no-link --print-out-paths ".#packages.${SYSTEM}.default" 2>"${BUILD_LOG}")"; then
 	cat "${BUILD_LOG}"
@@ -61,6 +66,39 @@ fi
 
 if ! grep -Eq '^2 2 3 1 8$' "${CHECK_STDOUT}"; then
 	echo "unexpected decoded basic info"
+	cat "${CHECK_STDOUT}"
+	exit 1
+fi
+
+printf 'P6\n2 1\n65535\n' >"${INPUT_U16_PPM}"
+printf '\x00\x00\x12\x34\xff\xff\x01\x00\x80\x00\xab\xcd' >>"${INPUT_U16_PPM}"
+printf 'P5\n2 1\n65535\n' >"${ALPHA_U16_PGM}"
+printf '\x80\x00\x40\x00' >>"${ALPHA_U16_PGM}"
+printf 'P7\nWIDTH 2\nHEIGHT 1\nDEPTH 4\nMAXVAL 65535\nTUPLTYPE RGB_ALPHA\nENDHDR\n' >"${EXPECTED_U16_PAM}"
+printf '\x00\x00\x12\x34\xff\xff\x80\x00\x01\x00\x80\x00\xab\xcd\x40\x00' >>"${EXPECTED_U16_PAM}"
+
+if ! "${PACKAGE_OUT}/bin/cjxlz" --extra alpha "${ALPHA_U16_PGM}" "${INPUT_U16_PPM}" "${ENCODED_U16_JXL}" >"${CHECK_STDOUT}" 2>>"${RUN_STDERR}"; then
+	cat "${RUN_STDERR}"
+	exit 1
+fi
+
+if ! "${PACKAGE_OUT}/bin/djxlz" "${ENCODED_U16_JXL}" @stdout --output_format pam >"${ROUNDTRIP_U16_PAM}" 2>>"${RUN_STDERR}"; then
+	cat "${RUN_STDERR}"
+	exit 1
+fi
+
+if ! cmp -s "${EXPECTED_U16_PAM}" "${ROUNDTRIP_U16_PAM}"; then
+	echo "16-bit staged-alpha pam roundtrip mismatch"
+	exit 1
+fi
+
+if ! "${CHECK_BIN}" "${ENCODED_U16_JXL}" >"${CHECK_STDOUT}" 2>"${CHECK_STDERR}"; then
+	cat "${CHECK_STDERR}"
+	exit 1
+fi
+
+if ! grep -Eq '^2 1 3 1 16$' "${CHECK_STDOUT}"; then
+	echo "unexpected decoded 16-bit basic info"
 	cat "${CHECK_STDOUT}"
 	exit 1
 fi
