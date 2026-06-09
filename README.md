@@ -148,8 +148,10 @@ upstream `cjxl` feature.
 - [`doc/benchmarking.md`](doc/benchmarking.md)
 - [`doc/building_and_testing.md`](doc/building_and_testing.md)
 - [`NOTICE`](NOTICE)
-- [`CODE_MINIMAP.md`](CODE_MINIMAP.md)
 - [`PLAN.md`](PLAN.md)
+
+File-purpose notes are maintained through checked-in `dirtree` annotations. Run
+`dirtree --show-notes` from the repo root for the current annotated project map.
 
 ## License
 
