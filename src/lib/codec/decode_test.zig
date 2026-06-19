@@ -402,6 +402,8 @@ test "decode spline fixture reaches rendered float image" {
 	defer frame_dec.deinit();
 
 	try frame_dec.decodeFrame(prepared.frame_data);
+	try testing.expect(!prepared.codec_meta.m.xyb_encoded);
+	try testing.expectEqual(frame_header_mod.ColorTransform.none, frame_dec.frame_header.color_transform);
 	try testing.expect(frame_dec.splines.hasAny());
 	try testing.expect(frame_dec.rendered_image != null);
 }
@@ -415,6 +417,8 @@ test "decode spline-on-first-frame fixture reaches rendered float image" {
 	defer frame_dec.deinit();
 
 	try frame_dec.decodeFrame(prepared.frame_data);
+	try testing.expect(!prepared.codec_meta.m.xyb_encoded);
+	try testing.expectEqual(frame_header_mod.ColorTransform.none, frame_dec.frame_header.color_transform);
 	try testing.expect(frame_dec.splines.hasAny());
 	try testing.expect(frame_dec.rendered_image != null);
 }

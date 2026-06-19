@@ -21,9 +21,7 @@ pub const OpsinParams = struct {
 };
 
 fn signedCubeRoot(value: f32) f32 {
-	if (value == 0.0) return 0.0;
-	const magnitude = std.math.pow(f32, @abs(value), @as(f32, 1.0) / @as(f32, 3.0));
-	return if (value < 0.0) -magnitude else magnitude;
+	return std.math.cbrt(value);
 }
 
 fn zeroOpsinMatrix(matrix: *const image_metadata.OpsinInverseMatrix) bool {
@@ -73,14 +71,14 @@ pub fn xybToLinearRgb(x: f32, y: f32, b: f32, params: *const OpsinParams) [3]f32
 	const gamma_g = y - x - params.neg_opsin_biases_cbrt[1];
 	const gamma_b = b - params.neg_opsin_biases_cbrt[2];
 
-	const mixed_r = gamma_r * gamma_r * gamma_r + params.neg_opsin_biases[0];
-	const mixed_g = gamma_g * gamma_g * gamma_g + params.neg_opsin_biases[1];
-	const mixed_b = gamma_b * gamma_b * gamma_b + params.neg_opsin_biases[2];
+	const mixed_r = @mulAdd(f32, gamma_r * gamma_r, gamma_r, params.neg_opsin_biases[0]);
+	const mixed_g = @mulAdd(f32, gamma_g * gamma_g, gamma_g, params.neg_opsin_biases[1]);
+	const mixed_b = @mulAdd(f32, gamma_b * gamma_b, gamma_b, params.neg_opsin_biases[2]);
 
 	return .{
-		params.inverse_matrix[0][0] * mixed_r + params.inverse_matrix[0][1] * mixed_g + params.inverse_matrix[0][2] * mixed_b,
-		params.inverse_matrix[1][0] * mixed_r + params.inverse_matrix[1][1] * mixed_g + params.inverse_matrix[1][2] * mixed_b,
-		params.inverse_matrix[2][0] * mixed_r + params.inverse_matrix[2][1] * mixed_g + params.inverse_matrix[2][2] * mixed_b,
+		@mulAdd(f32, params.inverse_matrix[0][2], mixed_b, @mulAdd(f32, params.inverse_matrix[0][1], mixed_g, params.inverse_matrix[0][0] * mixed_r)),
+		@mulAdd(f32, params.inverse_matrix[1][2], mixed_b, @mulAdd(f32, params.inverse_matrix[1][1], mixed_g, params.inverse_matrix[1][0] * mixed_r)),
+		@mulAdd(f32, params.inverse_matrix[2][2], mixed_b, @mulAdd(f32, params.inverse_matrix[2][1], mixed_g, params.inverse_matrix[2][0] * mixed_r)),
 	};
 }
 

@@ -58,6 +58,37 @@ pub const FloatImage = struct {
 		return result;
 	}
 
+	/// Lifts decoded modular XYB planes into upstream render-pipeline float rows.
+	/// JPEG XL stores modular XYB as Y, X, and B-Y, scaled by decoded DC quants.
+	pub fn fromXYBModularImage(allocator: std.mem.Allocator, image: *const modular_image.Image, dc_quant: [3]f32) !FloatImage {
+		if (image.channels.items.len < 3) return error.GenericError;
+		var result = try FloatImage.init(allocator, image.w, image.h, 3);
+		errdefer result.deinit();
+
+		const ch_y = &image.channels.items[0];
+		const ch_x = &image.channels.items[1];
+		const ch_b_minus_y = &image.channels.items[2];
+		if (ch_y.w != image.w or ch_y.h != image.h) return error.GenericError;
+		if (ch_x.w != image.w or ch_x.h != image.h) return error.GenericError;
+		if (ch_b_minus_y.w != image.w or ch_b_minus_y.h != image.h) return error.GenericError;
+
+		for (0..image.h) |y| {
+			const row_y_in = ch_y.rowConst(y);
+			const row_x_in = ch_x.rowConst(y);
+			const row_b_minus_y_in = ch_b_minus_y.rowConst(y);
+			const row_x_out = result.row(y, 0);
+			const row_y_out = result.row(y, 1);
+			const row_b_out = result.row(y, 2);
+			for (0..image.w) |x| {
+				row_x_out[x] = @as(f32, @floatFromInt(row_x_in[x])) * dc_quant[0];
+				row_y_out[x] = @as(f32, @floatFromInt(row_y_in[x])) * dc_quant[1];
+				row_b_out[x] = @as(f32, @floatFromInt(row_b_minus_y_in[x] + row_y_in[x])) * dc_quant[2];
+			}
+		}
+
+		return result;
+	}
+
 	pub fn row(self: *FloatImage, y: usize, channel: usize) []f32 {
 		const start = (channel * self.ysize + y) * self.xsize;
 		return self.data[start .. start + self.xsize];
@@ -101,6 +132,27 @@ test "FloatImage fromModularImage normalizes integer color channels into float p
 	try testing.expectEqual(@as(f32, 0), rendered.rowConst(0, 0)[0]);
 	try testing.expectApproxEqAbs(@as(f32, 112.0 / 255.0), rendered.rowConst(1, 1)[2], 1.0e-6);
 	try testing.expectApproxEqAbs(@as(f32, 211.0 / 255.0), rendered.rowConst(1, 2)[1], 1.0e-6);
+}
+
+test "FloatImage fromXYBModularImage applies upstream YX(B-Y) DC quant lift" {
+	const allocator = testing.allocator;
+	var image = try modular_image.Image.create(allocator, 2, 1, 8, 3);
+	defer image.deinit();
+
+	image.channels.items[0].row(0)[0] = 10;
+	image.channels.items[0].row(0)[1] = 20;
+	image.channels.items[1].row(0)[0] = 30;
+	image.channels.items[1].row(0)[1] = 40;
+	image.channels.items[2].row(0)[0] = 50;
+	image.channels.items[2].row(0)[1] = 60;
+
+	var rendered = try FloatImage.fromXYBModularImage(allocator, &image, .{ 0.25, 0.5, 2.0 });
+	defer rendered.deinit();
+
+	try testing.expectApproxEqAbs(@as(f32, 30.0 * 0.25), rendered.rowConst(0, 0)[0], 1.0e-6);
+	try testing.expectApproxEqAbs(@as(f32, 20.0 * 0.5), rendered.rowConst(0, 1)[1], 1.0e-6);
+	try testing.expectApproxEqAbs(@as(f32, (50.0 + 10.0) * 2.0), rendered.rowConst(0, 2)[0], 1.0e-6);
+	try testing.expectApproxEqAbs(@as(f32, (60.0 + 20.0) * 2.0), rendered.rowConst(0, 2)[1], 1.0e-6);
 }
 
 test "FloatImage applySplines uses parsed draw cache to modify XYB rows" {

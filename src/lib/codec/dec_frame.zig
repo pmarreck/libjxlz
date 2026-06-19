@@ -485,6 +485,7 @@ pub const FrameDecoder = struct {
     toc_entries: []TocEntry = &.{},
     modular_decoder: ModularFrameDecoder,
     splines: splines_mod.Splines,
+    dequant_matrices: DequantMatrices = .{},
     rendered_image: ?render_mod.FloatImage = null,
     metadata: *const CodecMetadata,
     decoded_dc_global: bool = false,
@@ -515,6 +516,7 @@ pub const FrameDecoder = struct {
         self.frame_dim = self.frame_header.toFrameDimensions(self.metadata, false);
         self.modular_decoder.initFrame(self.frame_dim);
         self.splines.clear();
+        self.dequant_matrices = .{};
         self.clearRenderedImage();
 
         const num_passes = self.frame_header.passes.num_passes;
@@ -548,8 +550,8 @@ pub const FrameDecoder = struct {
         }
 
         // DequantMatrices::DecodeDC — always called, even for modular frames
-        var matrices = DequantMatrices{};
-        try matrices.decodeDC(br);
+        self.dequant_matrices = .{};
+        try self.dequant_matrices.decodeDC(br);
 
         // For modular frames: decode global modular info
         if (self.frame_header.encoding == .modular) {
@@ -652,11 +654,19 @@ pub const FrameDecoder = struct {
         if (self.modular_decoder.full_image.channels.items.len < 3) return error.Unsupported;
 
         try self.splines.initializeDrawCache(self.frame_dim.xsize, self.frame_dim.ysize, .{});
-        var rendered = try render_mod.FloatImage.fromModularImage(
-            self.allocator,
-            &self.modular_decoder.full_image,
-            3,
-        );
+        const use_xyb_lift = self.metadata.m.xyb_encoded or self.frame_header.color_transform == .xyb;
+        var rendered = if (use_xyb_lift)
+            try render_mod.FloatImage.fromXYBModularImage(
+                self.allocator,
+                &self.modular_decoder.full_image,
+                self.dequant_matrices.dc_quant,
+            )
+        else
+            try render_mod.FloatImage.fromModularImage(
+                self.allocator,
+                &self.modular_decoder.full_image,
+                3,
+            );
         errdefer rendered.deinit();
         try rendered.applySplines(&self.splines);
         self.rendered_image = rendered;
@@ -862,6 +872,46 @@ test "renderSplineOverlays creates float image when parsed splines are present" 
 		}
 	}
 	try testing.expect(touched);
+}
+
+test "renderSplineOverlays lifts XYB modular planes with decoded DC quants" {
+	const allocator = testing.allocator;
+	var metadata = CodecMetadata{};
+	metadata.m.xyb_encoded = true;
+	var dec = FrameDecoder.init(allocator, &metadata);
+	defer dec.deinit();
+	dec.frame_header.color_transform = .xyb;
+	dec.frame_dim.set(64, 64, 1, 0, 0, true, 1);
+	dec.dequant_matrices.dc_quant = .{ 0.25, 0.5, 2.0 };
+	dec.modular_decoder.full_image.deinit();
+	dec.modular_decoder.full_image = try Image.create(allocator, 64, 64, 8, 3);
+	dec.modular_decoder.full_image.channels.items[0].row(0)[0] = 10;
+	dec.modular_decoder.full_image.channels.items[1].row(0)[0] = 30;
+	dec.modular_decoder.full_image.channels.items[2].row(0)[0] = 50;
+
+	var spline = splines_mod.Spline{
+		.control_points = try allocator.dupe(splines_mod.Point, &.{
+			.{ .x = 10, .y = 10 },
+			.{ .x = 20, .y = 10 },
+			.{ .x = 30, .y = 10 },
+		}),
+		.color_dct = .{ splines_mod.zero_dct32, splines_mod.zero_dct32, splines_mod.zero_dct32 },
+		.sigma_dct = splines_mod.zero_dct32,
+	};
+	defer spline.deinit(allocator);
+
+	const quantized = try splines_mod.QuantizedSpline.create(allocator, &spline, 0, 0.0, 0.0);
+	var owned_splines = try allocator.alloc(splines_mod.QuantizedSpline, 1);
+	owned_splines[0] = quantized;
+	const starting_points = try allocator.dupe(splines_mod.Point, &.{spline.control_points[0]});
+	dec.splines.assignOwned(0, owned_splines, starting_points);
+
+	try dec.renderSplineOverlays();
+
+	const rendered = &dec.rendered_image.?;
+	try testing.expectApproxEqAbs(@as(f32, 30.0 * 0.25), rendered.rowConst(0, 0)[0], 1.0e-6);
+	try testing.expectApproxEqAbs(@as(f32, 10.0 * 0.5), rendered.rowConst(0, 1)[0], 1.0e-6);
+	try testing.expectApproxEqAbs(@as(f32, (50.0 + 10.0) * 2.0), rendered.rowConst(0, 2)[0], 1.0e-6);
 }
 
 test "renderSplineOverlays uses upstream decoder default spline color correlation" {

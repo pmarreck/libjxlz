@@ -65,7 +65,7 @@ const kSqrt0_5: f32 = 0.70710678118;
 const kSplinePosLimit: f64 = 1 << 23;
 const kMaxNumControlPoints: usize = 1 << 20;
 const kMaxNumControlPointsPerPixelRatio: usize = 2;
-const kDistanceExp: f32 = 3.0;
+const kDistanceExp: f32 = 5.0;
 
 const SplineEntropyContext = enum(usize) {
 	quantization_adjustment = 0,
@@ -610,7 +610,7 @@ fn drawCentripetalCatmullRomSpline(allocator: std.mem.Allocator, points_in: []co
 		for (0..3) |k| {
 			const dx = p[k + 1].x - p[k].x;
 			const dy = p[k + 1].y - p[k].y;
-			d[k] = @sqrt(@sqrt(dx * dx + dy * dy));
+			d[k] = @sqrt(std.math.hypot(dx, dy));
 			t[k + 1] = t[k] + d[k];
 		}
 
@@ -681,7 +681,10 @@ fn computeSegments(
 
 	var max_color: f32 = 0.01;
 	for (0..3) |c| max_color = @max(max_color, @abs(color[c] * intensity));
-	const maximum_distance = @sqrt(-2.0 * sigma * sigma * (@log(@as(f32, 0.1)) * kDistanceExp - @log(max_color)));
+	const maximum_distance: f32 = @floatCast(@sqrt(
+		-2.0 * @as(f64, @floatCast(sigma)) * @as(f64, @floatCast(sigma)) *
+			(@log(@as(f64, 0.1)) * @as(f64, @floatCast(kDistanceExp)) - @log(@as(f64, @floatCast(max_color)))),
+	));
 
 	const segment = SplineSegment{
 		.center_x = center.x,
@@ -732,15 +735,15 @@ fn drawSegment(segment: SplineSegment, add: bool, row_x: []f32, row_y: []f32, ro
 	while (x_abs < span_x1) : (x_abs += 1) {
 		const dx = @as(f32, @floatFromInt(x_abs)) - segment.center_x;
 		const dy = @as(f32, @floatFromInt(y)) - segment.center_y;
-		const distance = @sqrt(dx * dx + dy * dy);
-		const factor = erfApprox((distance * 0.5 + 0.353553391) * segment.inv_sigma) -
-			erfApprox((distance * 0.5 - 0.353553391) * segment.inv_sigma);
+		const distance = @sqrt(@mulAdd(f32, dx, dx, dy * dy));
+		const factor = erfApprox(@mulAdd(f32, distance, 0.5, 0.353553391) * segment.inv_sigma) -
+			erfApprox(@mulAdd(f32, distance, 0.5, -0.353553391) * segment.inv_sigma);
 		const local_intensity = segment.sigma_over_4_times_intensity * factor * factor;
 		const out_x = @as(usize, @intCast(x_abs - @as(i64, @intCast(x0))));
 		const sign: f32 = if (add) 1.0 else -1.0;
-		row_x[out_x] += sign * segment.color[0] * local_intensity;
-		row_y[out_x] += sign * segment.color[1] * local_intensity;
-		row_b[out_x] += sign * segment.color[2] * local_intensity;
+		row_x[out_x] = @mulAdd(f32, sign * segment.color[0], local_intensity, row_x[out_x]);
+		row_y[out_x] = @mulAdd(f32, sign * segment.color[1], local_intensity, row_y[out_x]);
+		row_b[out_x] = @mulAdd(f32, sign * segment.color[2], local_intensity, row_b[out_x]);
 	}
 }
 
