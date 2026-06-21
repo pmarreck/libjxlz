@@ -211,6 +211,7 @@ annotate=[
 	tests/cli/decode_ground_truth_corpus_smoke.sh = first manifest-driven ground-truth decoder corpus
 	tests/cli/decode_known_diff_smoke.sh = oracle-backed decode mismatches that still produce output on both sides but differ bytewise
 	tests/cli/decode_known_unsupported_smoke.sh = explicit decoder gaps where upstream djxl succeeds but packaged djxlz currently rejects the codestream
+	tests/cli/decode_oracle_resolver_smoke.sh = pins and tests the upstream djxl oracle resolver/version contract
 	tests/cli/djxlz_gif_animation_smoke.sh = CLI smoke for the new narrow animated JXL -> GIF path
 	tests/cli/djxlz_icc_profile_contract_smoke.sh = CLI contract smoke for the same decoder-side ICC export surface
 	tests/cli/djxlz_icc_profile_smoke.sh = CLI smoke for decoder-side embedded ICC export
@@ -225,7 +226,7 @@ annotate=[
 	tests/corpus/decode_ground_truth_manifest.tsv = first manifest-driven ground-truth decoder corpus
 	tests/corpus/decode_known_diff_manifest.tsv = oracle-backed decode mismatches that still produce output on both sides but differ bytewise
 	tests/corpus/decode_known_unsupported_manifest.tsv = explicit decoder gaps where upstream djxl succeeds but packaged djxlz currently rejects the codestream
-	tests/lib/decode_ground_truth_corpus.bash = first manifest-driven ground-truth decoder corpus
+	tests/lib/decode_ground_truth_corpus.bash = shared manifest-driven decoder oracle helper with pinned djxl resolver
 	tests/lib/test_runner.bash = fake-nix smoke plus shared Bash helper for the top-level shell-test runner
 	tests/lib/zig_runner.bash = fake-nix smoke plus shared Bash helper for the remaining direct-Zig script edges
 ]

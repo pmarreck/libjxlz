@@ -8,7 +8,11 @@ EXPECTED_PGM="${TMPDIR}/djxlz_pq_gradient_expected.pgm"
 ROUNDTRIP_PGM="${TMPDIR}/djxlz_pq_gradient_roundtrip.pgm"
 RUN_STDERR="${TMPDIR}/djxlz_pq_gradient.stderr"
 
-if ! djxl "${INPUT_JXL}" "${EXPECTED_PGM}" >/dev/null 2>"${RUN_STDERR}"; then
+source ./tests/lib/decode_ground_truth_corpus.bash
+ORACLE_DJXL="$(decode_ground_truth_oracle_djxl)"
+decode_ground_truth_check_oracle "${ORACLE_DJXL}"
+
+if ! "${ORACLE_DJXL}" "${INPUT_JXL}" "${EXPECTED_PGM}" >/dev/null 2>"${RUN_STDERR}"; then
 	cat "${RUN_STDERR}"
 	exit 1
 fi

@@ -19,13 +19,45 @@ decode_ground_truth_case_count() {
 	printf '%s\n' "${total}"
 }
 
+decode_ground_truth_oracle_version() {
+	printf '%s\n' "${JXLZ_ORACLE_DJXL_VERSION:-0.11.2}"
+}
+
+decode_ground_truth_oracle_djxl() {
+	if [ -n "${JXLZ_ORACLE_DJXL:-}" ]; then
+		printf '%s\n' "${JXLZ_ORACLE_DJXL}"
+		return 0
+	fi
+	command -v djxl
+}
+
+decode_ground_truth_check_oracle() {
+	local oracle_djxl="$1"
+	local expected_version actual_version
+	expected_version="$(decode_ground_truth_oracle_version)" || return 1
+	if ! actual_version="$("${oracle_djxl}" --version 2>&1 | sed -n '1p')"; then
+		echo "failed to execute djxl oracle: ${oracle_djxl}" >&2
+		return 1
+	fi
+	case "${actual_version}" in
+		*"v${expected_version}"*)
+			return 0
+			;;
+		*)
+			echo "expected djxl v${expected_version} oracle, got: ${actual_version}" >&2
+			echo "set JXLZ_ORACLE_DJXL and JXLZ_ORACLE_DJXL_VERSION to change the pinned oracle intentionally" >&2
+			return 1
+			;;
+	esac
+}
+
 # Runs a checked-in still-image JXL corpus against upstream `djxl` and the
 # packaged `djxlz`, comparing exact decoded PAM bytes to lock down decoder
 # parity on real upstream-produced fixtures before broader corpus expansion.
 run_decode_ground_truth_manifest() {
 	local manifest_path="$1"
 	local root_dir package_out workdir build_log total index line relpath
-	local system upstream_out our_out
+	local system upstream_out our_out oracle_djxl
 
 	root_dir="$(decode_ground_truth_root_dir)" || return 1
 	workdir="$(mktemp -d "${TMPDIR:-/tmp}/decode_ground_truth.XXXXXX")" || return 1
@@ -33,6 +65,8 @@ run_decode_ground_truth_manifest() {
 	system="$(nix eval --impure --raw --expr builtins.currentSystem)" || return 1
 	total="$(decode_ground_truth_case_count "${manifest_path}")" || return 1
 	index=0
+	oracle_djxl="$(decode_ground_truth_oracle_djxl)" || return 1
+	decode_ground_truth_check_oracle "${oracle_djxl}" || return 1
 
 	if ! package_out="$(nix build --no-link --print-out-paths ".#packages.${system}.default" 2>"${build_log}")"; then
 		cat "${build_log}" >&2
@@ -51,7 +85,7 @@ run_decode_ground_truth_manifest() {
 		upstream_out="${workdir}/$(printf '%03d' "${index}").upstream.pam"
 		our_out="${workdir}/$(printf '%03d' "${index}").ours.pam"
 
-		if ! djxl "${root_dir}/${relpath}" "${upstream_out}" >/dev/null 2>"${workdir}/upstream.stderr"; then
+		if ! "${oracle_djxl}" "${root_dir}/${relpath}" "${upstream_out}" >/dev/null 2>"${workdir}/upstream.stderr"; then
 			echo "upstream djxl failed for ${relpath} (${index}/${total})" >&2
 			cat "${workdir}/upstream.stderr" >&2
 			return 1
@@ -131,7 +165,7 @@ PERL
 run_decode_ground_truth_manifest_expect_diff() {
 	local manifest_path="$1"
 	local root_dir package_out workdir build_log total index line relpath
-	local system upstream_out our_out
+	local system upstream_out our_out oracle_djxl
 
 	root_dir="$(decode_ground_truth_root_dir)" || return 1
 	workdir="$(mktemp -d "${TMPDIR:-/tmp}/decode_ground_truth_diff.XXXXXX")" || return 1
@@ -139,6 +173,8 @@ run_decode_ground_truth_manifest_expect_diff() {
 	system="$(nix eval --impure --raw --expr builtins.currentSystem)" || return 1
 	total="$(decode_ground_truth_case_count "${manifest_path}")" || return 1
 	index=0
+	oracle_djxl="$(decode_ground_truth_oracle_djxl)" || return 1
+	decode_ground_truth_check_oracle "${oracle_djxl}" || return 1
 
 	if ! package_out="$(nix build --no-link --print-out-paths ".#packages.${system}.default" 2>"${build_log}")"; then
 		cat "${build_log}" >&2
@@ -157,7 +193,7 @@ run_decode_ground_truth_manifest_expect_diff() {
 		upstream_out="${workdir}/$(printf '%03d' "${index}").upstream.pam"
 		our_out="${workdir}/$(printf '%03d' "${index}").ours.pam"
 
-		if ! djxl "${root_dir}/${relpath}" "${upstream_out}" >/dev/null 2>"${workdir}/upstream.stderr"; then
+		if ! "${oracle_djxl}" "${root_dir}/${relpath}" "${upstream_out}" >/dev/null 2>"${workdir}/upstream.stderr"; then
 			echo "upstream djxl failed for known-diff case ${relpath} (${index}/${total})" >&2
 			cat "${workdir}/upstream.stderr" >&2
 			return 1
@@ -183,7 +219,7 @@ run_decode_ground_truth_manifest_expect_diff() {
 run_decode_ground_truth_manifest_expect_djxlz_fail() {
 	local manifest_path="$1"
 	local root_dir package_out workdir build_log total index line relpath
-	local system upstream_out our_out
+	local system upstream_out our_out oracle_djxl
 
 	root_dir="$(decode_ground_truth_root_dir)" || return 1
 	workdir="$(mktemp -d "${TMPDIR:-/tmp}/decode_ground_truth_fail.XXXXXX")" || return 1
@@ -191,6 +227,8 @@ run_decode_ground_truth_manifest_expect_djxlz_fail() {
 	system="$(nix eval --impure --raw --expr builtins.currentSystem)" || return 1
 	total="$(decode_ground_truth_case_count "${manifest_path}")" || return 1
 	index=0
+	oracle_djxl="$(decode_ground_truth_oracle_djxl)" || return 1
+	decode_ground_truth_check_oracle "${oracle_djxl}" || return 1
 
 	if ! package_out="$(nix build --no-link --print-out-paths ".#packages.${system}.default" 2>"${build_log}")"; then
 		cat "${build_log}" >&2
@@ -209,7 +247,7 @@ run_decode_ground_truth_manifest_expect_djxlz_fail() {
 		upstream_out="${workdir}/$(printf '%03d' "${index}").upstream.pam"
 		our_out="${workdir}/$(printf '%03d' "${index}").ours.pam"
 
-		if ! djxl "${root_dir}/${relpath}" "${upstream_out}" >/dev/null 2>"${workdir}/upstream.stderr"; then
+		if ! "${oracle_djxl}" "${root_dir}/${relpath}" "${upstream_out}" >/dev/null 2>"${workdir}/upstream.stderr"; then
 			echo "upstream djxl failed for known-unsupported case ${relpath} (${index}/${total})" >&2
 			cat "${workdir}/upstream.stderr" >&2
 			return 1
