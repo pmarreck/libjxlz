@@ -40,6 +40,7 @@ annotate=[
 	src/lib/base/brotli.zig = tiny Brotli wrapper around brotli/{decode,encode}.h
 	src/lib/base/byte_order.zig = Endian load/store for 16/32/64-bit ints and floats via std.mem
 	src/lib/base/common.zig = Constants (pi, bits_per_byte), divCeil, shared signed-shift subsampledSize for chroma/extra-channel plane geometry, roundUp, clamp, safeAdd
+	src/lib/base/fixed_point.zig = integer-only fixed-point arithmetic helper for deterministic render/color math without float roundoff
 	src/lib/base/float.zig = IEEE 754 float16 to f32 conversion
 	src/lib/base/pack_signed.zig = PackSigned/UnpackSigned for zigzag encoding of signed frame offsets
 	src/lib/base/random.zig = Xorshift128+ PRNG matching C++ jxl::Rng exactly
