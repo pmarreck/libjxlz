@@ -311,3 +311,9 @@
 - [ ] JPEG recompression (jpegli)
 - [ ] jxltranz transcoder
 - [ ] Butteraugli / SSIMULACRA metrics
+
+## Wind-down handoff (2026-07-06 07:09 AM EDT)
+- [x] Fleet wind-down status: this Mac is becoming a darwin-build appliance; no new libjxlz feature work should start here.
+- [x] Last known green shipped state: `yolo` and `origin/yolo` both point to `31d5b1ef Add fixed-point arithmetic foundation`, which previously passed `./test` and `./build` before push.
+- [ ] Current unverified WIP bookmark: `wip/libjxlz-winddown` contains only wind-down residue from this machine (`AGENTS_previous.md`, `CLAUDE.md`, and this PLAN handoff). Treat it as operational handoff, not feature work.
+- [ ] Next implementation step on Thelio: resume from `yolo`, keep spline fixtures in known-diff until byte-exact, and prefer integer/fixed-point render/output seams over new float math.
