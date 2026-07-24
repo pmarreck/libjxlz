@@ -1,7 +1,7 @@
 # libjxlz
 
 [![GitHub Actions](https://img.shields.io/github/actions/workflow/status/pmarreck/libjxlz/libjxlz_ci.yml?branch=yolo&label=GitHub%20Actions)](https://github.com/pmarreck/libjxlz/actions/workflows/libjxlz_ci.yml)
-[![Garnix](https://img.shields.io/endpoint.svg?url=https%3A%2F%2Fgarnix.io%2Fapi%2Fbadges%2Fpmarreck%2Flibjxlz)](https://garnix.io/repo/pmarreck/libjxlz)
+[![Mechatron Prime CI](https://img.shields.io/endpoint?url=https%3A%2F%2Fthelio-nixos.tail66c90.ts.net%2Fbadges%2Flibjxlz.json&style=for-the-badge)](https://thelio-nixos.tail66c90.ts.net/mechatron-prime/)
 
 <img src="doc/jxl.svg" width="100" align="right" alt="JXL logo">
 

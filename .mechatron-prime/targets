@@ -1,0 +1,5 @@
+# Mechatron Prime CI — real x86_64-linux flake checks verified by
+# `nix flake show`; package build, Zig tests, and Windows cross-link coverage.
+checks.x86_64-linux.build
+checks.x86_64-linux.test
+checks.x86_64-linux.windows-x86_64-cross
