@@ -24,6 +24,16 @@ static const uint8_t* find_box(const uint8_t* data, size_t size, const char type
 	return NULL;
 }
 
+/* Keeps the brob oracle strict-C11 portable via a bounded bytewise substring scan. */
+static int contains_bytes(const uint8_t* data, size_t size, const uint8_t* needle, size_t needle_size) {
+	size_t pos;
+	if (needle_size > size) return 0;
+	for (pos = 0; pos <= size - needle_size; ++pos) {
+		if (memcmp(data + pos, needle, needle_size) == 0) return 1;
+	}
+	return 0;
+}
+
 static int decode_decompressed_xml(const uint8_t* encoded, size_t encoded_size, const uint8_t* xmp, size_t xmp_size) {
 	JxlDecoder* dec = JxlDecoderCreate(NULL);
 	char type_raw[5] = {0, 0, 0, 0, 0};
@@ -118,7 +128,11 @@ int main(void) {
 		fprintf(stderr, "brob underlying type missing\n");
 		return 1;
 	}
-	if (memmem(brob_contents + 4, brob_size - 4, xmp, sizeof(xmp) - 1) != NULL) {
+	if (!contains_bytes(xmp, sizeof(xmp) - 1, (const uint8_t*)"libjxlz", 7)) {
+		fprintf(stderr, "bounded byte-search helper failed its positive control\n");
+		return 1;
+	}
+	if (contains_bytes(brob_contents + 4, brob_size - 4, xmp, sizeof(xmp) - 1)) {
 		fprintf(stderr, "brob payload appears uncompressed\n");
 		return 1;
 	}

@@ -43,12 +43,37 @@ resolve_cross_brotli_paths() {
 	export BROTLI_LIB_DIR
 }
 
+adapt_cross_brotli_archives() {
+	local source_lib_dir="${BROTLI_LIB_DIR}"
+	local adapter_dir="${TMPDIR}/libjxlz-cross-brotli-${TARGET}-$$"
+	local library source_archive
+
+	if ! mkdir "${adapter_dir}"; then
+		return 1
+	fi
+	for library in brotlienc brotlidec brotlicommon; do
+		source_archive="${source_lib_dir}/lib${library}.dll.a"
+		if [ ! -f "${source_archive}" ]; then
+			echo "missing MinGW Brotli import archive: ${source_archive}" >&2
+			return 1
+		fi
+		if ! ln -s "${source_archive}" "${adapter_dir}/lib${library}.a"; then
+			return 1
+		fi
+	done
+	BROTLI_LIB_DIR="${adapter_dir}"
+	export BROTLI_LIB_DIR
+}
+
 resolve_cross_brotli_paths
 status=$?
 if [ "${status}" -eq 2 ]; then
 	exit 0
 fi
 if [ "${status}" -ne 0 ]; then
+	exit 1
+fi
+if ! adapt_cross_brotli_archives; then
 	exit 1
 fi
 

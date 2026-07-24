@@ -3,3 +3,5 @@ src/lib/testdata/lossless_300x200.jxl
 src/lib/testdata/lossless_600x10_multisection.jxl
 src/lib/testdata/lossless_600x300_multigroup_rgb.jxl
 testdata/jxl/pq_gradient.jxl
+testdata/jxl/splines.jxl
+testdata/jxl/spline_on_first_frame.jxl

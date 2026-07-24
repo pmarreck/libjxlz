@@ -2821,7 +2821,7 @@ test "writeRenderedImageToOutput scales float RGB rows to uint8 output" {
 	};
 	var buffer: [6]u8 = undefined;
 	try writeRenderedImageToOutput(&rendered, null, &metadata, format, buffer[0..].ptr, buffer.len);
-	try std.testing.expectEqualSlices(u8, &.{ 0, 128, 255, 255, 0, 255 }, &buffer);
+	try std.testing.expectEqualSlices(u8, &.{ 0, 127, 255, 255, 0, 255 }, &buffer);
 }
 
 test "writeFrameDecoderOutput prefers non-XYB rendered image over modular fallback" {
@@ -2851,7 +2851,7 @@ test "writeFrameDecoderOutput prefers non-XYB rendered image over modular fallba
 	};
 	var buffer: [3]u8 = undefined;
 	try writeFrameDecoderOutput(&frame_dec, &metadata, format, buffer[0..].ptr, buffer.len);
-	try std.testing.expectEqualSlices(u8, &.{ 255, 128, 0 }, &buffer);
+	try std.testing.expectEqualSlices(u8, &.{ 255, 127, 0 }, &buffer);
 }
 
 test "writeFrameDecoderOutput converts black XYB rendered image to RGB output" {

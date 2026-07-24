@@ -17,16 +17,21 @@
           zigPkg = zig-overlay.packages.${system}."0.16.0";
           pname = "libjxlz";
           version = "0.1.0";
+          zigNativeTarget = if pkgs.stdenv.isLinux then
+            pkgs.lib.replaceStrings [ "-unknown" ] [ "" ] pkgs.stdenv.hostPlatform.config
+          else
+            null;
           mkZigPackage = optimize: with pkgs; stdenv.mkDerivation {
             inherit pname version;
             src = ./.;
             nativeBuildInputs = [ zigPkg pkg-config libpng giflib zlib brotli ]
+              ++ lib.optionals stdenv.isLinux [ patchelf ]
               ++ lib.optionals (stdenv.isDarwin) [
                 darwin.cctools
                 apple-sdk
               ];
             dontConfigure = true;
-            dontFixup = true;
+            dontFixup = !stdenv.isLinux;
             buildPhase = ''
               export HOME=$TMPDIR
               export XDG_CACHE_HOME=$TMPDIR/cache
@@ -39,7 +44,7 @@
               export GIF_LIB_DIR=${giflib}/lib
               export CPATH=${giflib}/include''${CPATH:+:$CPATH}
               export LIBRARY_PATH=${giflib}/lib''${LIBRARY_PATH:+:$LIBRARY_PATH}
-              zig build install -Doptimize=${optimize} --prefix zig-out
+              zig build install -Doptimize=${optimize} ${lib.optionalString (zigNativeTarget != null) "-Dtarget=${zigNativeTarget}"} --prefix zig-out
             '';
             installPhase = ''
               mkdir -p $out
@@ -53,6 +58,17 @@
                   done
                 fi
               ''}
+            '';
+            fixupPhase = lib.optionalString stdenv.isLinux ''
+              runHook preFixup
+              dynamic_linker="$(cat ${stdenv.cc}/nix-support/dynamic-linker)"
+              rpath="${lib.makeLibraryPath [ brotli giflib libpng zlib ]}"
+              for binary in "$out"/bin/*; do
+                [ -f "$binary" ] || continue
+                patchelf --print-interpreter "$binary" >/dev/null 2>&1 || continue
+                patchelf --set-interpreter "$dynamic_linker" --set-rpath "$rpath" "$binary"
+              done
+              runHook postFixup
             '';
           };
         in
@@ -95,12 +111,13 @@
                 # under cross-build coverage. We compile the test bins
                 # via `test-compile`, then invoke each through Nix's
                 # actual loader. Mirrors the pattern in c0/flake.nix.
-                zig build test-compile -Doptimize=Debug
+                zig build test-compile -Doptimize=Debug ${lib.optionalString (zigNativeTarget != null) "-Dtarget=${zigNativeTarget}"}
                 DL="$(cat ${stdenv.cc}/nix-support/dynamic-linker)"
+                TEST_LIBRARY_PATH="${lib.makeLibraryPath [ brotli ]}"
                 rc=0
                 for f in zig-out/test-bins/*; do
                   [ -x "$f" ] || continue
-                  "$DL" "$f" || rc=1
+                  "$DL" --library-path "$TEST_LIBRARY_PATH" "$f" || rc=1
                 done
                 [ $rc -eq 0 ] || { echo "Tests failed"; exit 1; }
                 ''}

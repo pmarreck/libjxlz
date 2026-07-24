@@ -17,7 +17,7 @@ const storeU32 = pixel_format.storeU32;
 const normalizedFloat = pixel_format.normalizedFloat;
 const scaleToU8 = pixel_format.scaleToU8;
 const clampNormalizedSample = pixel_format.clampNormalizedSample;
-const scaleNormalizedToU8 = pixel_format.scaleNormalizedToU8;
+const scaleRenderedToU8 = pixel_format.scaleRenderedToU8;
 
 fn bitDepthMax(bits_per_sample: u32) u32 {
 	if (bits_per_sample == 0) return 0;
@@ -180,9 +180,9 @@ pub fn writeRenderedImageToOutput(rendered: *const render_mod.FloatImage, alpha_
 			const row_g = rendered.rowConst(y, 1);
 			const row_b = rendered.rowConst(y, 2);
 			for (0..rendered.xsize) |x| {
-				dst[x * 3 + 0] = scaleNormalizedToU8(row_r[x]);
-				dst[x * 3 + 1] = scaleNormalizedToU8(row_g[x]);
-				dst[x * 3 + 2] = scaleNormalizedToU8(row_b[x]);
+				dst[x * 3 + 0] = scaleRenderedToU8(row_r[x], x, y);
+				dst[x * 3 + 1] = scaleRenderedToU8(row_g[x], x, y);
+				dst[x * 3 + 2] = scaleRenderedToU8(row_b[x], x, y);
 			}
 		}
 		return;
@@ -197,7 +197,7 @@ pub fn writeRenderedImageToOutput(rendered: *const render_mod.FloatImage, alpha_
 				const normalized = clampNormalizedSample(value);
 				switch (format.data_type) {
 					.JXL_TYPE_UINT8 => {
-						pixel[c] = scaleNormalizedToU8(normalized);
+						pixel[c] = scaleRenderedToU8(normalized, x, y);
 					},
 					.JXL_TYPE_UINT16 => {
 						const scaled: u32 = @intFromFloat(@round(normalized * 65535.0));
@@ -241,9 +241,9 @@ pub fn writeXYBRenderedImageToOutput(rendered: *const render_mod.FloatImage, alp
 			const row_b = rendered.rowConst(y, 2);
 			for (0..rendered.xsize) |x| {
 				const rgb = xyb_mod.xybToLinearRgb(row_x[x], row_y[x], row_b[x], &params);
-				dst[x * 3 + 0] = scaleNormalizedToU8(rgb[0]);
-				dst[x * 3 + 1] = scaleNormalizedToU8(rgb[1]);
-				dst[x * 3 + 2] = scaleNormalizedToU8(rgb[2]);
+				dst[x * 3 + 0] = scaleRenderedToU8(rgb[0], x, y);
+				dst[x * 3 + 1] = scaleRenderedToU8(rgb[1], x, y);
+				dst[x * 3 + 2] = scaleRenderedToU8(rgb[2], x, y);
 			}
 		}
 		return;
@@ -262,7 +262,7 @@ pub fn writeXYBRenderedImageToOutput(rendered: *const render_mod.FloatImage, alp
 				const normalized = clampNormalizedSample(value);
 				switch (format.data_type) {
 					.JXL_TYPE_UINT8 => {
-						pixel[c] = scaleNormalizedToU8(normalized);
+						pixel[c] = scaleRenderedToU8(normalized, x, y);
 					},
 					.JXL_TYPE_UINT16 => {
 						const scaled: u32 = @intFromFloat(@round(normalized * 65535.0));

@@ -557,13 +557,15 @@ fn pointSub(a: Point, b: Point) Vector {
 /// Approximates cosine with upstream libjxl's FastCosf polynomial/range
 /// reduction so spline DCT interpolation follows oracle-visible rounding.
 fn fastCos(x: f32) f32 {
-	const pi2 = std.math.pi * 2.0;
-	const pi2_inv = 0.5 / std.math.pi;
-	const npi2 = @floor(x * pi2_inv) * pi2;
-	const xmodpi2 = x - npi2;
+	const pi2: f32 = @bitCast(@as(u32, 0x40c90fdb));
+	const pi2_inv: f32 = @bitCast(@as(u32, 0x3e22f983));
+	const pi: f32 = @bitCast(@as(u32, 0x40490fdb));
+	const pi_half: f32 = @bitCast(@as(u32, 0x3fc90fdb));
+	const periods = @floor(x * pi2_inv);
+	const xmodpi2 = @mulAdd(f32, -periods, pi2, x);
 	const x_pi = @min(xmodpi2, pi2 - xmodpi2);
-	const above_pihalf = x_pi >= std.math.pi / 2.0;
-	const x_pihalf = if (above_pihalf) std.math.pi - x_pi else x_pi;
+	const above_pihalf = x_pi >= pi_half;
+	const x_pihalf = if (above_pihalf) pi - x_pi else x_pi;
 	const xs = x_pihalf * 0.25;
 	const x2 = xs * xs;
 	const x4 = x2 * x2;
@@ -576,12 +578,20 @@ fn fastCos(x: f32) f32 {
 /// Interpolates the spline's 32 DCT coefficients continuously so draw-cache
 /// construction can sample color and sigma at arbitrary arc-length positions.
 fn continuousIDCT(dct: Dct32, t: f32) f32 {
-	var result: f32 = 0.0;
+	var lanes = [_]f32{0.0} ** 8;
 	for (dct, 0..) |coeff, i| {
-		const multiplier = std.math.pi / 32.0 * @as(f32, @floatFromInt(i));
-		result = @mulAdd(f32, kSqrt2, coeff * fastCos(multiplier * (t + 0.5)), result);
+		const multiplier: f32 = @floatCast(
+			std.math.pi / 32.0 * @as(f64, @floatFromInt(i)),
+		);
+		const local = coeff * fastCos(multiplier * (t + 0.5));
+		const lane = i % lanes.len;
+		lanes[lane] = @mulAdd(f32, kSqrt2, local, lanes[lane]);
 	}
-	return result;
+	const sum_04 = lanes[0] + lanes[4];
+	const sum_15 = lanes[1] + lanes[5];
+	const sum_26 = lanes[2] + lanes[6];
+	const sum_37 = lanes[3] + lanes[7];
+	return (sum_04 + sum_37) + (sum_15 + sum_26);
 }
 
 /// Converts sparse control points into a denser centripetal Catmull-Rom polyline
@@ -681,10 +691,7 @@ fn computeSegments(
 
 	var max_color: f32 = 0.01;
 	for (0..3) |c| max_color = @max(max_color, @abs(color[c] * intensity));
-	const maximum_distance: f32 = @floatCast(@sqrt(
-		-2.0 * @as(f64, @floatCast(sigma)) * @as(f64, @floatCast(sigma)) *
-			(@log(@as(f64, 0.1)) * @as(f64, @floatCast(kDistanceExp)) - @log(@as(f64, @floatCast(max_color)))),
-	));
+	const maximum_distance = maximumDistance(sigma, max_color);
 
 	const segment = SplineSegment{
 		.center_x = center.x,
@@ -702,6 +709,21 @@ fn computeSegments(
 		try segments_by_y.append(allocator, .{ .y = @intCast(y), .index = segments.items.len });
 	}
 	try segments.append(allocator, segment);
+}
+
+/// Computes spline cutoff radius with the mixed float/double operations used
+/// by the pinned libjxl v0.11.2 oracle.
+fn maximumDistance(sigma: f32, max_color: f32) f32 {
+	const sigma_term = -2.0 * sigma * sigma;
+	const log_term = @log(@as(f64, 0.1)) * @as(f64, kDistanceExp) -
+		@as(f64, @floatCast(@log(max_color)));
+	return @floatCast(@sqrt(@as(f64, sigma_term) * log_term));
+}
+
+/// Applies the spline Gaussian's squared integration factor using the same
+/// operation boundary as libjxl's SIMD render stage.
+fn localIntensity(sigma_over_4_times_intensity: f32, factor: f32) f32 {
+	return sigma_over_4_times_intensity * (factor * factor);
 }
 
 fn segmentsFromPoints(
@@ -738,7 +760,7 @@ fn drawSegment(segment: SplineSegment, add: bool, row_x: []f32, row_y: []f32, ro
 		const distance = @sqrt(@mulAdd(f32, dx, dx, dy * dy));
 		const factor = erfApprox(@mulAdd(f32, distance, 0.5, 0.353553391) * segment.inv_sigma) -
 			erfApprox(@mulAdd(f32, distance, 0.5, -0.353553391) * segment.inv_sigma);
-		const local_intensity = segment.sigma_over_4_times_intensity * factor * factor;
+		const local_intensity = localIntensity(segment.sigma_over_4_times_intensity, factor);
 		const out_x = @as(usize, @intCast(x_abs - @as(i64, @intCast(x0))));
 		const sign: f32 = if (add) 1.0 else -1.0;
 		row_x[out_x] = @mulAdd(f32, sign * segment.color[0], local_intensity, row_x[out_x]);
@@ -860,22 +882,57 @@ test "drawCentripetalCatmullRomSpline uses square-root chord lengths" {
 	defer testing.allocator.free(smoothed);
 
 	try testing.expectEqual(@as(usize, 49), smoothed.len);
-	try testing.expectApproxEqAbs(@as(f32, 60.416667), smoothed[8].x, 1.0e-5);
-	try testing.expectApproxEqAbs(@as(f32, -2.0833333), smoothed[8].y, 1.0e-5);
-	try testing.expectApproxEqAbs(@as(f32, 108.27254), smoothed[40].x, 1.0e-5);
-	try testing.expectApproxEqAbs(@as(f32, 4.7725425), smoothed[40].y, 1.0e-5);
+	try testing.expectEqual(@as(u32, 0x4271aaaa), @as(u32, @bitCast(smoothed[8].x)));
+	try testing.expectEqual(@as(u32, 0xc0055555), @as(u32, @bitCast(smoothed[8].y)));
+	try testing.expectEqual(@as(u32, 0x42d88b8a), @as(u32, @bitCast(smoothed[40].x)));
+	try testing.expectEqual(@as(u32, 0x4098b8ab), @as(u32, @bitCast(smoothed[40].y)));
 }
 
 test "erfApprox uses upstream FastErff constants" {
-	try testing.expectApproxEqAbs(@as(f32, 0.5206692), erfApprox(0.5), 1.0e-6);
-	try testing.expectApproxEqAbs(@as(f32, -0.8427021), erfApprox(-1.0), 1.0e-6);
-	try testing.expectApproxEqAbs(@as(f32, 0.9948316), erfApprox(2.0), 1.0e-6);
+	try testing.expectEqual(@as(u32, 0x3f054a92), @as(u32, @bitCast(erfApprox(0.5))));
+	try testing.expectEqual(@as(u32, 0xbf57bb53), @as(u32, @bitCast(erfApprox(-1.0))));
+	try testing.expectEqual(@as(u32, 0x3f7ead49), @as(u32, @bitCast(erfApprox(2.0))));
 }
 
 test "fastCos uses upstream FastCosf constants" {
 	try testing.expectApproxEqAbs(@as(f32, 0.8775844), fastCos(0.5), 2.0e-7);
 	try testing.expectApproxEqAbs(@as(f32, 0.07073936), fastCos(1.5), 2.0e-7);
 	try testing.expectApproxEqAbs(@as(f32, -0.4161461), fastCos(2.0), 2.0e-7);
+}
+
+test "continuous IDCT preserves pinned AVX2 lane reduction" {
+	var isolated = zero_dct32;
+	isolated[0] = 1.0;
+	try testing.expectEqual(@as(u32, 0x3fb504eb), @as(u32, @bitCast(continuousIDCT(isolated, 12.345))));
+	isolated = zero_dct32;
+	isolated[1] = 1.0;
+	try testing.expectEqual(@as(u32, 0x3edcb4e8), @as(u32, @bitCast(continuousIDCT(isolated, 12.345))));
+	isolated = zero_dct32;
+	isolated[5] = 1.0;
+	try testing.expectEqual(@as(u32, 0x3fb4f99e), @as(u32, @bitCast(continuousIDCT(isolated, 12.345))));
+	isolated = zero_dct32;
+	isolated[17] = 1.0;
+	try testing.expectEqual(@as(u32, 0xbf9a04cd), @as(u32, @bitCast(continuousIDCT(isolated, 12.345))));
+	isolated = zero_dct32;
+	isolated[31] = 1.0;
+	try testing.expectEqual(@as(u32, 0x3e7f474d), @as(u32, @bitCast(continuousIDCT(isolated, 12.345))));
+
+	var dct: Dct32 = undefined;
+	for (&dct, 0..) |*coefficient, i| {
+		coefficient.* = @as(f32, @floatFromInt(@as(i32, @intCast(i % 7)) - 3)) * 0.013;
+	}
+	const interpolated = continuousIDCT(dct, 12.345);
+	try testing.expectEqual(@as(u32, 0x3c8e1060), @as(u32, @bitCast(interpolated)));
+}
+
+test "spline maximum distance preserves upstream float arithmetic" {
+	const radius = maximumDistance(0.00100300903, 0.00100908172);
+	try testing.expectEqual(@as(u32, 0x3b47afb8), @as(u32, @bitCast(radius)));
+}
+
+test "spline local intensity squares the integration factor before scaling" {
+	const intensity = localIntensity(0.117839336, 0.00000499999987);
+	try testing.expectEqual(@as(u32, 0x2c4f4e1e), @as(u32, @bitCast(intensity)));
 }
 
 test "Splines initializeDrawCache builds drawable segments for simple spline" {

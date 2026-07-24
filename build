@@ -31,6 +31,15 @@ elif command -v nix >/dev/null 2>&1; then
     echo "FAILED: expected $out/bin to exist" >&2
     exit 1
   fi
+  shopt -s nullglob
+  out_binaries=("$out"/bin/*)
+  shopt -u nullglob
+  for source_binary in "${out_binaries[@]}"; do
+    target_binary="zig-out/bin/${source_binary##*/}"
+    if [[ -e "$target_binary" && ! -w "$target_binary" ]]; then
+      run chmod u+w "$target_binary"
+    fi
+  done
   run cp -R "$out/bin/." zig-out/bin/
 else
   run run_project_zig build "-Doptimize=$optimize" "$@"

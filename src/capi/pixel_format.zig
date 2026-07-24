@@ -133,6 +133,30 @@ pub fn scaleNormalizedToU8(value: f32) u8 {
 	return @intFromFloat(scaled);
 }
 
+/// Packs a rendered float sample at a specific output coordinate so UINT8
+/// quantization can reproduce the pinned decoder oracle's spatial contract.
+pub fn scaleRenderedToU8(value: f32, x: usize, y: usize) u8 {
+	// libjxl v0.11.2's AVX2 LoadDup128 path repeats each four-value half-row.
+	const ordered_dither = [8][4]f32{
+		.{ -0.4921875, 0.0078125, -0.3671875, 0.1328125 },
+		.{ 0.2578125, -0.2421875, 0.3828125, -0.1171875 },
+		.{ -0.3046875, 0.1953125, -0.4296875, 0.0703125 },
+		.{ 0.4453125, -0.0546875, 0.3203125, -0.1796875 },
+		.{ -0.4453125, 0.0546875, -0.3203125, 0.1796875 },
+		.{ 0.3046875, -0.1953125, 0.4296875, -0.0703125 },
+		.{ -0.2578125, 0.2421875, -0.3828125, 0.1171875 },
+		.{ 0.4921875, -0.0078125, 0.3671875, -0.1328125 },
+	};
+	const scaled = clampNormalizedSample(value) * 255.0 + ordered_dither[y % 8][x % 4];
+	const clamped = std.math.clamp(scaled, 0.0, 255.0);
+	const lower_float = @floor(clamped);
+	const lower: u8 = @intFromFloat(lower_float);
+	const fraction = clamped - lower_float;
+	if (fraction < 0.5 or lower == 255) return lower;
+	if (fraction > 0.5) return lower + 1;
+	return if (lower & 1 == 0) lower else lower + 1;
+}
+
 fn roundUpTo(value: usize, alignment: usize) usize {
 	return ((value + alignment - 1) / alignment) * alignment;
 }
@@ -173,4 +197,14 @@ test "pixel format helpers clamp and scale integer and normalized samples" {
 	try std.testing.expectEqual(@as(u8, 128), scaleNormalizedToU8(0.5));
 	try std.testing.expectEqual(@as(u8, 0), scaleNormalizedToU8(std.math.nan(f32)));
 	try std.testing.expectEqual(@as(f32, 0.25), normalizedFloat(25, 100));
+}
+
+test "rendered uint8 scaling reproduces pinned AVX2 ordered dither" {
+	const halfway = 1.5 / 255.0;
+	try std.testing.expectEqual(@as(u8, 1), scaleRenderedToU8(halfway, 0, 0));
+	try std.testing.expectEqual(@as(u8, 2), scaleRenderedToU8(halfway, 1, 0));
+	try std.testing.expectEqual(@as(u8, 1), scaleRenderedToU8(halfway, 4, 0));
+	try std.testing.expectEqual(@as(u8, 2), scaleRenderedToU8(halfway, 0, 1));
+	const fixture_tie: f32 = @bitCast(@as(u32, 0x3edd4141));
+	try std.testing.expectEqual(@as(u8, 110), scaleRenderedToU8(fixture_tie, 1216, 69));
 }
