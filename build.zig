@@ -150,26 +150,38 @@ pub fn build(b: *std.Build) void {
 	const cjxlz_step = b.step("cjxlz", "Build the C encoder CLI that dogfoods the C FFI");
 	cjxlz_step.dependOn(&install_cjxlz.step);
 
+	// Benchmark targets reach the codec through the same modules as the library,
+	// so they need Brotli wiring too. Zig only analyses a function body when it
+	// is referenced, which previously hid this: nothing on the benchmark paths
+	// called into `brotli.zig`, so its `@cImport` was never forced. Validating
+	// `brob` payloads during container parsing made the call reachable and the
+	// missing include path surfaced as a `brotli/decode.h` not-found error.
+	const encode_prep_bench_mod = b.createModule(.{
+		.root_source_file = b.path("bench_modular_encode_prep.zig"),
+		.target = target,
+		.optimize = optimize,
+		.link_libc = true,
+	});
+	linkBrotliModule(encode_prep_bench_mod, brotli_include_dir, brotli_lib_dir);
 	const encode_prep_bench = b.addExecutable(.{
 		.name = "bench_modular_encode_prep",
-		.root_module = b.createModule(.{
-			.root_source_file = b.path("bench_modular_encode_prep.zig"),
-			.target = target,
-			.optimize = optimize,
-		}),
+		.root_module = encode_prep_bench_mod,
 	});
 	const install_encode_prep_bench = b.addInstallArtifact(encode_prep_bench, .{});
 	b.getInstallStep().dependOn(&install_encode_prep_bench.step);
 	const encode_prep_bench_step = b.step("encode-prep-bench", "Build the modular encode prep benchmark");
 	encode_prep_bench_step.dependOn(&install_encode_prep_bench.step);
 
+	const encode_codestream_bench_mod = b.createModule(.{
+		.root_source_file = b.path("bench_modular_encode_codestream.zig"),
+		.target = target,
+		.optimize = optimize,
+		.link_libc = true,
+	});
+	linkBrotliModule(encode_codestream_bench_mod, brotli_include_dir, brotli_lib_dir);
 	const encode_codestream_bench = b.addExecutable(.{
 		.name = "bench_modular_encode_codestream",
-		.root_module = b.createModule(.{
-			.root_source_file = b.path("bench_modular_encode_codestream.zig"),
-			.target = target,
-			.optimize = optimize,
-		}),
+		.root_module = encode_codestream_bench_mod,
 	});
 	const install_encode_codestream_bench = b.addInstallArtifact(encode_codestream_bench, .{});
 	b.getInstallStep().dependOn(&install_encode_codestream_bench.step);
@@ -189,39 +201,51 @@ pub fn build(b: *std.Build) void {
 
 	const run_unit_tests = b.addRunArtifact(unit_tests);
 
+	const bench_tests_mod = b.createModule(.{
+		.root_source_file = b.path("bench_decode_runtime.zig"),
+		.target = target,
+		.optimize = optimize,
+		.link_libc = true,
+	});
+	linkBrotliModule(bench_tests_mod, brotli_include_dir, brotli_lib_dir);
 	const bench_tests = b.addTest(.{
-		.root_module = b.createModule(.{
-			.root_source_file = b.path("bench_decode_runtime.zig"),
-			.target = target,
-			.optimize = optimize,
-		}),
+		.root_module = bench_tests_mod,
 	});
 
 	const run_bench_tests = b.addRunArtifact(bench_tests);
+	const weighted_bench_tests_mod = b.createModule(.{
+		.root_source_file = b.path("bench_weighted_predict.zig"),
+		.target = target,
+		.optimize = optimize,
+		.link_libc = true,
+	});
+	linkBrotliModule(weighted_bench_tests_mod, brotli_include_dir, brotli_lib_dir);
 	const weighted_bench_tests = b.addTest(.{
-		.root_module = b.createModule(.{
-			.root_source_file = b.path("bench_weighted_predict.zig"),
-			.target = target,
-			.optimize = optimize,
-		}),
+		.root_module = weighted_bench_tests_mod,
 	});
 
 	const run_weighted_bench_tests = b.addRunArtifact(weighted_bench_tests);
+	const encode_prep_bench_tests_mod = b.createModule(.{
+		.root_source_file = b.path("bench_modular_encode_prep.zig"),
+		.target = target,
+		.optimize = optimize,
+		.link_libc = true,
+	});
+	linkBrotliModule(encode_prep_bench_tests_mod, brotli_include_dir, brotli_lib_dir);
 	const encode_prep_bench_tests = b.addTest(.{
-		.root_module = b.createModule(.{
-			.root_source_file = b.path("bench_modular_encode_prep.zig"),
-			.target = target,
-			.optimize = optimize,
-		}),
+		.root_module = encode_prep_bench_tests_mod,
 	});
 
 	const run_encode_prep_bench_tests = b.addRunArtifact(encode_prep_bench_tests);
+	const encode_codestream_bench_tests_mod = b.createModule(.{
+		.root_source_file = b.path("bench_modular_encode_codestream.zig"),
+		.target = target,
+		.optimize = optimize,
+		.link_libc = true,
+	});
+	linkBrotliModule(encode_codestream_bench_tests_mod, brotli_include_dir, brotli_lib_dir);
 	const encode_codestream_bench_tests = b.addTest(.{
-		.root_module = b.createModule(.{
-			.root_source_file = b.path("bench_modular_encode_codestream.zig"),
-			.target = target,
-			.optimize = optimize,
-		}),
+		.root_module = encode_codestream_bench_tests_mod,
 	});
 
 	const run_encode_codestream_bench_tests = b.addRunArtifact(encode_codestream_bench_tests);

@@ -216,3 +216,99 @@ Two consequences follow, and the second is the important one.
    without implementing VarDCT rendering. This reframes the next slice: the
    verdict/finding contract is not a reporting layer over the decoder, it is a
    decode-independent surface.
+
+## First real detection score, and the false accept it found (2026-07-24)
+
+Peter directed widening the corpus from local sources. Two source surveys came
+back negative and one positive, and the negatives matter:
+
+- `/mnt/Fileserver` (10TB) holds exactly **one** `.jxl` file. JPEG XL is barely
+  deployed in the wild, so found-in-the-wild JXL is not a viable corpus source.
+- `~/Pictures/big-desktops-jxl` holds 529 real `.jxl` files, but `jxlinfo`
+  reports `JPEG bitstream reconstruction data available` on them: they are
+  JPEG-to-JXL lossless recompression, so the underlying codestream is VarDCT.
+  "Lossless" there means lossless relative to the source JPEG, not modular.
+  All of them land in the same unsupported region as `bicycles.jxl`.
+- Minting works. `cjxl -d 0` on PNG sources produces lossless-modular JXL that
+  libjxlz accepts. Over 40 real-world sources the acceptance rate was 27/40;
+  the split is content-driven rather than format- or size-driven, since 2560x1600
+  8-bit RGB lossless appears in both the accepted and rejected buckets.
+
+That unlocked the first detection measurement with specificity established by
+construction. Gate: `tests/cli/mutation_detection_smoke.sh` over
+`tests/corpus/generated/base/` — 15 deduped small bases that libjxlz decodes
+successfully, each mutated into 10 deterministic variants (4 truncations, 5
+single-bit flips, 1 signature corruption). Only the bases are vendored; mutants
+are byte-manipulated at test time, so the corpus is reproducible on any machine
+without vendoring 150 binaries or seeding a PRNG.
+
+Ground truth here is definitional — we know which byte changed — and the pinned
+`djxl v0.11.2` oracle supplies the must-detect/may-ignore split, because a
+mutation landing in entropy-coded data can still decode to a different but
+perfectly valid image. Requiring rejection there would be wrong.
+
+| Measure | Result |
+|---|---|
+| bases accepted by libjxlz | 15 / 15 (a reject-everything build fails this gate) |
+| mutants | 150 (144 must-detect, 6 may-ignore) |
+| must-detect caught | **144 / 144** |
+| false accepts | **0** |
+| over-rejections on may-ignore | 0 |
+
+### The defect this found: unvalidated `brob` metadata
+
+The first run was red with one false accept: a single flipped bit inside the
+`brob` box of `16_moon.jxl` was rejected by the oracle but accepted by libjxlz,
+which produced pixel output **byte-identical to the clean decode**. BMFF box
+parsing confirmed offset 611 lands inside the `brob` payload (bytes 57..682).
+
+The cause was that `OwnedBox.ensureDecompressed` is lazy: it only runs when a
+caller explicitly asks for decompressed boxes, so the ordinary decode path never
+touched the corrupt Brotli stream. Directly corrupting the `brob` payload of
+every vendored base generalized the finding — in both cases where the oracle
+rejected, libjxlz accepted.
+
+Peter's direction was explicit: the goal is strictness and reporting, not
+forgiveness, and Brotli metadata must be validated. `extractCodestreamAndBoxes`
+now validates every `brob` payload as it walks the box stream
+(`validateBrobPayload` in `src/lib/codec/container.zig`). Two Zig unit tests
+cover it, written red first: a corrupt-payload case paired with a well-formed
+positive control, so a reject-every-brob regression cannot satisfy the negative
+case, plus a too-short-to-carry-an-inner-type case. All 15 bases remain
+accepted after the fix, so strictness did not cost specificity.
+
+### Two build/gate defects the brob fix exposed
+
+**1. Benchmark targets were never wired for Brotli.** Making `validateBrobPayload`
+reachable broke the build with `'brotli/decode.h' not found`. This was not a
+pre-existing failure and not caused by the validation logic itself: Zig only
+analyses a function body when it is referenced, so nothing on the benchmark
+paths had ever forced `brotli.zig`'s `@cImport`. All four benchmark modules
+lacked both `linkBrotliModule` and `link_libc` while every other target had
+them. `build.zig` now wires them uniformly. The general lesson is that lazy
+analysis lets build-configuration gaps hide indefinitely until some unrelated
+change makes a call reachable, so "it compiles today" is weak evidence that a
+target is correctly configured.
+
+**2. The canonical gate does not test the configuration we ship.** Two
+`capi_root` tests — `JxlEncoder encodes two animation frames with a staged
+selection mask` and `... staged subsampled depth channel` — pass under `./test`
+and fail under native `zig build test`, both expecting
+`.JXL_ENC_NEED_MORE_OUTPUT` and getting `.JXL_ENC_ERROR`.
+
+The cause is that the Nix check derivation builds
+`-ODebug -target x86_64-linux-gnu -mcpu baseline`, while `./build` ships
+ReleaseFast with native CPU features. The gate therefore certifies a build
+configuration no user runs.
+
+This was confirmed empirically rather than argued: stashing only
+`src/lib/codec/container.zig` and `build.zig`, re-running natively, and
+observing 483 pass / 2 fail at the pre-change state — the same two failures,
+with the count differing only by the two container tests added in this session.
+Both files were verified byte-identical after restore.
+
+Neither is fixed here. Both are recorded in `PLAN.md`. The second is the more
+serious of the two: a divergence between Debug/baseline and ReleaseFast/native
+is exactly the shape of an optimizer-exposed undefined-behaviour or
+SIMD-feature-dependent defect, and no amount of green in the current gate would
+surface it.

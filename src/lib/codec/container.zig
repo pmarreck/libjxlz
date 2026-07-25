@@ -176,6 +176,22 @@ pub fn extractCodestream(allocator: std.mem.Allocator, container_bytes: []const 
 	return allocator.dupe(u8, parsed.codestream);
 }
 
+/// Verifies that a `brob` box actually carries decodable Brotli-compressed
+/// metadata, rejecting the container when it does not.
+///
+/// The payload is a 4-byte inner box type followed by a Brotli stream. Skipping
+/// this check lets a file whose compressed metadata is corrupt still decode
+/// successfully whenever the pixel payload happens to survive, which is a false
+/// accept: upstream libjxl rejects such files, and libjxlz's contract is
+/// strictness and reporting rather than forgiveness. Discovered by mutation
+/// sweep on 2026-07-24, where a single flipped bit inside a `brob` payload
+/// produced pixel output byte-identical to the clean decode.
+fn validateBrobPayload(allocator: std.mem.Allocator, payload: []const u8) !void {
+	if (payload.len < 4) return error.GenericError;
+	const decompressed = try brotli.decompress(allocator, payload[4..]);
+	allocator.free(decompressed);
+}
+
 /// Extracts the codestream plus the current public BMFF box stream in original
 /// order so the C API can emit `JXL_DEC_BOX` for both metadata and core boxes.
 pub fn extractCodestreamAndBoxes(allocator: std.mem.Allocator, container_bytes: []const u8) !ParsedContainer {
@@ -217,6 +233,9 @@ pub fn extractCodestreamAndBoxes(allocator: std.mem.Allocator, container_bytes: 
 			try appendOwnedBox(&owned_boxes, allocator, header.box_type, header.raw_size, payload);
 			try partial.appendSlice(allocator, payload[4..]);
 		} else {
+			if (std.mem.eql(u8, &header.box_type, "brob")) {
+				try validateBrobPayload(allocator, payload);
+			}
 			try appendOwnedBox(&owned_boxes, allocator, header.box_type, header.raw_size, payload);
 		}
 
@@ -338,4 +357,60 @@ test "extractCodestream handles extended-size BMFF boxes" {
 	defer parsed.deinit(testing.allocator);
 
 	try testing.expectEqualSlices(u8, &codestream, parsed.codestream);
+}
+
+test "extractCodestreamAndBoxes validates brob payload integrity" {
+	const codestream = [_]u8{ 0xFF, 0x0A, 0x01, 0x02 };
+
+	const compressed = try brotli.compress(testing.allocator, "<x>metadata</x>");
+	defer testing.allocator.free(compressed);
+	try testing.expect(compressed.len > 2);
+
+	var valid_payload: std.ArrayListUnmanaged(u8) = .empty;
+	defer valid_payload.deinit(testing.allocator);
+	try valid_payload.appendSlice(testing.allocator, "xml ");
+	try valid_payload.appendSlice(testing.allocator, compressed);
+
+	// Positive control first: a well-formed brob must still parse, so a
+	// reject-every-brob regression cannot satisfy the negative case below.
+	const valid_wrapped = try wrapCodestreamWithBoxes(testing.allocator, &codestream, &.{
+		.{ .box_type = .{ 'b', 'r', 'o', 'b' }, .contents = valid_payload.items },
+	});
+	defer testing.allocator.free(valid_wrapped);
+
+	var valid_parsed = try extractCodestreamAndBoxes(testing.allocator, valid_wrapped);
+	defer valid_parsed.deinit(testing.allocator);
+	try testing.expectEqualSlices(u8, &codestream, valid_parsed.codestream);
+
+	// A truncated brotli stream is not decodable metadata. Upstream rejects the
+	// whole file, and strictness here is the point: corrupt embedded metadata is
+	// a reportable defect, not something to silently skip because the pixels
+	// happen to decode.
+	var truncated_payload: std.ArrayListUnmanaged(u8) = .empty;
+	defer truncated_payload.deinit(testing.allocator);
+	try truncated_payload.appendSlice(testing.allocator, "xml ");
+	try truncated_payload.appendSlice(testing.allocator, compressed[0 .. compressed.len - 2]);
+
+	const corrupt_wrapped = try wrapCodestreamWithBoxes(testing.allocator, &codestream, &.{
+		.{ .box_type = .{ 'b', 'r', 'o', 'b' }, .contents = truncated_payload.items },
+	});
+	defer testing.allocator.free(corrupt_wrapped);
+
+	try testing.expectError(
+		error.GenericError,
+		extractCodestreamAndBoxes(testing.allocator, corrupt_wrapped),
+	);
+}
+
+test "extractCodestreamAndBoxes rejects a brob box too short to carry an inner type" {
+	const codestream = [_]u8{ 0xFF, 0x0A, 0x03, 0x04 };
+	const wrapped = try wrapCodestreamWithBoxes(testing.allocator, &codestream, &.{
+		.{ .box_type = .{ 'b', 'r', 'o', 'b' }, .contents = "xml" },
+	});
+	defer testing.allocator.free(wrapped);
+
+	try testing.expectError(
+		error.GenericError,
+		extractCodestreamAndBoxes(testing.allocator, wrapped),
+	);
 }
