@@ -1,0 +1,24 @@
+# Labeled valid/corrupt JXL corpus for the libjxlz-native confusion matrix.
+#
+# Provenance: copied byte-for-byte from Peter's independently labeled ground-truth
+# set at validate_gui/ground_truth_examples/{jxl,corrupted/jxl} on 2026-07-24.
+# The labels were authored outside this repository, which is what makes them an
+# independent oracle rather than a libjxlz self-assessment.
+#
+# Columns: relpath<TAB>label<TAB>base<TAB>expected
+#   label    good | corrupt
+#   base     clean fixture a corrupt case was derived from, or - when unpaired
+#   expected accept | reject | unsupported  (see tests/lib/labeled_corpus_matrix.bash)
+tests/corpus/labeled/good/alpha_premultiplied.jxl	good	-	unsupported
+tests/corpus/labeled/good/animation_icos4d.jxl	good	-	unsupported
+tests/corpus/labeled/good/bicycles.jxl	good	-	unsupported
+tests/corpus/labeled/good/delta_palette.jxl	good	-	accept
+tests/corpus/labeled/good/from_gif.jxl	good	-	accept
+tests/corpus/labeled/good/grayscale.jxl	good	-	unsupported
+tests/corpus/labeled/good/patches_lossless.jxl	good	-	unsupported
+tests/corpus/labeled/good/sunset_logo.jxl	good	-	unsupported
+tests/corpus/labeled/corrupt/bicycles_corrupt_1.jxl	corrupt	tests/corpus/labeled/good/bicycles.jxl	reject
+tests/corpus/labeled/corrupt/bicycles_corrupt_2.jxl	corrupt	tests/corpus/labeled/good/bicycles.jxl	reject
+tests/corpus/labeled/corrupt/bicycles_corrupt_3.jxl	corrupt	tests/corpus/labeled/good/bicycles.jxl	reject
+tests/corpus/labeled/corrupt/bicycles_corrupt_4.jxl	corrupt	tests/corpus/labeled/good/bicycles.jxl	reject
+tests/corpus/labeled/corrupt/bicycles_corrupt_5.jxl	corrupt	tests/corpus/labeled/good/bicycles.jxl	reject

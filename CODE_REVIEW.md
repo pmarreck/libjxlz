@@ -112,3 +112,107 @@ The gate repair is ready to ship and review. The next strict-parser work remains
 separately blocked on a stable verdict/finding contract, strict BMFF envelope
 validation, bounded input ownership, full codestream completion semantics, and
 resource controls. None of that broader architecture is included here.
+
+## Measured libjxlz confusion matrix (2026-07-24, first native measurement)
+
+Peter released the strict-validator hold and directed measurement before
+architecture. This is the first confusion matrix produced by `libjxlz` itself.
+Every earlier number in this program (8/0 good, 4/1 corrupt, sniper 87 /
+bolter 97 / shotgun 100) was measured on **stock `libjxl` through Validate** and
+remains baseline/oracle evidence only.
+
+Gate: `tests/cli/labeled_corpus_matrix_smoke.sh`
+Corpus: `tests/corpus/labeled/`, vendored byte-for-byte from Peter's
+independently labeled `validate_gui/ground_truth_examples/` set. The labels were
+authored outside this repository, which is what makes them an independent oracle
+rather than a libjxlz self-assessment.
+
+| Bucket | n | Result |
+|---|---|---|
+| labeled-good | 8 | accepted 2, unsupported-valid 6, oracle-disagreement 0 |
+| labeled-corrupt | 5 | rejected 5, falsely accepted 0 |
+| discriminating detections | — | **0 of 5** |
+
+### The corrupt score is vacuous, and that is the finding
+
+`libjxlz` rejects 5/5 labeled-corrupt fixtures, which in isolation looks like a
+strictness win over stock `libjxl` — stock `libjxl` accepts
+`bicycles_corrupt_5.jxl`. It is not a win. `libjxlz` also rejects the clean
+`bicycles.jxl` base image, and every rejection in the entire corpus — valid and
+corrupt alike — emits the identical opaque string `JxlDecoderProcessInput
+failed`. A classifier that rejects everything scores 100% on any corrupt corpus;
+the specificity side of the matrix (6 of 8 *good* files rejected) is what
+exposes it.
+
+The gate therefore pairs each corrupt fixture with the clean base it was derived
+from and counts a rejection as *discriminating* only when that base is accepted.
+The recorded count is **0**, and the runner prints an explicit
+`NOT YET DISCRIMINATING` banner whenever rejections exist with zero
+discrimination, so the matrix cannot be quoted as a detection result.
+
+### Why the buckets cannot be gamed
+
+- A `good` fixture may not be recorded as a bare `reject`; it must use
+  `unsupported`, which the runner only allows when the pinned `djxl v0.11.2`
+  oracle accepts the stream. A genuinely invalid file cannot be parked there.
+- A `corrupt` fixture may not be recorded as `unsupported` at all.
+- Case count and discriminating count are declared in the gate script, not the
+  manifest, so a truncated or partially-read manifest cannot pass as a full
+  sweep.
+- The gate runs pure classifier and manifest-validator negative controls before
+  the sweep. Both control groups were mutation-tested on 2026-07-24: forcing the
+  classifier to always return `accept` and disabling the good/`reject` manifest
+  guard each killed the run at the control stage.
+
+### What this measurement makes falsifiable next
+
+The 6 unsupported-valid files are the honest coverage denominator for the
+decoder, and the 0 discriminating detections are the honest starting score for
+strictness. Both move only when real capability lands. Any future claim that
+`libjxlz` detects corruption must raise the discriminating count, which
+mechanically requires accepting the clean base first.
+
+Scope note: this gate runs under canonical `./test`, not under the narrower
+`checks.x86_64-linux.test` derivation that Mechatron builds, because it needs the
+pinned external `djxl` oracle. That is the same pre-existing constraint the other
+ground-truth corpus gates carry.
+
+### The corpus itself is the binding constraint, and the reason is structural
+
+`jxlinfo` on each labeled-good fixture explains the whole matrix:
+
+| Fixture | Codec mode | libjxlz |
+|---|---|---|
+| `delta_palette`, `from_gif` | lossless modular RGB / RGBA | accepted |
+| `bicycles`, `grayscale`, `alpha_premultiplied` | lossy VarDCT | unsupported-valid |
+| `sunset_logo`, `patches_lossless` | lossless with patches / layers | unsupported-valid |
+| `animation_icos4d` | animation with blending | unsupported-valid |
+
+The six unsupported files are three VarDCT, two patches, and one animation
+blending case, which matches this review's previously stated decoder gaps
+exactly.
+
+All five labeled-corrupt fixtures are derived from `bicycles.jxl`, a VarDCT
+image. The entire corrupt corpus therefore sits inside the region libjxlz does
+not implement at all: effective corpus diversity of one, and zero measurable
+detection by construction. No amount of validator work can raise the
+discriminating count on *this* corpus without VarDCT decode.
+
+Two consequences follow, and the second is the important one.
+
+1. Corpus widening must derive corrupt variants from streams libjxlz can already
+   accept — lossless modular — so detection becomes measurable now rather than
+   after Phase 4. Peter's `/mnt/Fileserver` NAS holds 21,420 PNG, 47,125 JPEG,
+   and 7,791 GIF sources (and exactly one pre-existing `.jxl`), so `cjxl` can
+   mint a large, content-diverse valid corpus, and byte-level mutation of those
+   gives corrupt cases whose ground truth is known by construction rather than
+   by label.
+2. **Validation must not be bound to decode capability.** Today the only verdict
+   libjxlz exposes is "did a full decode succeed," which conflates *cannot
+   render* with *invalid*. That conflation is what makes the corrupt score
+   vacuous. A strict validator should be able to parse and structurally validate
+   a VarDCT stream — rejecting `bicycles_corrupt_N.jxl` on an enforceable
+   invariant while classifying clean `bicycles.jxl` as unsupported-valid —
+   without implementing VarDCT rendering. This reframes the next slice: the
+   verdict/finding contract is not a reporting layer over the decoder, it is a
+   decode-independent surface.
