@@ -312,3 +312,68 @@ serious of the two: a divergence between Debug/baseline and ReleaseFast/native
 is exactly the shape of an optimizer-exposed undefined-behaviour or
 SIMD-feature-dependent defect, and no amount of green in the current gate would
 surface it.
+
+## Root-cause progress on the ReleaseFast-only encoder failure (2026-07-24)
+
+Peter flagged the Debug/ReleaseFast gate gap as the important one, so the two
+failing `capi_root` animation tests were characterized rather than left as a
+note. Nothing here is fixed; this section exists so the evidence is not lost.
+
+### It is not the optimizer alone, and not a safety-check difference
+
+| Mode | Safety checks | Optimization | Result |
+|---|---|---|---|
+| Debug | on | none | pass |
+| ReleaseSafe | on | aggressive | pass |
+| ReleaseSmall | **off** | size | pass |
+| **ReleaseFast** | **off** | **aggressive** | **fail** (reproduced twice) |
+
+`ReleaseSmall` also disables safety checks and passes, so "safety off" is not
+the trigger. `ReleaseSafe` keeps bounds and overflow checking on and passes, so
+the defect is not an out-of-bounds access or an integer overflow — either would
+panic there. Only the combination in `ReleaseFast` fails, which is the
+configuration `./build` ships.
+
+### The failure is a stale-state read, not an uninitialized read
+
+Temporary instrumentation (applied, captured, and reverted with the source
+verified byte-identical afterwards) established:
+
+- `JxlEncoderProcessOutput` returns `JXL_ENC_ERROR` because
+  `finalizeSimpleEncode` fails with `error.InvalidArgs`.
+- The specific site is `src/capi_root.zig:703`,
+  `if (has_staged_alpha == has_interleaved_alpha) return error.InvalidArgs;`,
+  which only executes inside `if (has_alpha)`.
+- Observed state at the moment of failure:
+  `alpha_bits=8 num_extra=1 img_channels=4 num_color=3 staged=true interleaved=true`.
+
+That state does not belong to the test that failed. `JxlEncoder encodes two
+animation frames with a staged selection mask` sets `num_color_channels=3` and
+`num_extra_channels=1` where the single extra channel is a **selection mask**,
+passes a **3-channel** pixel format, and never sets `alpha_bits` at all. It
+should therefore compute `has_alpha == false` and never reach line 703.
+
+An earlier hypothesis that this was an uninitialized-memory read was checked and
+**discarded**: `EncoderImpl.pending_extra_channels` is default-initialized
+(`[_]EncoderPendingExtraChannel{.{}} ** 256`), not `undefined`.
+
+The remaining explanation consistent with all four build modes is that
+`impl.basic_info` and `frame.image_format` are being read through a stale or
+reused pointer, picking up a previous encoder's state. `ReleaseFast` recycles
+freed heap memory sooner and lays it out differently, which is exactly when such
+a read starts returning plausible-but-wrong values instead of poison.
+
+If that holds, this is a memory-safety defect in the shipped configuration, and
+the two failing tests are the symptom rather than the disease.
+
+### Next steps, in order
+
+1. Wire a `-Dtest-filter` option into `build.zig`. The compiled test binary
+   rejects `--test-filter` (it is a build-system flag), so single-test isolation
+   is currently impossible — and isolation is the decisive experiment: if the
+   test passes alone, cross-test contamination is confirmed.
+2. Audit the lifetime of `EncoderImpl` and of the queued-frame `extra_buffers`
+   against `JxlEncoderDestroy` and the frame-settings objects.
+3. Only after the root cause is known, add a ReleaseFast check derivation to the
+   flake so the gate covers the shipped configuration. Adding it first would
+   turn the canonical suite red without explaining why.
