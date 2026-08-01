@@ -41,15 +41,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      # The ground-truth decode corpus lives in the upstream libjxl `testdata`
-      # submodule, which actions/checkout does not fetch by default. Without it
-      # djxl reports "couldn't load ..." and 7 oracle suites fail. Only this one
-      # submodule is initialised; the others (brotli, googletest, libpng, ...)
-      # are not needed because the Zig build does not consume them. Note the
-      # .gitmodules entry is named "third_party/testdata" while its path is
-      # "testdata", so it must be selected by path.
-      - name: Fetch ground-truth corpus submodule
-        run: git submodule update --init testdata
+      # actions/checkout does not fetch submodules, and two suites need them:
+      # the ground-truth decode corpus lives in the upstream libjxl `testdata`
+      # submodule (without it djxl reports "couldn't load ..." and 7 oracle
+      # suites fail), and capi_compressed_icc_cross_oracle.sh configures an
+      # upstream CMake build that requires highway ("Could NOT find HWY") plus
+      # its sibling third_party checkouts. Initialising all top-level submodules
+      # is ~144 MB and costs about a minute; picking them one at a time costs an
+      # 8-minute CI round trip per missing dependency. Non-recursive on purpose:
+      # nested submodules are not consumed.
+      - name: Fetch submodules
+        run: git submodule update --init
 
       - name: Install Nix
         uses: cachix/install-nix-action@v31
