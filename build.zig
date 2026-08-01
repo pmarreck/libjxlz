@@ -179,6 +179,60 @@ pub fn build(b: *std.Build) void {
 	const cjxlz_step = b.step("cjxlz", "Build the C encoder CLI that dogfoods the C FFI");
 	cjxlz_step.dependOn(&install_cjxlz.step);
 
+	// Unified subcommand front end. It compiles the two single-purpose CLI
+	// translation units alongside its own dispatcher and calls their
+	// `djxlz_main`/`cjxlz_main` entry points, so decode and encode have exactly
+	// one implementation rather than a fork. Every other symbol in those files
+	// is already `static`, so there is nothing to collide.
+	const jxlz_mod = b.createModule(.{
+		.root_source_file = b.path("src/cli/jxlz_root.zig"),
+		.target = target,
+		.optimize = optimize,
+		.link_libc = true,
+	});
+	jxlz_mod.addIncludePath(b.path("include"));
+	jxlz_mod.addIncludePath(b.path("lib/include"));
+	jxlz_mod.addCSourceFiles(.{
+		.files = &.{ "src/cli/jxlz.c", "src/cli/djxlz.c", "src/cli/cjxlz.c" },
+		.flags = &.{"-std=c11"},
+	});
+	jxlz_mod.linkLibrary(capi_lib);
+	linkBrotliModule(jxlz_mod, brotli_include_dir, brotli_lib_dir);
+	if (png_input) {
+		jxlz_mod.addCMacro("JXLZ_HAVE_PNG_INPUT", "1");
+		jxlz_mod.linkSystemLibrary("libpng", .{ .use_pkg_config = .force });
+	}
+	if (gif_input) {
+		jxlz_mod.addCMacro("JXLZ_HAVE_GIF_INPUT", "1");
+	}
+	if (gif_output) {
+		jxlz_mod.addCMacro("JXLZ_HAVE_GIF_OUTPUT", "1");
+	}
+	if (gif_input or gif_output) {
+		if (gif_include_dir) |path| {
+			jxlz_mod.addIncludePath(.{ .cwd_relative = path });
+		}
+		if (gif_lib_dir) |path| {
+			jxlz_mod.addLibraryPath(.{ .cwd_relative = path });
+		}
+		jxlz_mod.linkSystemLibrary("gif", .{});
+	}
+	if (target.result.os.tag != .windows and png_input) {
+		jxlz_mod.linkSystemLibrary("m", .{});
+	}
+	if (optimize == .Debug) {
+		jxlz_mod.addCMacro("JXLZ_DEBUG_BUILD", "1");
+	}
+	const jxlz = b.addExecutable(.{
+		.name = "jxlz",
+		.root_module = jxlz_mod,
+	});
+
+	const install_jxlz = b.addInstallArtifact(jxlz, .{});
+	b.getInstallStep().dependOn(&install_jxlz.step);
+	const jxlz_step = b.step("jxlz", "Build the unified subcommand CLI");
+	jxlz_step.dependOn(&install_jxlz.step);
+
 	// Benchmark targets reach the codec through the same modules as the library,
 	// so they need Brotli wiring too. Zig only analyses a function body when it
 	// is referenced, which previously hid this: nothing on the benchmark paths
