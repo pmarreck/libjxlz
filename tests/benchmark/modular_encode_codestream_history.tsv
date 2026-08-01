@@ -1,64 +1,64 @@
-timestamp_est	scenario	repeat	our_mean_s
-2026-03-09 09:00:47 PM EST	modular_encode_codestream_rgb_multigroup	1	0.011345286750000001
-2026-03-09 09:04:37 PM EST	modular_encode_codestream_rgb_multigroup	1	0.010459021
-2026-03-09 09:05:07 PM EST	modular_encode_codestream_rgb_multigroup	1	0.0108074115
-2026-03-09 09:25:06 PM EST	modular_encode_codestream_rgb_multigroup	1	0.01027039075
-2026-03-09 09:32:58 PM EST	modular_encode_codestream_rgb_multigroup	1	0.00999916675
-2026-03-09 09:37:41 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009813802250000002
-2026-03-09 09:43:17 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009591989750000002
-2026-03-10 05:16:14 PM EST	modular_encode_codestream_rgb_multigroup	1	0.008954963375
-2026-03-10 05:16:50 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009363567750000001
-2026-03-15 09:37:36 AM EST	modular_encode_codestream_rgb_multigroup	1	0.008878265750000001
-2026-03-15 09:38:19 AM EST	modular_encode_codestream_rgb_multigroup	1	0.008783588750000001
-2026-03-16 09:32:37 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009482546750000001
-2026-03-16 09:33:12 PM EST	modular_encode_codestream_rgb_multigroup	1	0.00998386975
-2026-03-16 09:34:02 PM EST	modular_encode_codestream_rgb_multigroup	1	0.010123604250000001
-2026-03-16 10:21:44 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009936822875000001
-2026-03-27 02:38:19 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009559646125
-2026-03-27 02:56:24 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009957369750000002
-2026-03-27 04:21:47 PM EST	modular_encode_codestream_rgb_multigroup	1	0.010301609250000001
-2026-03-27 04:33:17 PM EST	modular_encode_codestream_rgb_multigroup	1	0.010297015500000001
-2026-03-28 06:28:06 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009637619875000001
-2026-03-28 06:28:44 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009420505249999999
-2026-03-28 09:57:25 PM EST	modular_encode_codestream_rgb_multigroup	1	0.010050073
-2026-03-28 10:06:16 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009882823249999999
-2026-03-28 10:17:56 PM EST	modular_encode_codestream_rgb_multigroup	1	0.010862010375000002
-2026-03-28 10:18:49 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009853796750000001
-2026-03-28 10:19:34 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009708078125
-2026-03-30 05:21:26 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009334291625000001
-2026-03-30 05:39:34 PM EST	modular_encode_codestream_rgb_multigroup	1	0.00934890625
-2026-03-31 08:19:40 AM EST	modular_encode_codestream_rgb_multigroup	1	0.008846531250000001
-2026-03-31 08:20:40 AM EST	modular_encode_codestream_rgb_multigroup	1	0.009225265750000001
-2026-03-31 08:29:09 AM EST	modular_encode_codestream_rgb_multigroup	1	0.009094807250000001
-2026-03-31 08:38:46 AM EST	modular_encode_codestream_rgb_multigroup	1	0.009186921625
-2026-03-31 08:44:34 AM EST	modular_encode_codestream_rgb_multigroup	1	0.009157171875
-2026-03-31 08:48:50 AM EST	modular_encode_codestream_rgb_multigroup	1	0.009337572875
-2026-03-31 11:07:47 AM EST	modular_encode_codestream_rgb_multigroup	1	0.0095080365
-2026-03-31 11:18:14 AM EST	modular_encode_codestream_rgb_multigroup	1	0.010371401250000002
-2026-03-31 11:21:31 AM EST	modular_encode_codestream_rgb_multigroup	1	0.009636036375000002
-2026-03-31 11:22:34 AM EST	modular_encode_codestream_rgb_multigroup	1	0.009318062375
-2026-03-31 12:01:54 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009748947875000002
-2026-03-31 01:26:15 PM EST	modular_encode_codestream_rgb_multigroup	1	0.00950554675
-2026-03-31 01:26:20 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009629880125000002
-2026-03-31 01:38:52 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009356625250000002
-2026-03-31 01:47:53 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009493708250000002
-2026-03-31 06:15:02 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009488333375
-2026-03-31 08:55:24 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009394244875000003
-2026-03-31 09:03:58 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009132859250000002
-2026-04-01 12:33:59 PM EST	modular_encode_codestream_rgb_multigroup	1	0.00921229175
-2026-04-01 12:43:02 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009396557500000001
-2026-04-01 01:12:58 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009413281250000002
-2026-04-01 01:35:38 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009440265625
-2026-04-01 01:41:35 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009285838625
-2026-04-01 03:26:25 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009430500125000001
-2026-04-01 04:23:21 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009358666875000001
-2026-04-01 05:20:47 PM EST	modular_encode_codestream_rgb_multigroup	1	0.00963386475
-2026-04-02 01:31:33 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009874536375000003
-2026-04-02 01:55:23 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009942755250000001
-2026-04-02 04:50:56 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009449021
-2026-04-02 05:06:17 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009690562500000001
-2026-04-14 10:06:53 AM EST	modular_encode_codestream_rgb_multigroup	1	0.009228656375
-2026-04-14 10:18:11 AM EST	modular_encode_codestream_rgb_multigroup	1	0.00908240625
-2026-04-14 10:25:38 AM EST	modular_encode_codestream_rgb_multigroup	1	0.009081411125000001
-2026-04-14 12:07:20 PM EST	modular_encode_codestream_rgb_multigroup	1	0.0090798855
-2026-04-15 03:41:16 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009282426875000001
+timestamp_est	scenario	repeat	our_mean_s	build_mode	machine_id
+2026-03-09 09:00:47 PM EST	modular_encode_codestream_rgb_multigroup	1	0.011345286750000001	ReleaseFast	unknown
+2026-03-09 09:04:37 PM EST	modular_encode_codestream_rgb_multigroup	1	0.010459021	ReleaseFast	unknown
+2026-03-09 09:05:07 PM EST	modular_encode_codestream_rgb_multigroup	1	0.0108074115	ReleaseFast	unknown
+2026-03-09 09:25:06 PM EST	modular_encode_codestream_rgb_multigroup	1	0.01027039075	ReleaseFast	unknown
+2026-03-09 09:32:58 PM EST	modular_encode_codestream_rgb_multigroup	1	0.00999916675	ReleaseFast	unknown
+2026-03-09 09:37:41 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009813802250000002	ReleaseFast	unknown
+2026-03-09 09:43:17 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009591989750000002	ReleaseFast	unknown
+2026-03-10 05:16:14 PM EST	modular_encode_codestream_rgb_multigroup	1	0.008954963375	ReleaseFast	unknown
+2026-03-10 05:16:50 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009363567750000001	ReleaseFast	unknown
+2026-03-15 09:37:36 AM EST	modular_encode_codestream_rgb_multigroup	1	0.008878265750000001	ReleaseFast	unknown
+2026-03-15 09:38:19 AM EST	modular_encode_codestream_rgb_multigroup	1	0.008783588750000001	ReleaseFast	unknown
+2026-03-16 09:32:37 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009482546750000001	ReleaseFast	unknown
+2026-03-16 09:33:12 PM EST	modular_encode_codestream_rgb_multigroup	1	0.00998386975	ReleaseFast	unknown
+2026-03-16 09:34:02 PM EST	modular_encode_codestream_rgb_multigroup	1	0.010123604250000001	ReleaseFast	unknown
+2026-03-16 10:21:44 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009936822875000001	ReleaseFast	unknown
+2026-03-27 02:38:19 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009559646125	ReleaseFast	unknown
+2026-03-27 02:56:24 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009957369750000002	ReleaseFast	unknown
+2026-03-27 04:21:47 PM EST	modular_encode_codestream_rgb_multigroup	1	0.010301609250000001	ReleaseFast	unknown
+2026-03-27 04:33:17 PM EST	modular_encode_codestream_rgb_multigroup	1	0.010297015500000001	ReleaseFast	unknown
+2026-03-28 06:28:06 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009637619875000001	ReleaseFast	unknown
+2026-03-28 06:28:44 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009420505249999999	ReleaseFast	unknown
+2026-03-28 09:57:25 PM EST	modular_encode_codestream_rgb_multigroup	1	0.010050073	ReleaseFast	unknown
+2026-03-28 10:06:16 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009882823249999999	ReleaseFast	unknown
+2026-03-28 10:17:56 PM EST	modular_encode_codestream_rgb_multigroup	1	0.010862010375000002	ReleaseFast	unknown
+2026-03-28 10:18:49 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009853796750000001	ReleaseFast	unknown
+2026-03-28 10:19:34 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009708078125	ReleaseFast	unknown
+2026-03-30 05:21:26 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009334291625000001	ReleaseFast	unknown
+2026-03-30 05:39:34 PM EST	modular_encode_codestream_rgb_multigroup	1	0.00934890625	ReleaseFast	unknown
+2026-03-31 08:19:40 AM EST	modular_encode_codestream_rgb_multigroup	1	0.008846531250000001	ReleaseFast	unknown
+2026-03-31 08:20:40 AM EST	modular_encode_codestream_rgb_multigroup	1	0.009225265750000001	ReleaseFast	unknown
+2026-03-31 08:29:09 AM EST	modular_encode_codestream_rgb_multigroup	1	0.009094807250000001	ReleaseFast	unknown
+2026-03-31 08:38:46 AM EST	modular_encode_codestream_rgb_multigroup	1	0.009186921625	ReleaseFast	unknown
+2026-03-31 08:44:34 AM EST	modular_encode_codestream_rgb_multigroup	1	0.009157171875	ReleaseFast	unknown
+2026-03-31 08:48:50 AM EST	modular_encode_codestream_rgb_multigroup	1	0.009337572875	ReleaseFast	unknown
+2026-03-31 11:07:47 AM EST	modular_encode_codestream_rgb_multigroup	1	0.0095080365	ReleaseFast	unknown
+2026-03-31 11:18:14 AM EST	modular_encode_codestream_rgb_multigroup	1	0.010371401250000002	ReleaseFast	unknown
+2026-03-31 11:21:31 AM EST	modular_encode_codestream_rgb_multigroup	1	0.009636036375000002	ReleaseFast	unknown
+2026-03-31 11:22:34 AM EST	modular_encode_codestream_rgb_multigroup	1	0.009318062375	ReleaseFast	unknown
+2026-03-31 12:01:54 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009748947875000002	ReleaseFast	unknown
+2026-03-31 01:26:15 PM EST	modular_encode_codestream_rgb_multigroup	1	0.00950554675	ReleaseFast	unknown
+2026-03-31 01:26:20 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009629880125000002	ReleaseFast	unknown
+2026-03-31 01:38:52 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009356625250000002	ReleaseFast	unknown
+2026-03-31 01:47:53 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009493708250000002	ReleaseFast	unknown
+2026-03-31 06:15:02 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009488333375	ReleaseFast	unknown
+2026-03-31 08:55:24 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009394244875000003	ReleaseFast	unknown
+2026-03-31 09:03:58 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009132859250000002	ReleaseFast	unknown
+2026-04-01 12:33:59 PM EST	modular_encode_codestream_rgb_multigroup	1	0.00921229175	ReleaseFast	unknown
+2026-04-01 12:43:02 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009396557500000001	ReleaseFast	unknown
+2026-04-01 01:12:58 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009413281250000002	ReleaseFast	unknown
+2026-04-01 01:35:38 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009440265625	ReleaseFast	unknown
+2026-04-01 01:41:35 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009285838625	ReleaseFast	unknown
+2026-04-01 03:26:25 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009430500125000001	ReleaseFast	unknown
+2026-04-01 04:23:21 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009358666875000001	ReleaseFast	unknown
+2026-04-01 05:20:47 PM EST	modular_encode_codestream_rgb_multigroup	1	0.00963386475	ReleaseFast	unknown
+2026-04-02 01:31:33 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009874536375000003	ReleaseFast	unknown
+2026-04-02 01:55:23 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009942755250000001	ReleaseFast	unknown
+2026-04-02 04:50:56 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009449021	ReleaseFast	unknown
+2026-04-02 05:06:17 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009690562500000001	ReleaseFast	unknown
+2026-04-14 10:06:53 AM EST	modular_encode_codestream_rgb_multigroup	1	0.009228656375	ReleaseFast	unknown
+2026-04-14 10:18:11 AM EST	modular_encode_codestream_rgb_multigroup	1	0.00908240625	ReleaseFast	unknown
+2026-04-14 10:25:38 AM EST	modular_encode_codestream_rgb_multigroup	1	0.009081411125000001	ReleaseFast	unknown
+2026-04-14 12:07:20 PM EST	modular_encode_codestream_rgb_multigroup	1	0.0090798855	ReleaseFast	unknown
+2026-04-15 03:41:16 PM EST	modular_encode_codestream_rgb_multigroup	1	0.009282426875000001	ReleaseFast	unknown

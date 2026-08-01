@@ -28,6 +28,46 @@ ENCODE_COMPILE_LOG="${TMP_BM_DIR}/compile_encode.log"
 REF_BUILD_DIR="build-cpp-bm"
 PACKAGE_OUT=""
 
+# The optimize mode packages.default is built with. Benchmark rows are only ever
+# compared against rows from the same mode and machine: mixing a ReleaseSafe
+# measurement into a ReleaseFast series produces a step change that reads as a
+# regression but is really a different binary. All rows recorded before
+# 2026-08-01 predate the ReleaseSafe switch and are backfilled as ReleaseFast.
+BUILD_MODE="ReleaseSafe"
+
+# Stable per-machine identifier so a new machine seeds its own baseline instead
+# of failing the build against someone else's timings. Override the host portion
+# with LIBJXLZ_BENCH_MACHINE when a machine is renamed.
+machine_id() {
+	local host arch cpu
+	host="${LIBJXLZ_BENCH_MACHINE:-$(uname -n)}"
+	arch="$(uname -m)"
+	cpu="$(awk -F': ' '/^model name/ { print $2; exit }' /proc/cpuinfo 2>/dev/null)"
+	if [ -z "${cpu}" ]; then
+		cpu="$(sysctl -n machdep.cpu.brand_string 2>/dev/null)"
+	fi
+	if [ -z "${cpu}" ]; then
+		cpu="unknown-cpu"
+	fi
+	printf '%s|%s|%s' "${host}" "${arch}" "${cpu}" | sha256sum | cut -c1-12
+}
+MACHINE_ID="$(machine_id)"
+
+# Benchmarking a debug build wastes hours and produces meaningless numbers, and
+# MUTE_DEBUG_STATUS would hide the very banner that warns about it. Refuse both.
+assert_not_debug_build() {
+	if [ -n "${MUTE_DEBUG_STATUS-}" ]; then
+		echo "refusing to benchmark with MUTE_DEBUG_STATUS set: it suppresses the debug-build banner" >&2
+		exit 1
+	fi
+	local banner
+	banner="$("${PACKAGE_OUT}/bin/djxlz" --about 2>&1 >/dev/null)"
+	if printf '%s' "${banner}" | grep -q 'DEBUG BUILD'; then
+		echo "refusing to benchmark a debug build of packages.default" >&2
+		exit 1
+	fi
+}
+
 mkdir -p "${TMP_BM_DIR}"
 
 compile_ours() {
@@ -35,6 +75,7 @@ compile_ours() {
 		cat "${OUR_COMPILE_LOG}"
 		exit 1
 	fi
+	assert_not_debug_build
 	if ! clang \
 		-std=c11 \
 		-O3 \
@@ -113,11 +154,15 @@ benchmark_scenario() {
 	STAMP="$(TZ=America/New_York date '+%Y-%m-%d %I:%M:%S %p EST')"
 
 	if [ ! -f "${HISTORY}" ]; then
-		printf 'timestamp_est\tscenario\trepeat\tour_mean_s\tref_mean_s\tref_over_our\n' > "${HISTORY}"
+		printf 'timestamp_est\tscenario\trepeat\tour_mean_s\tref_mean_s\tref_over_our\tbuild_mode\tmachine_id\n' > "${HISTORY}"
 	fi
 
-	PREV_LINE="$(awk -F '\t' -v scenario="${SCENARIO_NAME}" 'NR > 1 && $2 == scenario { last = $0 } END { print last }' "${HISTORY}")"
-	printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${STAMP}" "${SCENARIO_NAME}" "${REPEAT_COUNT}" "${OUR_MEAN}" "${REF_MEAN}" "${SPEEDUP}" >> "${HISTORY}"
+	# Compare only against this machine's last run in this build mode. A machine
+	# or mode with no prior row seeds its baseline and passes, so a new host never
+	# breaks the build against timings it never produced.
+	PREV_LINE="$(awk -F '\t' -v scenario="${SCENARIO_NAME}" -v mode="${BUILD_MODE}" -v machine="${MACHINE_ID}" \
+		'NR > 1 && $2 == scenario && $7 == mode && $8 == machine { last = $0 } END { print last }' "${HISTORY}")"
+	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${STAMP}" "${SCENARIO_NAME}" "${REPEAT_COUNT}" "${OUR_MEAN}" "${REF_MEAN}" "${SPEEDUP}" "${BUILD_MODE}" "${MACHINE_ID}" >> "${HISTORY}"
 
 	printf '%s: libjxlz=%ss libjxl=%ss ref/our=%sx\n' "${SCENARIO_NAME}" "${OUR_MEAN}" "${REF_MEAN}" "${SPEEDUP}"
 
@@ -145,17 +190,21 @@ benchmark_encode_codestream() {
 
 	OUR_MEAN="$(awk -F, 'NR==2 { gsub(/"/, "", $2); print $2 }' "${ENCODE_CSV_OUT}")"
 	STAMP="$(TZ=America/New_York date '+%Y-%m-%d %I:%M:%S %p EST')"
-	PREV_LINE="$(awk -F '\t' -v scenario="${SCENARIO_NAME}" 'NR > 1 && $2 == scenario { last = $0 } END { print last }' "${ENCODE_HISTORY}")"
+	# Same rule as the decode series: only this machine, only this build mode.
+	PREV_LINE="$(awk -F '\t' -v scenario="${SCENARIO_NAME}" -v mode="${BUILD_MODE}" -v machine="${MACHINE_ID}" \
+		'NR > 1 && $2 == scenario && $5 == mode && $6 == machine { last = $0 } END { print last }' "${ENCODE_HISTORY}")"
 
 	if [ ! -f "${ENCODE_HISTORY}" ]; then
-		printf 'timestamp_est\tscenario\trepeat\tour_mean_s\n' > "${ENCODE_HISTORY}"
+		printf 'timestamp_est\tscenario\trepeat\tour_mean_s\tbuild_mode\tmachine_id\n' > "${ENCODE_HISTORY}"
 	fi
 
-	printf '%s\t%s\t%s\t%s\n' \
+	printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
 		"${STAMP}" \
 		"${SCENARIO_NAME}" \
 		"${ENCODE_REPEAT}" \
-		"${OUR_MEAN}" >> "${ENCODE_HISTORY}"
+		"${OUR_MEAN}" \
+		"${BUILD_MODE}" \
+		"${MACHINE_ID}" >> "${ENCODE_HISTORY}"
 
 	printf '%s: modular_encode_codestream=%ss\n' "${SCENARIO_NAME}" "${OUR_MEAN}"
 
