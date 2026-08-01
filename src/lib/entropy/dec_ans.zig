@@ -113,15 +113,21 @@ pub const ANSCode = struct {
         };
     }
 
+    /// Frees every buffer this code owns. Each slice is cleared after being
+    /// freed so a second deinit is a no-op rather than a double free.
     pub fn deinit(self: *ANSCode) void {
         if (self.alias_tables.len > 0) self.allocator.free(self.alias_tables);
+        self.alias_tables = &.{};
         for (self.huffman_data) |*hd| {
             var h = hd.*;
             h.deinit();
         }
         if (self.huffman_data.len > 0) self.allocator.free(self.huffman_data);
+        self.huffman_data = &.{};
         if (self.uint_config.len > 0) self.allocator.free(self.uint_config);
+        self.uint_config = &.{};
         if (self.degenerate_symbols.len > 0) self.allocator.free(self.degenerate_symbols);
+        self.degenerate_symbols = &.{};
     }
 
     pub fn updateMaxNumBits(self: *ANSCode, ctx: usize, symbol: usize) void {
@@ -684,25 +690,31 @@ pub fn decodeHistograms(
 
     // Read uint configs (one per histogram)
     const uint_configs = try allocator.alloc(HybridUintConfig, num_histograms);
-    errdefer allocator.free(uint_configs);
-    decodeUintConfigs(code.log_alpha_size, uint_configs, br) catch return error.GenericError;
+    // Ownership moves to `code` before anything fallible runs. These two buffers
+    // previously kept an armed `errdefer` after being stored here, so any later
+    // error freed them once via the errdefer and again via the caller's
+    // ANSCode.deinit -- a double free reachable from corrupt input.
     code.uint_config = uint_configs;
+    decodeUintConfigs(code.log_alpha_size, uint_configs, br) catch return error.GenericError;
 
     // Read per-histogram codes
     const degenerate_syms = try allocator.alloc(i32, num_histograms);
-    errdefer allocator.free(degenerate_syms);
-    @memset(degenerate_syms, -1);
     code.degenerate_symbols = degenerate_syms;
+    @memset(degenerate_syms, -1);
 
     const max_alphabet_size: usize = @as(usize, 1) << code.log_alpha_size;
 
     if (code.use_prefix_code) {
         // Huffman mode
         const huff_data = try allocator.alloc(HuffmanDecodingData, num_histograms);
-        errdefer allocator.free(huff_data);
+        // Initialise every entry before publishing: ANSCode.deinit walks this
+        // slice and deinits each element, so it must never see raw memory.
         for (huff_data) |*hd| {
             hd.* = HuffmanDecodingData.init(allocator);
         }
+        // Publishing here also fixes a leak: the old errdefer freed the array but
+        // not the per-entry Huffman tables allocated by readFromBitStream below.
+        code.huffman_data = huff_data;
 
         // Read alphabet sizes
         var alphabet_sizes = try allocator.alloc(u16, num_histograms);
@@ -733,12 +745,13 @@ pub fn decodeHistograms(
                 }
             }
         }
-        code.huffman_data = huff_data;
     } else {
         // ANS mode
         const table_size = num_histograms * (@as(usize, 1) << code.log_alpha_size);
         const alias_tables = try allocator.alloc(AliasTable.Entry, table_size);
-        errdefer allocator.free(alias_tables);
+        // Publish before the fallible loop below: `code` is the sole owner, so an
+        // errdefer here would free this buffer that ANSCode.deinit also frees.
+        code.alias_tables = alias_tables;
 
         for (0..num_histograms) |c| {
             br.refill();
@@ -780,7 +793,6 @@ pub fn decodeHistograms(
                 alias_tables.ptr + offset,
             ) catch return error.GenericError;
         }
-        code.alias_tables = alias_tables;
     }
 
     return context_map;
@@ -879,4 +891,32 @@ test "prefix-code single-symbol histogram reads as degenerate token" {
 	try testing.expect(code.use_prefix_code);
 	try testing.expectEqual(@as(i32, 0), code.degenerate_symbols[0]);
 	try testing.expectEqual(@as(usize, 0), reader.readHybridUint(0, &br, context_map));
+}
+
+test "decodeHistograms does not double free code buffers when it fails after taking ownership" {
+	// Regression, found by ./fuzz as a glibc double-free abort on a 137-byte
+	// mutant: `uint_config` and `degenerate_symbols` were stored into `code`
+	// while their `errdefer allocator.free(...)` was still armed, so any error
+	// raised afterwards freed each buffer once via the errdefer and a second
+	// time via the caller's `ANSCode.deinit`. testing.allocator is a
+	// DebugAllocator, so it detects the second free and fails this test.
+	const allocator = testing.allocator;
+	const BitWriter = @import("../base/bit_writer.zig").BitWriter;
+	const enc_ans = @import("enc_ans.zig");
+
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writer.write(1, 0); // LZ77 disabled
+	try writer.write(1, 1); // prefix-code mode
+	try enc_ans.encodeUintConfig(HybridUintConfig.init(0, 0, 0), &writer, params.prefix_max_bits);
+	// The decoded alphabet size is this value + 1, i.e. one past the permitted
+	// `1 << prefix_max_bits`. decodeHistograms rejects it only *after* it has
+	// already handed both buffers to `code`, which is the failing window.
+	try enc_ans.storeVarLenUint16(@as(u16, 1) << params.prefix_max_bits, &writer);
+	try writer.zeroPadToByte();
+
+	var br = BitReader.init(writer.bytes());
+	var code = ANSCode.init(allocator);
+	defer code.deinit();
+	try testing.expectError(error.GenericError, decodeHistograms(allocator, &br, 1, &code));
 }

@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+# Copyright (c) Peter Marreck and libjxlz contributors.
+# SPDX-License-Identifier: BSD-3-Clause
+#
+# Deterministic mutation fuzzer for the libjxlz decoder.
+#
+# Takes a valid JXL fixture, splices deterministic-random noise into
+# deterministic-random offsets, and re-validates. The decoder is allowed to
+# accept (0) or cleanly reject (1) any mutant -- the goal is not image
+# reproducibility but strict validation without undefined behaviour. Anything
+# else (a signal, a hang, an unexpected status) is a finding.
+#
+# Every mutant is a pure function of (base seed, iteration), so a reported
+# failure replays exactly via --seed on a single iteration.
+
+# NOTE: deliberately `set -u` only. `set -e` would abort the run on the first
+# non-zero decode -- which is the *expected* outcome for a corrupt input.
+set -u
+
+ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+DEFAULT_FIXTURE="${ROOT_DIR}/testdata/jxl/pq_gradient.jxl"
+
+FIXTURE=""
+ITERATIONS=200
+BASE_SEED=1
+MAX_SPLICES=4
+MAX_SPLICE_LEN=8
+TIMEOUT_SECS=10
+KEEP_ARTIFACTS=0
+USE_COLOR=1
+DECODER="${JXLZ_FUZZ_DECODER:-${ROOT_DIR}/zig-out/bin/djxlz}"
+
+usage() {
+	cat <<'USAGE'
+Usage: ./fuzz [options] [FIXTURE] [ITERATIONS]
+
+Deterministically mutates a valid JXL fixture and re-validates it, looking for
+crashes, hangs, and unexpected exit statuses in the decoder.
+
+Arguments:
+  FIXTURE            Valid .jxl file to mutate (default: testdata/jxl/pq_gradient.jxl)
+  ITERATIONS         Number of mutate+validate rounds (default: 200)
+
+Options:
+      --seed N       Base seed; iteration i uses seed N+i (default: 1)
+      --splices N    Maximum noise splices per mutant (default: 4)
+      --splice-len N Maximum bytes per splice (default: 8)
+      --timeout SEC  Per-decode timeout in seconds (default: 10)
+      --decoder PATH Decoder binary (default: zig-out/bin/djxlz)
+      --keep         Keep every mutant, not just failing ones
+      --no-color     Disable ANSI colour (also --simple)
+  -h, --help         Show this help
+
+Exit status: number of findings (0 = clean).
+
+A decode that returns 0 (accepted) or 1 (rejected) is a pass: both are defined
+behaviour. Findings are signals (139 SIGSEGV, 134 SIGABRT, ...), timeouts, and
+any other status.
+
+Examples:
+  ./fuzz                                   # 200 rounds on the default fixture
+  ./fuzz testdata/jxl/splines.jxl 1000     # 1000 rounds on a spline fixture
+  ./fuzz --seed 4711 fixture.jxl 1         # replay exactly one reported mutant
+USAGE
+}
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		-h|--help) usage; exit 0 ;;
+		--seed) BASE_SEED="${2:-}"; shift 2 ;;
+		--splices) MAX_SPLICES="${2:-}"; shift 2 ;;
+		--splice-len) MAX_SPLICE_LEN="${2:-}"; shift 2 ;;
+		--timeout) TIMEOUT_SECS="${2:-}"; shift 2 ;;
+		--decoder) DECODER="${2:-}"; shift 2 ;;
+		--keep) KEEP_ARTIFACTS=1; shift ;;
+		--no-color|--simple) USE_COLOR=0; shift ;;
+		--) shift; break ;;
+		-*) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
+		*)
+			if [ -z "${FIXTURE}" ]; then FIXTURE="$1"; else ITERATIONS="$1"; fi
+			shift
+			;;
+	esac
+done
+
+[ -n "${FIXTURE}" ] || FIXTURE="${DEFAULT_FIXTURE}"
+
+if [ ! -t 2 ] || [ "${USE_COLOR}" -eq 0 ]; then
+	C_RED=""; C_GRN=""; C_DIM=""; C_RST=""
+else
+	C_RED=$'\033[31m'; C_GRN=$'\033[32m'; C_DIM=$'\033[2m'; C_RST=$'\033[0m'
+fi
+
+die() { echo "${C_RED}fuzz: $*${C_RST}" >&2; exit 2; }
+
+command -v random >/dev/null 2>&1 || die "the 'random' utility is required but not on PATH"
+[ -f "${FIXTURE}" ] || die "fixture not found: ${FIXTURE}"
+[ -x "${DECODER}" ] || die "decoder not found or not executable: ${DECODER} (run ./build first)"
+case "${ITERATIONS}" in ''|*[!0-9]*) die "ITERATIONS must be a non-negative integer, got: ${ITERATIONS}" ;; esac
+case "${BASE_SEED}" in ''|*[!0-9]*) die "--seed must be a non-negative integer, got: ${BASE_SEED}" ;; esac
+
+FIXTURE_SIZE="$(wc -c < "${FIXTURE}")"
+[ "${FIXTURE_SIZE}" -gt 0 ] || die "fixture is empty: ${FIXTURE}"
+
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/libjxlz-fuzz.XXXXXX")" || die "could not create work directory"
+FINDINGS_DIR="${WORKDIR}/findings"
+mkdir -p "${FINDINGS_DIR}"
+cleanup() {
+	if [ "${KEEP_ARTIFACTS}" -eq 0 ] && [ -z "$(ls -A "${FINDINGS_DIR}" 2>/dev/null)" ]; then
+		rm -rf "${WORKDIR}"
+	fi
+}
+trap cleanup EXIT
+
+# Confirms the unmutated fixture still decodes cleanly. Without this control a
+# broken decoder or a bad fixture would make every mutant "reject" and the run
+# would report a vacuous all-clear.
+"${DECODER}" "${FIXTURE}" "${WORKDIR}/baseline.out" >/dev/null 2>&1
+baseline_status=$?
+if [ "${baseline_status}" -ne 0 ]; then
+	die "baseline control failed: ${FIXTURE} does not decode cleanly (status ${baseline_status})"
+fi
+
+printf '%s=== libjxlz fuzz ===%s\n' "${C_DIM}" "${C_RST}" >&2
+printf 'fixture   : %s (%s bytes)\n' "${FIXTURE}" "${FIXTURE_SIZE}" >&2
+printf 'decoder   : %s\n' "${DECODER}" >&2
+printf 'iterations: %s   base seed: %s   max splices: %s x %s bytes\n' \
+	"${ITERATIONS}" "${BASE_SEED}" "${MAX_SPLICES}" "${MAX_SPLICE_LEN}" >&2
+
+accepted=0
+rejected=0
+findings=0
+i=0
+
+while [ "${i}" -lt "${ITERATIONS}" ]; do
+	i=$((i + 1))
+	seed=$((BASE_SEED + i))
+	mutant="${WORKDIR}/mutant.jxl"
+	cp "${FIXTURE}" "${mutant}"
+
+	# One `random` call each for structure and payload keeps process spawns to
+	# two per iteration while leaving every mutant reproducible from its seed.
+	splice_count="$(random --seed "${seed}" 1 "${MAX_SPLICES}")"
+	offsets="$(random --seed "$((seed + 1))" -c "${splice_count}" 0 "$((FIXTURE_SIZE - 1))")"
+	lengths="$(random --seed "$((seed + 2))" -c "${splice_count}" 1 "${MAX_SPLICE_LEN}")"
+	noise_hex="$(random --seed "$((seed + 3))" -b -c "$((splice_count * MAX_SPLICE_LEN))" --hex)"
+
+	splice_log=""
+	hex_cursor=0
+	n=0
+	while [ "${n}" -lt "${splice_count}" ]; do
+		n=$((n + 1))
+		offset="$(printf '%s\n' "${offsets}" | sed -n "${n}p")"
+		length="$(printf '%s\n' "${lengths}" | sed -n "${n}p")"
+		[ -n "${offset}" ] && [ -n "${length}" ] || continue
+		# Keep the splice inside the file so we mutate content, never extend it.
+		if [ "$((offset + length))" -gt "${FIXTURE_SIZE}" ]; then
+			length=$((FIXTURE_SIZE - offset))
+		fi
+		[ "${length}" -gt 0 ] || continue
+
+		chunk_hex="${noise_hex:${hex_cursor}:$((length * 2))}"
+		hex_cursor=$((hex_cursor + length * 2))
+		[ -n "${chunk_hex}" ] || continue
+
+		escaped=""
+		p=0
+		while [ "${p}" -lt "${#chunk_hex}" ]; do
+			escaped="${escaped}\\x${chunk_hex:${p}:2}"
+			p=$((p + 2))
+		done
+		printf "%b" "${escaped}" | dd of="${mutant}" bs=1 seek="${offset}" conv=notrunc status=none 2>/dev/null
+		splice_log="${splice_log}  offset=${offset} len=${length} bytes=${chunk_hex}"$'\n'
+	done
+
+	timeout "${TIMEOUT_SECS}" "${DECODER}" "${mutant}" "${WORKDIR}/mutant.out" >/dev/null 2>&1
+	status=$?
+
+	case "${status}" in
+		0) accepted=$((accepted + 1)) ;;
+		1) rejected=$((rejected + 1)) ;;
+		*)
+			findings=$((findings + 1))
+			if [ "${status}" -eq 124 ]; then
+				kind="HANG (timeout after ${TIMEOUT_SECS}s)"
+			elif [ "${status}" -gt 128 ]; then
+				kind="SIGNAL $((status - 128)) (status ${status})"
+			else
+				kind="UNEXPECTED STATUS ${status}"
+			fi
+			cp "${mutant}" "${FINDINGS_DIR}/seed-${seed}.jxl"
+			{
+				printf '%s\n' "${kind}"
+				printf 'fixture: %s\n' "${FIXTURE}"
+				printf 'replay : ./fuzz --seed %s %s 1\n' "$((seed - 1))" "${FIXTURE}"
+				printf 'splices:\n%s' "${splice_log}"
+			} > "${FINDINGS_DIR}/seed-${seed}.txt"
+			printf '%sFINDING%s [%s/%s] %s -- replay: ./fuzz --seed %s %s 1\n' \
+				"${C_RED}" "${C_RST}" "${i}" "${ITERATIONS}" "${kind}" "$((seed - 1))" "${FIXTURE}" >&2
+			;;
+	esac
+
+	if [ "${KEEP_ARTIFACTS}" -eq 1 ]; then
+		cp "${mutant}" "${FINDINGS_DIR}/mutant-seed-${seed}.jxl"
+	fi
+
+	if [ -t 2 ] && [ $((i % 25)) -eq 0 ]; then
+		printf '%s  ... %s/%s (accepted %s, rejected %s, findings %s)%s\n' \
+			"${C_DIM}" "${i}" "${ITERATIONS}" "${accepted}" "${rejected}" "${findings}" "${C_RST}" >&2
+	fi
+done
+
+printf '\n' >&2
+printf 'mutants   : %s\n' "${ITERATIONS}" >&2
+printf 'accepted  : %s   (decoded despite mutation -- defined behaviour)\n' "${accepted}" >&2
+printf 'rejected  : %s   (cleanly refused -- defined behaviour)\n' "${rejected}" >&2
+if [ "${findings}" -gt 0 ]; then
+	printf '%sfindings  : %s   artifacts in %s%s\n' "${C_RED}" "${findings}" "${FINDINGS_DIR}" "${C_RST}" >&2
+else
+	printf '%sfindings  : 0%s\n' "${C_GRN}" "${C_RST}" >&2
+fi
+
+exit "${findings}"
