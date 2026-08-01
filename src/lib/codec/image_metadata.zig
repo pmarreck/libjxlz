@@ -126,6 +126,27 @@ pub const ExtraChannelInfo = struct {
     name_buf: [1071]u8 = undefined,
     name_len: u32 = 0,
 
+    /// Structural equality that ignores the undefined tail of `name_buf`.
+    ///
+    /// `name_buf` is a fixed 1071-byte inline buffer whose bytes past `name_len`
+    /// are never written, so `std.meta.eql` on this struct compares uninitialized
+    /// memory. That is not merely untidy: it made two semantically identical
+    /// extra channels compare unequal under ReleaseFast, where `undefined` is
+    /// whatever the heap last held, while Debug and ReleaseSafe masked it by
+    /// filling `undefined` with 0xAA. Compare the meaningful fields and only the
+    /// live prefix of the name.
+    pub fn eql(self: ExtraChannelInfo, other: ExtraChannelInfo) bool {
+        if (self.type != other.type) return false;
+        if (!std.meta.eql(self.bit_depth, other.bit_depth)) return false;
+        if (self.dim_shift != other.dim_shift) return false;
+        if (self.alpha_associated != other.alpha_associated) return false;
+        if (!std.meta.eql(self.spot_color, other.spot_color)) return false;
+        if (self.cfa_channel != other.cfa_channel) return false;
+        if (self.name_len != other.name_len) return false;
+        if (!std.mem.eql(u8, self.name, other.name)) return false;
+        return std.mem.eql(u8, self.name_buf[0..self.name_len], other.name_buf[0..other.name_len]);
+    }
+
     pub fn readFromBitStream(br: *BitReader) JxlError!ExtraChannelInfo {
         // AllDefault check
         if (fc.readAllDefault(br)) {
@@ -1093,4 +1114,36 @@ test "CodecMetadata basic" {
     cm.size = .{ .small = true, .ysize_div8_minus_1 = 7, .xsize_div8_minus_1 = 7 };
     try testing.expectEqual(@as(usize, 64), cm.xsize());
     try testing.expectEqual(@as(usize, 64), cm.ysize());
+}
+
+test "ExtraChannelInfo equality ignores name_buf bytes past name_len" {
+    // Regression, ReleaseFast-only: validateSimplePackedAnimation compared each
+    // frame's extra-channel info with std.meta.eql, which walks the whole
+    // 1071-byte name_buf including the bytes past name_len that are `undefined`.
+    // Debug and ReleaseSafe fill undefined with 0xAA, so both frames' buffers
+    // matched and the comparison passed; under ReleaseFast the two frames held
+    // different stale bytes and two semantically identical depth channels
+    // compared unequal, failing the encode with InvalidArgs.
+    var a = ExtraChannelInfo{ .type = .depth, .dim_shift = 1 };
+    var b = ExtraChannelInfo{ .type = .depth, .dim_shift = 1 };
+    @memset(&a.name_buf, 0x11);
+    @memset(&b.name_buf, 0x22);
+
+    try testing.expect(a.eql(b));
+    // Positive control: the comparison this replaces really does disagree, so
+    // the test above is not passing for some unrelated reason.
+    try testing.expect(!std.meta.eql(a, b));
+
+    // A genuine name difference must still be detected.
+    var named_a = ExtraChannelInfo{};
+    var named_b = ExtraChannelInfo{};
+    named_a.name_len = 3;
+    named_b.name_len = 3;
+    @memcpy(named_a.name_buf[0..3], "abc");
+    @memcpy(named_b.name_buf[0..3], "abd");
+    try testing.expect(!named_a.eql(named_b));
+
+    // And a differing semantic field must still be detected.
+    const shifted = ExtraChannelInfo{ .type = .depth, .dim_shift = 2 };
+    try testing.expect(!a.eql(shifted));
 }

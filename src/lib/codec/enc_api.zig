@@ -210,7 +210,10 @@ fn validateSimplePackedAnimation(image: SimplePackedU8Animation) !void {
 	for (image.frames) |frame| {
 		if (frame.extra_planes.len != extra_info.len) return error.InvalidArgs;
 		for (frame.extra_planes, extra_info) |extra, reference| {
-			if (!std.meta.eql(extra.info, reference.info)) return error.InvalidArgs;
+			// ExtraChannelInfo.eql rather than std.meta.eql: the latter walks the
+			// undefined tail of name_buf, which differs between frames under
+			// ReleaseFast and rejected valid animations.
+			if (!extra.info.eql(reference.info)) return error.InvalidArgs;
 		}
 		try validateSimplePackedImage(.{
 			.width = image.width,
