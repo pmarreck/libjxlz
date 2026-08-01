@@ -30,6 +30,11 @@ KEEP_ARTIFACTS=0
 USE_COLOR=1
 DECODER="${JXLZ_FUZZ_DECODER:-${ROOT_DIR}/zig-out/bin/djxlz}"
 
+# Mutation kinds, rotated deterministically by iteration index in `all` mode so
+# each kind gets equal coverage and every mutant stays replayable from its seed.
+MUTATION_KINDS=(splice truncate bitflip structural)
+MUTATION_MODE="all"
+
 usage() {
 	cat <<'USAGE'
 Usage: ./fuzz [options] [FIXTURE] [ITERATIONS]
@@ -45,6 +50,8 @@ Options:
       --seed N       Base seed; iteration i uses seed N+i (default: 1)
       --splices N    Maximum noise splices per mutant (default: 4)
       --splice-len N Maximum bytes per splice (default: 8)
+      --mode KIND    Mutation kind: all (default), splice, truncate, bitflip,
+                     structural. In `all` the kinds rotate by iteration index.
       --timeout SEC  Per-decode timeout in seconds (default: 10)
       --decoder PATH Decoder binary (default: zig-out/bin/djxlz)
       --keep         Keep every mutant, not just failing ones
@@ -70,6 +77,7 @@ while [ $# -gt 0 ]; do
 		--seed) BASE_SEED="${2:-}"; shift 2 ;;
 		--splices) MAX_SPLICES="${2:-}"; shift 2 ;;
 		--splice-len) MAX_SPLICE_LEN="${2:-}"; shift 2 ;;
+		--mode) MUTATION_MODE="${2:-}"; shift 2 ;;
 		--timeout) TIMEOUT_SECS="${2:-}"; shift 2 ;;
 		--decoder) DECODER="${2:-}"; shift 2 ;;
 		--keep) KEEP_ARTIFACTS=1; shift ;;
@@ -98,6 +106,16 @@ command -v random >/dev/null 2>&1 || die "the 'random' utility is required but n
 [ -x "${DECODER}" ] || die "decoder not found or not executable: ${DECODER} (run ./build first)"
 case "${ITERATIONS}" in ''|*[!0-9]*) die "ITERATIONS must be a non-negative integer, got: ${ITERATIONS}" ;; esac
 case "${BASE_SEED}" in ''|*[!0-9]*) die "--seed must be a non-negative integer, got: ${BASE_SEED}" ;; esac
+
+# Validate the mode up front rather than dying mid-sweep on the first iteration
+# that reaches an unknown kind.
+if [ "${MUTATION_MODE}" != "all" ]; then
+	mode_ok=0
+	for k in "${MUTATION_KINDS[@]}"; do
+		[ "${MUTATION_MODE}" = "${k}" ] && mode_ok=1
+	done
+	[ "${mode_ok}" -eq 1 ] || die "unknown --mode '${MUTATION_MODE}' (expected all, ${MUTATION_KINDS[*]})"
+fi
 
 FIXTURE_SIZE="$(wc -c < "${FIXTURE}")"
 [ "${FIXTURE_SIZE}" -gt 0 ] || die "fixture is empty: ${FIXTURE}"
@@ -138,40 +156,117 @@ while [ "${i}" -lt "${ITERATIONS}" ]; do
 	mutant="${WORKDIR}/mutant.jxl"
 	cp "${FIXTURE}" "${mutant}"
 
-	# One `random` call each for structure and payload keeps process spawns to
-	# two per iteration while leaving every mutant reproducible from its seed.
-	splice_count="$(random --seed "${seed}" 1 "${MAX_SPLICES}")"
-	offsets="$(random --seed "$((seed + 1))" -c "${splice_count}" 0 "$((FIXTURE_SIZE - 1))")"
-	lengths="$(random --seed "$((seed + 2))" -c "${splice_count}" 1 "${MAX_SPLICE_LEN}")"
-	noise_hex="$(random --seed "$((seed + 3))" -b -c "$((splice_count * MAX_SPLICE_LEN))" --hex)"
+	# Mutation kind for this iteration. In `all` mode the kinds rotate
+	# deterministically by index, so a given (seed, iteration) always produces
+	# the same mutant and every reported finding replays exactly.
+	if [ "${MUTATION_MODE}" = "all" ]; then
+		kind="${MUTATION_KINDS[$(( (i - 1) % ${#MUTATION_KINDS[@]} ))]}"
+	else
+		kind="${MUTATION_MODE}"
+	fi
 
 	splice_log=""
 	hex_cursor=0
-	n=0
-	while [ "${n}" -lt "${splice_count}" ]; do
-		n=$((n + 1))
-		offset="$(printf '%s\n' "${offsets}" | sed -n "${n}p")"
-		length="$(printf '%s\n' "${lengths}" | sed -n "${n}p")"
-		[ -n "${offset}" ] && [ -n "${length}" ] || continue
-		# Keep the splice inside the file so we mutate content, never extend it.
-		if [ "$((offset + length))" -gt "${FIXTURE_SIZE}" ]; then
-			length=$((FIXTURE_SIZE - offset))
-		fi
-		[ "${length}" -gt 0 ] || continue
 
-		chunk_hex="${noise_hex:${hex_cursor}:$((length * 2))}"
-		hex_cursor=$((hex_cursor + length * 2))
-		[ -n "${chunk_hex}" ] || continue
+	case "${kind}" in
+		truncate)
+			# Truncation exercises every "ran out of input" path. Cutting at a
+			# byte boundary inside the codestream is the common real-world
+			# corruption (interrupted download, truncated upload).
+			keep="$(random --seed "${seed}" 1 "$((FIXTURE_SIZE - 1))")"
+			dd if="${FIXTURE}" of="${mutant}" bs=1 count="${keep}" status=none 2>/dev/null
+			splice_log="  truncated to ${keep} of ${FIXTURE_SIZE} bytes"$'\n'
+			;;
+		bitflip)
+			# Single-bit flips are the mutation most likely to survive parsing
+			# and reach deeper decode stages, where a wrong value is more
+			# dangerous than an obviously malformed header.
+			flip_count="$(random --seed "${seed}" 1 "${MAX_SPLICES}")"
+			byte_offsets="$(random --seed "$((seed + 1))" -c "${flip_count}" 0 "$((FIXTURE_SIZE - 1))")"
+			bit_indices="$(random --seed "$((seed + 2))" -c "${flip_count}" 0 7)"
+			n=0
+			while [ "${n}" -lt "${flip_count}" ]; do
+				n=$((n + 1))
+				offset="$(printf '%s\n' "${byte_offsets}" | sed -n "${n}p")"
+				bit="$(printf '%s\n' "${bit_indices}" | sed -n "${n}p")"
+				[ -n "${offset}" ] && [ -n "${bit}" ] || continue
+				original="$(dd if="${mutant}" bs=1 skip="${offset}" count=1 status=none 2>/dev/null | od -An -tu1 | tr -d ' \n')"
+				[ -n "${original}" ] || continue
+				flipped=$(( original ^ (1 << bit) ))
+				printf "%b" "$(printf '\\x%02x' "${flipped}")" | dd of="${mutant}" bs=1 seek="${offset}" conv=notrunc status=none 2>/dev/null
+				splice_log="${splice_log}  bitflip offset=${offset} bit=${bit} ${original}->${flipped}"$'\n'
+			done
+			;;
+		structural)
+			# Structural damage aimed at the container envelope rather than the
+			# entropy-coded payload: the first 64 bytes carry the signature, box
+			# sizes and box types, so corrupting them tests the parser's framing
+			# checks instead of its arithmetic decoder.
+			head_len=$(( FIXTURE_SIZE < 64 ? FIXTURE_SIZE : 64 ))
+			hits="$(random --seed "${seed}" 1 "${MAX_SPLICES}")"
+			offsets="$(random --seed "$((seed + 1))" -c "${hits}" 0 "$((head_len - 1))")"
+			noise_hex="$(random --seed "$((seed + 3))" -b -c "$((hits * 4))" --hex)"
+			n=0
+			while [ "${n}" -lt "${hits}" ]; do
+				n=$((n + 1))
+				offset="$(printf '%s\n' "${offsets}" | sed -n "${n}p")"
+				[ -n "${offset}" ] || continue
+				length=4
+				if [ "$((offset + length))" -gt "${FIXTURE_SIZE}" ]; then
+					length=$((FIXTURE_SIZE - offset))
+				fi
+				[ "${length}" -gt 0 ] || continue
+				chunk_hex="${noise_hex:${hex_cursor}:$((length * 2))}"
+				hex_cursor=$((hex_cursor + length * 2))
+				[ -n "${chunk_hex}" ] || continue
+				escaped=""
+				p=0
+				while [ "${p}" -lt "${#chunk_hex}" ]; do
+					escaped="${escaped}\\x${chunk_hex:${p}:2}"
+					p=$((p + 2))
+				done
+				printf "%b" "${escaped}" | dd of="${mutant}" bs=1 seek="${offset}" conv=notrunc status=none 2>/dev/null
+				splice_log="${splice_log}  structural offset=${offset} len=${length} bytes=${chunk_hex}"$'\n'
+			done
+			;;
+		splice)
+			# Multi-byte noise splices anywhere in the file: the original kind.
+			# Broad damage, most of which the parser rejects immediately, which is
+			# why the narrower kinds above exist alongside it.
+			splice_count="$(random --seed "${seed}" 1 "${MAX_SPLICES}")"
+			offsets="$(random --seed "$((seed + 1))" -c "${splice_count}" 0 "$((FIXTURE_SIZE - 1))")"
+			lengths="$(random --seed "$((seed + 2))" -c "${splice_count}" 1 "${MAX_SPLICE_LEN}")"
+			noise_hex="$(random --seed "$((seed + 3))" -b -c "$((splice_count * MAX_SPLICE_LEN))" --hex)"
+			n=0
+			while [ "${n}" -lt "${splice_count}" ]; do
+				n=$((n + 1))
+				offset="$(printf '%s\n' "${offsets}" | sed -n "${n}p")"
+				length="$(printf '%s\n' "${lengths}" | sed -n "${n}p")"
+				[ -n "${offset}" ] && [ -n "${length}" ] || continue
+				# Keep the splice inside the file so we mutate content, never extend it.
+				if [ "$((offset + length))" -gt "${FIXTURE_SIZE}" ]; then
+					length=$((FIXTURE_SIZE - offset))
+				fi
+				[ "${length}" -gt 0 ] || continue
 
-		escaped=""
-		p=0
-		while [ "${p}" -lt "${#chunk_hex}" ]; do
-			escaped="${escaped}\\x${chunk_hex:${p}:2}"
-			p=$((p + 2))
-		done
-		printf "%b" "${escaped}" | dd of="${mutant}" bs=1 seek="${offset}" conv=notrunc status=none 2>/dev/null
-		splice_log="${splice_log}  offset=${offset} len=${length} bytes=${chunk_hex}"$'\n'
-	done
+				chunk_hex="${noise_hex:${hex_cursor}:$((length * 2))}"
+				hex_cursor=$((hex_cursor + length * 2))
+				[ -n "${chunk_hex}" ] || continue
+
+				escaped=""
+				p=0
+				while [ "${p}" -lt "${#chunk_hex}" ]; do
+					escaped="${escaped}\\x${chunk_hex:${p}:2}"
+					p=$((p + 2))
+				done
+				printf "%b" "${escaped}" | dd of="${mutant}" bs=1 seek="${offset}" conv=notrunc status=none 2>/dev/null
+				splice_log="${splice_log}  splice offset=${offset} len=${length} bytes=${chunk_hex}"$'\n'
+			done
+			;;
+		*)
+			die "unknown mutation kind: ${kind}"
+			;;
+	esac
 
 	timeout "${TIMEOUT_SECS}" "${DECODER}" "${mutant}" "${WORKDIR}/mutant.out" >/dev/null 2>&1
 	status=$?
