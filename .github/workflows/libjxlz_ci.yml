@@ -41,6 +41,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # The ground-truth decode corpus lives in the upstream libjxl `testdata`
+      # submodule, which actions/checkout does not fetch by default. Without it
+      # djxl reports "couldn't load ..." and 7 oracle suites fail. Only this one
+      # submodule is initialised; the others (brotli, googletest, libpng, ...)
+      # are not needed because the Zig build does not consume them. Note the
+      # .gitmodules entry is named "third_party/testdata" while its path is
+      # "testdata", so it must be selected by path.
+      - name: Fetch ground-truth corpus submodule
+        run: git submodule update --init testdata
+
       - name: Install Nix
         uses: cachix/install-nix-action@v31
         with:
