@@ -175,9 +175,33 @@
               zigPkg
               hyperfine
             ];
+            nativeBuildInputs = [
+              # Differential decode oracle for the ground-truth corpus tests.
+              # decode_ground_truth_oracle_djxl() falls back to `command -v djxl`,
+              # so before this the oracle was whatever happened to be installed
+              # on the machine: it worked from Peter's user profile and failed 7
+              # suites on every CI runner with "command not found". The nixpkgs
+              # input is pinned to a revision carrying libjxl 0.12.0, matching
+              # the version the corpus manifests are baselined against, so the
+              # oracle is now locked by flake.lock rather than by whatever the
+              # host happens to have. Taking only the `bin` output keeps upstream
+              # libjxl headers and libraries off the include and link paths,
+              # which matters because this repository is a fork of libjxl and its
+              # own headers must win.
+              libjxl.bin
+            ];
             shellHook = ''
               export CC=clang
               export CXX=clang++
+              # build.zig reads this to add brotli's headers, which the static
+              # libraries now need directly: they add includes only and no longer
+              # inherit them from linkSystemLibrary's pkg-config lookup.
+              # Deliberately NOT exporting BROTLI_LIB_DIR here. Executables still
+              # resolve brotli through pkg-config, and
+              # tests/cli/windows_cross_compile_smoke.sh treats "both vars set" as
+              # "the caller already chose a brotli" and would then skip resolving
+              # the MinGW cross build it actually needs.
+              export BROTLI_INCLUDE_DIR="${brotli.dev}/include"
             '';
           };
         }

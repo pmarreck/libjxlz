@@ -35,13 +35,29 @@ pub fn build(b: *std.Build) void {
 		}
 	}.apply;
 
+	// Static libraries must add brotli's headers for `@cImport` but must NOT link
+	// its shared objects. Zig materializes linked shared libraries as members of
+	// the resulting archive, so consumers of `libjxlz_capi.a` then hit
+	// "archive member ... is neither ET_REL nor LLVM bitcode" (seen on the
+	// aarch64 CI runners) or an outright architecture mismatch when
+	// cross-compiling with a host-specific BROTLI_LIB_DIR. Every executable and
+	// test links brotli itself, and the C smoke tests already pass
+	// `pkg-config --libs`, so nothing downstream loses the symbols.
+	const addBrotliIncludes = struct {
+		fn apply(mod: *std.Build.Module, include_dir: ?[]const u8) void {
+			if (include_dir) |path| {
+				mod.addIncludePath(.{ .cwd_relative = path });
+			}
+		}
+	}.apply;
+
 	const root_module = b.createModule(.{
 		.root_source_file = b.path("src/root.zig"),
 		.target = target,
 		.optimize = optimize,
 		.link_libc = true,
 	});
-	linkBrotliModule(root_module, brotli_include_dir, brotli_lib_dir);
+	addBrotliIncludes(root_module, brotli_include_dir);
 
 	const lib = b.addLibrary(.{
 		.name = "jxlz",
@@ -58,7 +74,7 @@ pub fn build(b: *std.Build) void {
 		.optimize = optimize,
 		.link_libc = true,
 	});
-	linkBrotliModule(capi_module, brotli_include_dir, brotli_lib_dir);
+	addBrotliIncludes(capi_module, brotli_include_dir);
 
 	const capi_lib = b.addLibrary(.{
 		.name = "jxlz_capi",
