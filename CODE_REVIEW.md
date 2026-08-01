@@ -5,6 +5,31 @@
 **Scope:** Einstein's blocking gate-repair boundary, canonical test integrity, and the smallest evidence-backed TDD repairs
 **Reviewed tree:** base `31d5b1ef836c1be7f933e6a60f9980b5fd1f48b8` plus the explicitly staged repair set; the final remote revision is recorded in the durable inbox report
 
+
+> **Addendum — 2026-07-31 (supersedes the spline-parity claims below, does not
+> rewrite them).** The oracle was re-pinned from `djxl v0.11.2` to `v0.12.0`
+> after nixpkgs-unstable bumped libjxl in Peter's user profile and 6 suites
+> refused to run. The "pinned" oracle was only ever pinned by *assertion* —
+> `decode_ground_truth_oracle_djxl()` falls back to `command -v djxl` and
+> `flake.nix` has no libjxl input — so any profile bump silently changes the
+> reference. That guard behaved correctly: it failed loudly rather than diffing
+> against the wrong version.
+>
+> Parity was then **re-earned** against v0.12.0 by porting two real upstream
+> algorithm changes (neither of them float noise), found by diffing the vendored
+> reference across `bae8be30..HEAD`: the `ComputeSegments` cutoff moved from a
+> double-promoted `std::log(0.1)` to all-single `std::log(0.1f)`/`-2.0f`, and
+> `stage_write.cc` replaced the 8x8 `LoadDup128` ordered dither with a 32x32
+> blue-noise table carrying per-channel `(c*23, c*13)` offsets. Current state:
+> the 4 lossless fixtures, `pq_gradient.jxl`, and `spline_on_first_frame.jxl`
+> are byte-exact; `splines.jxl` differs at exactly **one** byte of 12,582,977
+> (pixel (799,213) channel 2, 112 vs 111 — the two straddle 111.5, i.e. a
+> sub-ULP tie flip) and is held in the known-diff manifest, which asserts it
+> MUST differ, by at most +/-1, with identical PAM dimensions and payload size.
+> `decode_spline_exact_oracle.sh` passes; its non-vacuity guard was retargeted
+> from two fixtures to one to match measured reality, never lowered to
+> manufacture a green. Full `./test` is green: 88/88 CLI suites, 2081 Zig unit
+> tests, 0 failures.
 ## Executive verdict
 
 The repository's truthful canonical gates are restored. The unmodified top-level
