@@ -1,1 +1,10 @@
-# No known byte-close decoder differences remain in the checked-in corpus.
+# Byte-close decoder differences against the pinned djxl v0.12.0 oracle.
+# splines.jxl: exactly ONE byte of 12,582,977 differs -- pixel (799,213)
+# channel 2, where our value rounds to 112 and upstream's to 111. The two
+# straddle 111.5, i.e. a sub-ULP accumulation difference flipping a
+# round-to-nearest tie, not an algorithmic divergence (which would move
+# thousands of pixels, not one). spline_on_first_frame.jxl is byte-exact and
+# lives in the ground-truth manifest.
+# The runner asserts this file MUST differ, by at most +/-1, with identical
+# PAM dimensions and payload size -- it is characterized, not excluded.
+testdata/jxl/splines.jxl

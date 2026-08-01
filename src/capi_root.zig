@@ -2821,7 +2821,9 @@ test "writeRenderedImageToOutput scales float RGB rows to uint8 output" {
 	};
 	var buffer: [6]u8 = undefined;
 	try writeRenderedImageToOutput(&rendered, null, &metadata, format, buffer[0..].ptr, buffer.len);
-	try std.testing.expectEqualSlices(u8, &.{ 0, 127, 255, 255, 0, 255 }, &buffer);
+	// Green at (0,0) is channel 1, so v0.12.0's blue-noise dither applies the
+	// (c*23, c*13) offset: D[13][23] = +0.34936 lifts 0.5*255 = 127.5 to 128.
+	try std.testing.expectEqualSlices(u8, &.{ 0, 128, 255, 255, 0, 255 }, &buffer);
 }
 
 test "writeFrameDecoderOutput prefers non-XYB rendered image over modular fallback" {
@@ -2851,7 +2853,8 @@ test "writeFrameDecoderOutput prefers non-XYB rendered image over modular fallba
 	};
 	var buffer: [3]u8 = undefined;
 	try writeFrameDecoderOutput(&frame_dec, &metadata, format, buffer[0..].ptr, buffer.len);
-	try std.testing.expectEqualSlices(u8, &.{ 255, 127, 0 }, &buffer);
+	// Green is channel 1: v0.12.0's per-channel dither offset lifts 127.5 to 128.
+	try std.testing.expectEqualSlices(u8, &.{ 255, 128, 0 }, &buffer);
 }
 
 test "writeFrameDecoderOutput converts black XYB rendered image to RGB output" {

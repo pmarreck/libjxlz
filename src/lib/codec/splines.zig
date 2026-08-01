@@ -711,13 +711,14 @@ fn computeSegments(
 	try segments.append(allocator, segment);
 }
 
-/// Computes spline cutoff radius with the mixed float/double operations used
-/// by the pinned libjxl v0.11.2 oracle.
+/// Computes the spline cutoff radius exactly as libjxl v0.12.0's ComputeSegments
+/// does, entirely in single precision. v0.11.x wrote `std::log(0.1)` with a double
+/// literal, which promoted the whole term to double and yielded a one-ULP-larger
+/// radius; v0.12.0 uses `-2.0f` and `std::log(0.1f)`, keeping every operation f32.
 fn maximumDistance(sigma: f32, max_color: f32) f32 {
-	const sigma_term = -2.0 * sigma * sigma;
-	const log_term = @log(@as(f64, 0.1)) * @as(f64, kDistanceExp) -
-		@as(f64, @floatCast(@log(max_color)));
-	return @floatCast(@sqrt(@as(f64, sigma_term) * log_term));
+	const sigma_term: f32 = -2.0 * sigma * sigma;
+	const log_term: f32 = @log(@as(f32, 0.1)) * kDistanceExp - @log(max_color);
+	return @sqrt(sigma_term * log_term);
 }
 
 /// Applies the spline Gaussian's squared integration factor using the same
@@ -925,9 +926,13 @@ test "continuous IDCT preserves pinned AVX2 lane reduction" {
 	try testing.expectEqual(@as(u32, 0x3c8e1060), @as(u32, @bitCast(interpolated)));
 }
 
-test "spline maximum distance preserves upstream float arithmetic" {
+test "spline maximum distance uses upstream v0.12.0 all-float arithmetic" {
+	// libjxl 0.12.0 changed this cutoff from `std::log(0.1)` (double literal, which
+	// promoted the whole term to double) to `std::log(0.1f)` with `-2.0f`, making it
+	// entirely single-precision. Independently computed from the C reference:
+	// the 0.11.x mixed-f64 path yields 0x3b47afb8, the 0.12.0 all-float path 0x3b47afb9.
 	const radius = maximumDistance(0.00100300903, 0.00100908172);
-	try testing.expectEqual(@as(u32, 0x3b47afb8), @as(u32, @bitCast(radius)));
+	try testing.expectEqual(@as(u32, 0x3b47afb9), @as(u32, @bitCast(radius)));
 }
 
 test "spline local intensity squares the integration factor before scaling" {

@@ -13,13 +13,14 @@ run() {
   }
 }
 
-optimize="ReleaseFast"
+default_optimize="ReleaseSafe"
+optimize="$default_optimize"
 if [[ "${1:-}" == "debug" ]]; then
   optimize="Debug"
   shift
 fi
 
-if [[ "$optimize" != "ReleaseFast" ]]; then
+if [[ "$optimize" != "$default_optimize" ]]; then
   run run_project_zig build "-Doptimize=$optimize" "$@"
 elif command -v nix >/dev/null 2>&1; then
   out="$(nix build --print-out-paths "$@")" || {

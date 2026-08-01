@@ -11,7 +11,7 @@ cat >"${FAKE_BIN}/djxl" <<'FAKE'
 #!/usr/bin/env bash
 set -u
 if [ "${1-}" = "--version" ]; then
-	printf '%s\n' 'djxl v0.11.2 [fake]'
+	printf '%s\n' 'djxl v0.12.0 [fake]'
 	exit 0
 fi
 exit 99
@@ -35,7 +35,7 @@ if ! PATH="${FAKE_BIN}:$PATH" bash -c '
 	[ "${oracle}" = "'"${FAKE_BIN}"'/djxl" ] || exit 2
 	decode_ground_truth_check_oracle "${oracle}"
 '; then
-	echo "expected PATH djxl v0.11.2 oracle to pass"
+	echo "expected PATH djxl v0.12.0 oracle to pass"
 	exit 1
 fi
 
@@ -48,7 +48,7 @@ if PATH="${FAKE_BIN}:$PATH" JXLZ_ORACLE_DJXL="${FAKE_BIN}/wrong-djxl" bash -c '
 	exit 1
 fi
 
-if ! grep -Fq 'expected djxl v0.11.2 oracle' "${WORKDIR}/wrong-version.stderr"; then
+if ! grep -Fq 'expected djxl v0.12.0 oracle' "${WORKDIR}/wrong-version.stderr"; then
 	echo "missing wrong-version diagnostic"
 	cat "${WORKDIR}/wrong-version.stderr"
 	exit 1

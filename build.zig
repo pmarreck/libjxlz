@@ -5,8 +5,8 @@ pub fn build(b: *std.Build) void {
 	const optimize = b.option(
 		std.builtin.OptimizeMode,
 		"optimize",
-		"Optimization mode (default: ReleaseFast)",
-	) orelse .ReleaseFast;
+		"Optimization mode (default: ReleaseSafe)",
+	) orelse .ReleaseSafe;
 	const png_input = b.option(bool, "png_input", "Enable PNG input support in cjxlz (default: true)") orelse true;
 	const gif_input = b.option(bool, "gif_input", "Enable GIF input support in cjxlz (default: true)") orelse true;
 	const gif_output = b.option(bool, "gif_output", "Enable GIF output support in djxlz (default: true)") orelse true;
@@ -59,6 +59,13 @@ pub fn build(b: *std.Build) void {
 		.linkage = .static,
 		.root_module = capi_module,
 	});
+
+	// External C consumers link this archive with the system linker (clang), not
+	// `zig cc`, so Zig's compiler_rt is never pulled in on their behalf. Optimize
+	// modes that keep safety on emit `__zig_probe_stack` calls into the archive,
+	// which then fail to resolve at link time. Bundling compiler_rt keeps the
+	// published C FFI linkable in every optimize mode.
+	capi_lib.bundle_compiler_rt = true;
 
 	const install_capi = b.addInstallArtifact(capi_lib, .{});
 	b.getInstallStep().dependOn(&install_capi.step);

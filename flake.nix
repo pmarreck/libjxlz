@@ -75,7 +75,8 @@
         with pkgs;
         {
           packages = {
-            default = mkZigPackage "ReleaseFast";
+            default = mkZigPackage "ReleaseSafe";
+            releasefast = mkZigPackage "ReleaseFast";
             debug = mkZigPackage "Debug";
           };
 
@@ -111,7 +112,7 @@
                 # under cross-build coverage. We compile the test bins
                 # via `test-compile`, then invoke each through Nix's
                 # actual loader. Mirrors the pattern in c0/flake.nix.
-                zig build test-compile -Doptimize=Debug ${lib.optionalString (zigNativeTarget != null) "-Dtarget=${zigNativeTarget}"}
+                zig build test-compile -Doptimize=ReleaseSafe ${lib.optionalString (zigNativeTarget != null) "-Dtarget=${zigNativeTarget}"}
                 DL="$(cat ${stdenv.cc}/nix-support/dynamic-linker)"
                 TEST_LIBRARY_PATH="${lib.makeLibraryPath [ brotli ]}"
                 rc=0
@@ -122,7 +123,7 @@
                 [ $rc -eq 0 ] || { echo "Tests failed"; exit 1; }
                 ''}
                 ${lib.optionalString (!stdenv.isLinux) ''
-                zig build test -Doptimize=Debug
+                zig build test -Doptimize=ReleaseSafe
                 ''}
               '';
               installPhase = ''

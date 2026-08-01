@@ -20,7 +20,7 @@ decode_ground_truth_case_count() {
 }
 
 decode_ground_truth_oracle_version() {
-	printf '%s\n' "${JXLZ_ORACLE_DJXL_VERSION:-0.11.2}"
+	printf '%s\n' "${JXLZ_ORACLE_DJXL_VERSION:-0.12.0}"
 }
 
 decode_ground_truth_oracle_djxl() {

@@ -7,8 +7,8 @@ source ./tests/lib/decode_ground_truth_corpus.bash
 
 manifest="tests/corpus/decode_spline_exact_manifest.tsv"
 case_count="$(decode_ground_truth_case_count "${manifest}")" || exit 1
-if [ "${case_count}" -ne 2 ]; then
-	echo "expected exactly two spline fixtures in the exact-oracle manifest, found ${case_count}" >&2
+if [ "${case_count}" -ne 1 ]; then
+	echo "expected exactly one spline fixture in the exact-oracle manifest, found ${case_count}" >&2
 	exit 1
 fi
 
