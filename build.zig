@@ -7,6 +7,12 @@ pub fn build(b: *std.Build) void {
 		"optimize",
 		"Optimization mode (default: ReleaseSafe)",
 	) orelse .ReleaseSafe;
+	// Single-test isolation. The compiled test binary rejects `--test-filter`
+	// because it is a build-system flag, so without this option a single test
+	// cannot be run alone -- which is the decisive experiment when a failure is
+	// suspected of cross-test contamination.
+	const test_filter = b.option([]const u8, "test-filter", "Only run tests whose fully-qualified name contains this substring");
+	const test_filters: []const []const u8 = if (test_filter) |f| &.{f} else &.{};
 	const png_input = b.option(bool, "png_input", "Enable PNG input support in cjxlz (default: true)") orelse true;
 	const gif_input = b.option(bool, "gif_input", "Enable GIF input support in cjxlz (default: true)") orelse true;
 	const gif_output = b.option(bool, "gif_output", "Enable GIF output support in djxlz (default: true)") orelse true;
@@ -204,6 +210,7 @@ pub fn build(b: *std.Build) void {
 	linkBrotliModule(unit_tests_mod, brotli_include_dir, brotli_lib_dir);
 	const unit_tests = b.addTest(.{
 		.root_module = unit_tests_mod,
+		.filters = test_filters,
 	});
 
 	const run_unit_tests = b.addRunArtifact(unit_tests);
@@ -217,6 +224,7 @@ pub fn build(b: *std.Build) void {
 	linkBrotliModule(bench_tests_mod, brotli_include_dir, brotli_lib_dir);
 	const bench_tests = b.addTest(.{
 		.root_module = bench_tests_mod,
+		.filters = test_filters,
 	});
 
 	const run_bench_tests = b.addRunArtifact(bench_tests);
@@ -229,6 +237,7 @@ pub fn build(b: *std.Build) void {
 	linkBrotliModule(weighted_bench_tests_mod, brotli_include_dir, brotli_lib_dir);
 	const weighted_bench_tests = b.addTest(.{
 		.root_module = weighted_bench_tests_mod,
+		.filters = test_filters,
 	});
 
 	const run_weighted_bench_tests = b.addRunArtifact(weighted_bench_tests);
@@ -241,6 +250,7 @@ pub fn build(b: *std.Build) void {
 	linkBrotliModule(encode_prep_bench_tests_mod, brotli_include_dir, brotli_lib_dir);
 	const encode_prep_bench_tests = b.addTest(.{
 		.root_module = encode_prep_bench_tests_mod,
+		.filters = test_filters,
 	});
 
 	const run_encode_prep_bench_tests = b.addRunArtifact(encode_prep_bench_tests);
@@ -253,6 +263,7 @@ pub fn build(b: *std.Build) void {
 	linkBrotliModule(encode_codestream_bench_tests_mod, brotli_include_dir, brotli_lib_dir);
 	const encode_codestream_bench_tests = b.addTest(.{
 		.root_module = encode_codestream_bench_tests_mod,
+		.filters = test_filters,
 	});
 
 	const run_encode_codestream_bench_tests = b.addRunArtifact(encode_codestream_bench_tests);
@@ -265,6 +276,7 @@ pub fn build(b: *std.Build) void {
 	linkBrotliModule(capi_tests_mod, brotli_include_dir, brotli_lib_dir);
 	const capi_tests = b.addTest(.{
 		.root_module = capi_tests_mod,
+		.filters = test_filters,
 	});
 
 	const run_capi_tests = b.addRunArtifact(capi_tests);
