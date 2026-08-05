@@ -80,10 +80,15 @@
             debug = mkZigPackage "Debug";
           };
 
-          checks = {
-            build = self.packages.${system}.default;
-            test = stdenv.mkDerivation {
-              pname = "${pname}-test";
+          checks = let
+            # The Zig unit tests are the mode-sensitive surface: `undefined`
+            # memory reads behave differently per optimize mode, and exactly that
+            # produced a ReleaseFast-only encoder failure that a ReleaseSafe-only
+            # gate could not see (ExtraChannelInfo.name_buf, fixed 2026-08-01).
+            # libjxlz ships ReleaseSafe binaries, but Zig consumers compile this
+            # code at whatever mode they choose, so both are gated.
+            mkTestCheck = mode: stdenv.mkDerivation {
+              pname = "${pname}-test-${mode}";
               inherit version;
               src = ./.;
             nativeBuildInputs = [ zigPkg pkg-config libpng giflib zlib brotli ]
@@ -112,7 +117,7 @@
                 # under cross-build coverage. We compile the test bins
                 # via `test-compile`, then invoke each through Nix's
                 # actual loader. Mirrors the pattern in c0/flake.nix.
-                zig build test-compile -Doptimize=ReleaseSafe ${lib.optionalString (zigNativeTarget != null) "-Dtarget=${zigNativeTarget}"}
+                zig build test-compile -Doptimize=${mode} ${lib.optionalString (zigNativeTarget != null) "-Dtarget=${zigNativeTarget}"}
                 DL="$(cat ${stdenv.cc}/nix-support/dynamic-linker)"
                 TEST_LIBRARY_PATH="${lib.makeLibraryPath [ brotli ]}"
                 rc=0
@@ -123,7 +128,7 @@
                 [ $rc -eq 0 ] || { echo "Tests failed"; exit 1; }
                 ''}
                 ${lib.optionalString (!stdenv.isLinux) ''
-                zig build test -Doptimize=ReleaseSafe
+                zig build test -Doptimize=${mode}
                 ''}
               '';
               installPhase = ''
@@ -131,6 +136,10 @@
                 echo "tests passed" > $out/result
               '';
             };
+          in {
+            build = self.packages.${system}.default;
+            test = mkTestCheck "ReleaseSafe";
+            test-releasefast = mkTestCheck "ReleaseFast";
           } // lib.optionalAttrs (stdenv.isLinux && stdenv.hostPlatform.isx86_64) {
             windows-x86_64-cross = let
               mingwBrotli = pkgs.pkgsCross.mingwW64.brotli;

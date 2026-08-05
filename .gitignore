@@ -44,3 +44,11 @@ result
 
 # Local Codex MCP/tool configuration
 .codex/config.toml
+
+# session handoff docs (skill: handoff)
+HANDOFF*
+inbox
+
+# Convenience symlinks and archives that point outside the repo
+MECHATRON_PRIME_CI.md
+AGENTS_previous.md

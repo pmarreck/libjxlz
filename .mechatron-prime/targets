@@ -1,5 +1,13 @@
 # Mechatron Prime CI — real x86_64-linux flake checks verified by
 # `nix flake show`; package build, Zig tests, and Windows cross-link coverage.
+#
+# The Zig unit tests are gated in BOTH optimize modes on purpose. libjxlz ships
+# ReleaseSafe binaries, but Zig consumers (jpegz) compile this code at whatever
+# mode they pass down, and `undefined` memory behaves differently per mode: a
+# ReleaseFast-only encoder failure hid behind a ReleaseSafe-only gate until
+# 2026-08-01. A future ReleaseFast release also needs that mode verified
+# continuously rather than re-hunted at release time.
 checks.x86_64-linux.build
 checks.x86_64-linux.test
+checks.x86_64-linux.test-releasefast
 checks.x86_64-linux.windows-x86_64-cross

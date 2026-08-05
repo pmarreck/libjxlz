@@ -10,6 +10,7 @@ annotate=[
 	.dirtree-state = checked-in dirtree view settings and file-purpose annotations replacing the old CODE_MINIMAP surface
 	.github/workflows/libjxlz_ci.yml = repo-specific GitHub Actions workflow running on pushes to yolo and pull requests, with Linux x86_64 flake/full-suite checks plus native aarch64 test runs on Linux and macOS
 	CODE_REVIEW.md = Release-critical Einstein audit: truthful canonical gate evidence, four-failure classification, strict-validator blockers, and review boundary.
+	COVERAGE_GAMEPLAN.md = Measured JPEG XL coverage state and the ordered plan to finish it (verdict matrix, three pinned defects, phases 0-6)
 	NOTICE = non-clean-room derivative-work attribution note describing upstream libjxl lineage, mixed copyright ownership, and the BSD-3-Clause + PATENTS licensing surface for this fork
 	PLAN.md = current checkpoint and next-step checklist for libjxlz parity work
 	README.md = top-level project status, current measured wins vs upstream libjxl, threading status, build/benchmark entrypoints, encoder scaffold status, attribution note, and links to upstream-facing optimization notes
