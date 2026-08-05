@@ -26,9 +26,19 @@ mutation_detection_root_dir() {
 # payload was validated.
 MUTATION_TRUNCATE_PERCENTS=(25 50 75 90)
 
-# Single-bit-flip offsets as percentages of file size. Fixed rather than random
-# so the corpus is reproducible on every machine without seeding a PRNG.
+# Sniper offsets flip exactly one bit. Fixed percentages keep the corpus
+# reproducible on every machine without seeding a PRNG.
 MUTATION_FLIP_PERCENTS=(13 29 47 61 83)
+
+# Boltgun offsets replace exactly one byte. They differ from sniper offsets so
+# the two classifiers sample distinct portions of each stream.
+MUTATION_BOLTGUN_PERCENTS=(17 37 53 71 89)
+
+# Shotgun damage overwrites bounded regions while preserving file length. The
+# first byte is always complemented, so every generated mutant differs even if
+# the rest of a source region already contains the fill pattern.
+MUTATION_SHOTGUN_PERCENTS=(23 57 77)
+MUTATION_SHOTGUN_LENGTHS=(8 32 128)
 
 # Emits deterministic mutants of one base into workdir, printing `kind<TAB>path`
 # per mutant. Byte manipulation only, so results are identical everywhere
@@ -60,7 +70,39 @@ mutation_detection_emit_mutants() {
 		mutated=$((original ^ 1))
 		printf "$(printf '\\x%02x' "${mutated}")" \
 			| dd of="${out}" bs=1 seek="${offset}" count=1 conv=notrunc status=none || return 1
-		printf 'flip\t%s\n' "${out}"
+		printf 'sniper\t%s\n' "${out}"
+	done
+
+	for percent in "${MUTATION_BOLTGUN_PERCENTS[@]}"; do
+		offset=$((size * percent / 100))
+		out="${workdir}/${stem}.boltgun${percent}.jxl"
+		cp "${base_path}" "${out}" || return 1
+		original="$(od -An -tu1 -j "${offset}" -N1 "${base_path}" | tr -d ' ')"
+		mutated=$((original ^ 255))
+		printf "$(printf '\\x%02x' "${mutated}")" \
+			| dd of="${out}" bs=1 seek="${offset}" count=1 conv=notrunc status=none || return 1
+		printf 'boltgun\t%s\n' "${out}"
+	done
+
+	local index length available
+	for ((index = 0; index < ${#MUTATION_SHOTGUN_PERCENTS[@]}; index++)); do
+		percent="${MUTATION_SHOTGUN_PERCENTS[index]}"
+		length="${MUTATION_SHOTGUN_LENGTHS[index]}"
+		offset=$((size * percent / 100))
+		available=$((size - offset))
+		if [ "${length}" -gt "${available}" ]; then
+			length="${available}"
+		fi
+		[ "${length}" -gt 0 ] || return 1
+		out="${workdir}/${stem}.shotgun${percent}x${length}.jxl"
+		cp "${base_path}" "${out}" || return 1
+		head -c "${length}" /dev/zero | tr '\000' '\245' \
+			| dd of="${out}" bs=1 seek="${offset}" count="${length}" conv=notrunc status=none || return 1
+		original="$(od -An -tu1 -j "${offset}" -N1 "${base_path}" | tr -d ' ')"
+		mutated=$((original ^ 255))
+		printf "$(printf '\\x%02x' "${mutated}")" \
+			| dd of="${out}" bs=1 seek="${offset}" count=1 conv=notrunc status=none || return 1
+		printf 'shotgun\t%s\n' "${out}"
 	done
 
 	# The codestream signature is the one structural field no valid stream may

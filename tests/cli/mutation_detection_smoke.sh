@@ -4,11 +4,12 @@
 set -u
 
 # Denominators live here, not in the corpus directory, so a partially populated
-# or silently truncated corpus cannot pass as a full sweep. 15 bases x 10
-# mutants (4 truncations, 5 bit flips, 1 signature corruption).
+# or silently truncated corpus cannot pass as a full sweep. 15 bases x 18
+# mutants (4 truncations, 5 sniper bit flips, 5 boltgun byte replacements,
+# 3 shotgun region overwrites, and 1 signature corruption).
 MUTATION_BASES=15
-MUTATION_MUTANTS=150
-MUTATION_MUST_DETECT=144
+MUTATION_MUTANTS=270
+MUTATION_MUST_DETECT=264
 MUTATION_OVER_REJECTIONS=0
 
 if bash -c '

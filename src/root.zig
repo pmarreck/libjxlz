@@ -1,5 +1,6 @@
 const lib = @import("lib/root.zig");
 const ffi_decode = @import("capi_root.zig");
+pub const validation = @import("validation.zig");
 
 pub const base = lib.base;
 pub const entropy = lib.entropy;
@@ -13,4 +14,5 @@ pub const ffi = struct {
 test {
 	_ = @import("lib/root.zig");
 	_ = ffi_decode;
+	_ = validation;
 }

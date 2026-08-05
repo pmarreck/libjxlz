@@ -92,6 +92,21 @@ pub fn build(b: *std.Build) void {
 	const install_capi = b.addInstallArtifact(capi_lib, .{});
 	b.getInstallStep().dependOn(&install_capi.step);
 
+	// Merge generated and source public headers into one consumer include root.
+	// C callers should never need repository-relative `-Iinclude -Ilib/include`.
+	const install_generated_headers = b.addInstallDirectory(.{
+		.source_dir = b.path("include"),
+		.install_dir = .header,
+		.install_subdir = "",
+	});
+	const install_public_headers = b.addInstallDirectory(.{
+		.source_dir = b.path("lib/include"),
+		.install_dir = .header,
+		.install_subdir = "",
+	});
+	b.getInstallStep().dependOn(&install_generated_headers.step);
+	b.getInstallStep().dependOn(&install_public_headers.step);
+
 	const lib_step = b.step("lib", "Build only the static library");
 	lib_step.dependOn(&install_lib.step);
 

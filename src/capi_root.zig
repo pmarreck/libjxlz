@@ -36,6 +36,50 @@ pub const JxlTransferFunction = capi_color.JxlTransferFunction;
 pub const JxlRenderingIntent = capi_color.JxlRenderingIntent;
 pub const JxlColorEncoding = capi_color.JxlColorEncoding;
 
+pub const JxlValidationVerdict = enum(c_int) {
+	JXL_VALIDATION_VALID = 0,
+	JXL_VALIDATION_CORRUPT = 1,
+	JXL_VALIDATION_UNSUPPORTED = 2,
+	JXL_VALIDATION_INDETERMINATE = 3,
+};
+
+pub const JxlValidationFindingCode = enum(c_int) {
+	JXL_VALIDATION_FINDING_NONE = 0,
+	JXL_VALIDATION_FINDING_INVALID_SIGNATURE = 1,
+	JXL_VALIDATION_FINDING_TRUNCATED = 2,
+	JXL_VALIDATION_FINDING_MALFORMED = 3,
+	JXL_VALIDATION_FINDING_UNSUPPORTED_FEATURE = 4,
+	JXL_VALIDATION_FINDING_RESOURCE_LIMIT = 5,
+	JXL_VALIDATION_FINDING_OUT_OF_MEMORY = 6,
+	JXL_VALIDATION_FINDING_INVALID_ARGUMENT = 7,
+	JXL_VALIDATION_FINDING_UNCLASSIFIED_DECODER_ERROR = 8,
+};
+
+pub const JxlValidationOptions = extern struct {
+	struct_size: usize,
+	host_byte_offset: u64,
+	max_input_bytes: usize,
+	max_pixels: u64,
+	max_frames: u32,
+};
+
+pub const JxlValidationResult = extern struct {
+	verdict: JxlValidationVerdict,
+	code: JxlValidationFindingCode,
+	byte_offset: u64,
+	host_byte_offset: u64,
+	offset_is_exact: JXL_BOOL,
+	frames_validated: u32,
+};
+
+pub const default_validation_options = JxlValidationOptions{
+	.struct_size = @sizeOf(JxlValidationOptions),
+	.host_byte_offset = 0,
+	.max_input_bytes = 512 * 1024 * 1024,
+	.max_pixels = 268_435_456,
+	.max_frames = 65_535,
+};
+
 const rowStrideBytes = capi_pixel.rowStrideBytes;
 const bytesPerChannel = capi_pixel.bytesPerChannel;
 const loadU16 = capi_pixel.loadU16;
@@ -241,6 +285,7 @@ const DecoderImpl = struct {
 	output_buffer_size: usize = 0,
 	full_image_emitted: bool = false,
 	decode_complete: bool = false,
+	last_error: ?JxlError = null,
 
 	fn inputSlice(self: *const DecoderImpl) []const u8 {
 		if (self.input_data) |ptr| {
@@ -335,6 +380,11 @@ fn statusFromError(err: JxlError, input_closed: bool) JxlDecoderStatus {
 		error.NotEnoughBytes => if (input_closed) .JXL_DEC_ERROR else .JXL_DEC_NEED_MORE_INPUT,
 		else => .JXL_DEC_ERROR,
 	};
+}
+
+fn decoderStatusFromError(dec: *DecoderImpl, err: JxlError) JxlDecoderStatus {
+	dec.last_error = err;
+	return statusFromError(err, dec.input_closed);
 }
 
 fn allocDecoder(mm: ?*const JxlMemoryManager) ?*DecoderImpl {
@@ -999,10 +1049,10 @@ fn ensureCurrentFrameParsed(dec: *DecoderImpl) JxlDecoderStatus {
 	var frame_dec = dec_frame.FrameDecoder.init(std.heap.c_allocator, &dec.codec_meta);
 	defer frame_dec.deinit();
 	var header_br = BitReader.init(dec.frame_data[dec.frame_offset..]);
-	frame_dec.initFrame(&header_br) catch |err| return statusFromError(err, dec.input_closed);
-	header_br.close() catch |err| return statusFromError(err, dec.input_closed);
+	frame_dec.initFrame(&header_br) catch |err| return decoderStatusFromError(dec, err);
+	header_br.close() catch |err| return decoderStatusFromError(dec, err);
 
-	dec.frame_size = dec_frame.frameByteCount(std.heap.c_allocator, &dec.codec_meta, dec.frame_data[dec.frame_offset..]) catch |err| return statusFromError(err, dec.input_closed);
+	dec.frame_size = dec_frame.frameByteCount(std.heap.c_allocator, &dec.codec_meta, dec.frame_data[dec.frame_offset..]) catch |err| return decoderStatusFromError(dec, err);
 	populateFrameHeader(&dec.frame_header, &frame_dec.frame_header);
 	dec.frame_name_len = @intCast(frame_dec.frame_header.name_len);
 	if (dec.frame_name_len != 0) {
@@ -1050,7 +1100,7 @@ fn currentBoxMut(dec: *DecoderImpl) ?*container_mod.OwnedBox {
 fn ensureCurrentBoxPrepared(dec: *DecoderImpl) JxlDecoderStatus {
 	if (!dec.decompress_boxes) return .JXL_DEC_SUCCESS;
 	const box = currentBoxMut(dec) orelse return .JXL_DEC_SUCCESS;
-	box.ensureDecompressed(std.heap.c_allocator) catch |err| return statusFromError(err, dec.input_closed);
+	box.ensureDecompressed(std.heap.c_allocator) catch |err| return decoderStatusFromError(dec, err);
 	return .JXL_DEC_SUCCESS;
 }
 
@@ -1088,8 +1138,8 @@ fn ensureParsed(dec: *DecoderImpl) JxlDecoderStatus {
 
 	const input = dec.inputSlice();
 	const codestream = switch (JxlSignatureCheck(if (input.len == 0) null else input.ptr, input.len)) {
-		.JXL_SIG_NOT_ENOUGH_BYTES => return if (dec.input_closed) .JXL_DEC_ERROR else .JXL_DEC_NEED_MORE_INPUT,
-		.JXL_SIG_INVALID => return .JXL_DEC_ERROR,
+		.JXL_SIG_NOT_ENOUGH_BYTES => return decoderStatusFromError(dec, error.NotEnoughBytes),
+		.JXL_SIG_INVALID => return decoderStatusFromError(dec, error.GenericError),
 		.JXL_SIG_CONTAINER => blk: {
 			dec.input_is_container = true;
 			if (dec.owned_codestream.len != 0) {
@@ -1105,7 +1155,7 @@ fn ensureParsed(dec: *DecoderImpl) JxlDecoderStatus {
 				std.heap.c_allocator.free(dec.owned_boxes);
 				dec.owned_boxes = &.{};
 			}
-			const parsed = container_mod.extractCodestreamAndBoxes(std.heap.c_allocator, input) catch |err| return statusFromError(err, dec.input_closed);
+			const parsed = container_mod.extractCodestreamAndBoxes(std.heap.c_allocator, input) catch |err| return decoderStatusFromError(dec, err);
 			dec.owned_codestream = parsed.codestream;
 			dec.owned_boxes = parsed.boxes;
 			break :blk dec.owned_codestream;
@@ -1118,20 +1168,21 @@ fn ensureParsed(dec: *DecoderImpl) JxlDecoderStatus {
 
 	var br = BitReader.init(codestream[2..]);
 	const size = headers.SizeHeader.readFromBitStream(&br);
-	const metadata = image_metadata.ImageMetadata.readFromBitStream(&br) catch |err| return statusFromError(err, dec.input_closed);
-	const transform_data = image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded) catch |err| return statusFromError(err, dec.input_closed);
+	const metadata = image_metadata.ImageMetadata.readFromBitStream(&br) catch |err| return decoderStatusFromError(dec, err);
+	const transform_data = image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded) catch |err| return decoderStatusFromError(dec, err);
 	const embedded_icc = if (metadata.color_encoding.want_icc) blk: {
 		if (dec.owned_icc.len != 0) {
 			std.heap.c_allocator.free(dec.owned_icc);
 			dec.owned_icc = &.{};
 		}
 		dec.owned_icc = icc_codec.decompressICCFromBitReader(std.heap.c_allocator, &br) catch |err| return switch (err) {
-			error.NotEnoughBytes => if (dec.input_closed) .JXL_DEC_ERROR else .JXL_DEC_NEED_MORE_INPUT,
-			else => .JXL_DEC_ERROR,
+			error.NotEnoughBytes => decoderStatusFromError(dec, error.NotEnoughBytes),
+			error.OutOfMemory => decoderStatusFromError(dec, error.OutOfMemory),
+			else => decoderStatusFromError(dec, error.GenericError),
 		};
 		break :blk dec.owned_icc;
 	} else &[_]u8{};
-	br.jumpToByteBoundary() catch |err| return statusFromError(err, dec.input_closed);
+	br.jumpToByteBoundary() catch |err| return decoderStatusFromError(dec, err);
 
 	var codec_meta = image_metadata.CodecMetadata{};
 	codec_meta.m = metadata;
@@ -1140,7 +1191,7 @@ fn ensureParsed(dec: *DecoderImpl) JxlDecoderStatus {
 	codec_meta.embedded_icc = embedded_icc;
 
 	const frame_header_byte_offset = br.totalBitsConsumed() / 8;
-	br.close() catch |err| return statusFromError(err, dec.input_closed);
+	br.close() catch |err| return decoderStatusFromError(dec, err);
 
 	dec.codec_meta = codec_meta;
 	dec.frame_data = codestream[2 + frame_header_byte_offset ..];
@@ -1159,15 +1210,136 @@ fn ensureDecoded(dec: *DecoderImpl) JxlDecoderStatus {
 
 	var frame_dec = dec_frame.FrameDecoder.init(std.heap.c_allocator, &dec.codec_meta);
 	defer frame_dec.deinit();
-	frame_dec.decodeFrame(dec.frame_data[dec.frame_offset .. dec.frame_offset + dec.frame_size]) catch return .JXL_DEC_ERROR;
+	frame_dec.decodeFrame(dec.frame_data[dec.frame_offset .. dec.frame_offset + dec.frame_size]) catch |err| return decoderStatusFromError(dec, err);
 
-	writeFrameDecoderOutput(&frame_dec, &dec.codec_meta, dec.output_format, dec.output_buffer.?, dec.output_buffer_size) catch return .JXL_DEC_ERROR;
+	writeFrameDecoderOutput(&frame_dec, &dec.codec_meta, dec.output_format, dec.output_buffer.?, dec.output_buffer_size) catch |err| return decoderStatusFromError(dec, err);
 	dec.frame_decoded = true;
 	return .JXL_DEC_SUCCESS;
 }
 
 pub export fn JxlDecoderVersion() u32 {
 	return decoderVersion();
+}
+
+fn setValidationResult(
+	result: *JxlValidationResult,
+	verdict: JxlValidationVerdict,
+	code: JxlValidationFindingCode,
+	byte_offset: u64,
+	host_byte_offset: u64,
+	offset_is_exact: bool,
+	frames_validated: u32,
+) JxlValidationVerdict {
+	result.* = .{
+		.verdict = verdict,
+		.code = code,
+		.byte_offset = byte_offset,
+		.host_byte_offset = std.math.add(u64, host_byte_offset, byte_offset) catch std.math.maxInt(u64),
+		.offset_is_exact = @intFromBool(offset_is_exact),
+		.frames_validated = frames_validated,
+	};
+	return verdict;
+}
+
+fn validationFailure(
+	result: *JxlValidationResult,
+	err: ?JxlError,
+	byte_offset: u64,
+	host_byte_offset: u64,
+	offset_is_exact: bool,
+	frames_validated: u32,
+) JxlValidationVerdict {
+	return switch (err orelse error.GenericError) {
+		error.Unsupported => setValidationResult(result, .JXL_VALIDATION_UNSUPPORTED, .JXL_VALIDATION_FINDING_UNSUPPORTED_FEATURE, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
+		error.NotEnoughBytes => setValidationResult(result, .JXL_VALIDATION_CORRUPT, .JXL_VALIDATION_FINDING_TRUNCATED, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
+		error.OutOfMemory => setValidationResult(result, .JXL_VALIDATION_INDETERMINATE, .JXL_VALIDATION_FINDING_OUT_OF_MEMORY, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
+		error.GenericError => setValidationResult(result, .JXL_VALIDATION_INDETERMINATE, .JXL_VALIDATION_FINDING_UNCLASSIFIED_DECODER_ERROR, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
+	};
+}
+
+/// Strictly validates a bounded JPEG XL buffer without decoding through an external implementation.
+/// Unsupported syntax and incomplete validation remain distinct from proven corruption.
+pub export fn JxlValidate(
+	data: ?[*]const u8,
+	size: usize,
+	options_ptr: ?*const JxlValidationOptions,
+	result_ptr: ?*JxlValidationResult,
+) JxlValidationVerdict {
+	const result = result_ptr orelse return .JXL_VALIDATION_INDETERMINATE;
+	const options = options_ptr orelse &default_validation_options;
+	const host_offset = options.host_byte_offset;
+
+	if (options.struct_size < @sizeOf(JxlValidationOptions) or (size != 0 and data == null)) {
+		return setValidationResult(result, .JXL_VALIDATION_INDETERMINATE, .JXL_VALIDATION_FINDING_INVALID_ARGUMENT, 0, host_offset, true, 0);
+	}
+	if (size > options.max_input_bytes) {
+		return setValidationResult(result, .JXL_VALIDATION_INDETERMINATE, .JXL_VALIDATION_FINDING_RESOURCE_LIMIT, 0, host_offset, true, 0);
+	}
+	if (size < 2) {
+		return setValidationResult(result, .JXL_VALIDATION_CORRUPT, .JXL_VALIDATION_FINDING_TRUNCATED, size, host_offset, true, 0);
+	}
+
+	const input = data.?[0..size];
+	const signature = JxlSignatureCheck(input.ptr, input.len);
+	if (signature == .JXL_SIG_INVALID) {
+		return setValidationResult(result, .JXL_VALIDATION_CORRUPT, .JXL_VALIDATION_FINDING_INVALID_SIGNATURE, 0, host_offset, true, 0);
+	}
+	if (signature == .JXL_SIG_NOT_ENOUGH_BYTES) {
+		return setValidationResult(result, .JXL_VALIDATION_CORRUPT, .JXL_VALIDATION_FINDING_TRUNCATED, size, host_offset, true, 0);
+	}
+	if (signature == .JXL_SIG_CODESTREAM and size == 2) {
+		return setValidationResult(result, .JXL_VALIDATION_CORRUPT, .JXL_VALIDATION_FINDING_TRUNCATED, size, host_offset, true, 0);
+	}
+
+	const dec_ptr = JxlDecoderCreate(null) orelse
+		return setValidationResult(result, .JXL_VALIDATION_INDETERMINATE, .JXL_VALIDATION_FINDING_OUT_OF_MEMORY, 0, host_offset, false, 0);
+	defer JxlDecoderDestroy(dec_ptr);
+	const dec: *DecoderImpl = @ptrCast(@alignCast(dec_ptr));
+	dec.input_data = input.ptr;
+	dec.input_size = input.len;
+	dec.input_closed = true;
+
+	if (ensureParsed(dec) != .JXL_DEC_SUCCESS) {
+		return validationFailure(result, dec.last_error, 0, host_offset, false, 0);
+	}
+	const pixels = std.math.mul(u64, dec.basic_info.xsize, dec.basic_info.ysize) catch
+		return setValidationResult(result, .JXL_VALIDATION_INDETERMINATE, .JXL_VALIDATION_FINDING_RESOURCE_LIMIT, 0, host_offset, false, 0);
+	if (pixels > options.max_pixels) {
+		return setValidationResult(result, .JXL_VALIDATION_INDETERMINATE, .JXL_VALIDATION_FINDING_RESOURCE_LIMIT, 0, host_offset, false, 0);
+	}
+
+	var frames_validated: u32 = 0;
+	while (!dec.decode_complete) {
+		// The normal event decoder can expose metadata and skip an unsupported
+		// frame without decoding it. Strict validation must classify that frame.
+		var kind_br = BitReader.init(dec.frame_data[dec.frame_offset..]);
+		if (frame_header_mod.peekFrameEncoding(&kind_br) != .modular) {
+			return validationFailure(result, error.Unsupported, dec.frame_offset, host_offset, false, frames_validated);
+		}
+		kind_br.close() catch |err| {
+			return validationFailure(result, err, dec.frame_offset, host_offset, false, frames_validated);
+		};
+		if (ensureCurrentFrameParsed(dec) != .JXL_DEC_SUCCESS) {
+			return validationFailure(result, dec.last_error, dec.frame_offset, host_offset, false, frames_validated);
+		}
+		if (!dec.frame_parsed) break;
+		if (frames_validated >= options.max_frames) {
+			return setValidationResult(result, .JXL_VALIDATION_INDETERMINATE, .JXL_VALIDATION_FINDING_RESOURCE_LIMIT, dec.frame_offset, host_offset, false, frames_validated);
+		}
+
+		var frame_dec = dec_frame.FrameDecoder.init(std.heap.c_allocator, &dec.codec_meta);
+		defer frame_dec.deinit();
+		frame_dec.decodeFrame(dec.frame_data[dec.frame_offset .. dec.frame_offset + dec.frame_size]) catch |err| {
+			return validationFailure(result, err, dec.frame_offset, host_offset, false, frames_validated);
+		};
+		frames_validated += 1;
+		advanceCurrentFrame(dec);
+	}
+
+	if (frames_validated == 0) {
+		return setValidationResult(result, .JXL_VALIDATION_CORRUPT, .JXL_VALIDATION_FINDING_MALFORMED, 0, host_offset, false, 0);
+	}
+	return setValidationResult(result, .JXL_VALIDATION_VALID, .JXL_VALIDATION_FINDING_NONE, 0, host_offset, false, frames_validated);
 }
 
 pub export fn JxlICCProfileEncode(

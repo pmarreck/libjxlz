@@ -557,6 +557,15 @@ pub const FrameHeader = struct {
     }
 };
 
+/// Reads only the prefix needed to classify a frame's coding mode.
+/// Strict validation uses this before unsupported VarDCT fields can fail in later parsing.
+pub fn peekFrameEncoding(br: *BitReader) FrameEncoding {
+	if (fc.readAllDefault(br)) return .var_dct;
+	const frame_type_encoding = fc.U32Enc.init(fc.val(0), fc.val(1), fc.val(2), fc.val(3));
+	_ = fc.U32Coder.read(frame_type_encoding, br);
+	return if (br.readBits(1) != 0) .modular else .var_dct;
+}
+
 // ── Tests ──
 
 const testing = std.testing;
