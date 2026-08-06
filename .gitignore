@@ -29,6 +29,7 @@ tools/conformance/__pycache__
 # Zig build artifacts
 .zig-cache/
 zig-out/
+zig-pkg/
 
 # Codescan index
 .codescan/

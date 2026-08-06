@@ -1168,8 +1168,8 @@ fn ensureParsed(dec: *DecoderImpl) JxlDecoderStatus {
 
 	var br = BitReader.init(codestream[2..]);
 	const size = headers.SizeHeader.readFromBitStream(&br);
-	const metadata = image_metadata.ImageMetadata.readFromBitStream(&br) catch |err| return decoderStatusFromError(dec, err);
-	const transform_data = image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded) catch |err| return decoderStatusFromError(dec, err);
+	const metadata = image_metadata.ImageMetadata.readFromBitStream(&br) catch |err| return decoderStatusFromError(dec, bitReaderError(&br, err));
+	const transform_data = image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded) catch |err| return decoderStatusFromError(dec, bitReaderError(&br, err));
 	const embedded_icc = if (metadata.color_encoding.want_icc) blk: {
 		if (dec.owned_icc.len != 0) {
 			std.heap.c_allocator.free(dec.owned_icc);
@@ -1182,7 +1182,7 @@ fn ensureParsed(dec: *DecoderImpl) JxlDecoderStatus {
 		};
 		break :blk dec.owned_icc;
 	} else &[_]u8{};
-	br.jumpToByteBoundary() catch |err| return decoderStatusFromError(dec, err);
+	br.jumpToByteBoundary() catch |err| return decoderStatusFromError(dec, bitReaderError(&br, err));
 
 	var codec_meta = image_metadata.CodecMetadata{};
 	codec_meta.m = metadata;
@@ -1198,6 +1198,13 @@ fn ensureParsed(dec: *DecoderImpl) JxlDecoderStatus {
 	dec.basic_info = populateBasicInfo(&codec_meta, dec.input_is_container);
 	dec.basic_info_available = true;
 	return .JXL_DEC_SUCCESS;
+}
+
+/// Preserves structural errors from a bounded header parse unless a zero-filled
+/// bit read has crossed the caller's input boundary, which proves truncation.
+fn bitReaderError(br: *const BitReader, err: JxlError) JxlError {
+	if (br.totalBitsConsumed() > br.totalBytes() * 8) return error.NotEnoughBytes;
+	return err;
 }
 
 fn ensureDecoded(dec: *DecoderImpl) JxlDecoderStatus {

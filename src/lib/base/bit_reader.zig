@@ -167,7 +167,7 @@ pub const BitReader = struct {
 		if (total_consumed > self.checked_out_of_bounds_bits and
 			total_consumed > total_available)
 		{
-			return JxlError.GenericError;
+			return JxlError.NotEnoughBytes;
 		}
 	}
 };
@@ -229,7 +229,7 @@ test "overread returns zeros and close errors" {
 	// Read 8 more — should get zeros (overread)
 	try std.testing.expectEqual(@as(u64, 0), br.readBits(8));
 	// Close should return error because we read past end
-	try std.testing.expectError(JxlError.GenericError, br.close());
+	try std.testing.expectError(JxlError.NotEnoughBytes, br.close());
 }
 
 test "empty input" {

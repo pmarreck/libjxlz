@@ -243,6 +243,7 @@ annotate=[
 	tests/cli/package_runtime_smoke.sh = TDD smoke proving packaged Nix djxlz executes directly on its build host.
 	tests/cli/test_runner_smoke.sh = fake-nix smoke plus shared Bash helper for the top-level shell-test runner
 	tests/cli/windows_cross_compile_smoke.sh = All-platform cross compile smoke; adapts Nix MinGW Brotli .dll.a import archives to Zig library names.
+	tests/cli/zig_package_headers_smoke.sh = Fetches the Zig package into an isolated cache and asserts both public header roots are archived.
 	tests/cli/zig_runner_smoke.sh = fake-nix smoke plus shared Bash helper for the remaining direct-Zig script edges
 	tests/corpus/decode_ground_truth_manifest.tsv = Byte-identical decoder corpus against pinned djxl v0.12.0; 6 fixtures including the byte-exact spline_on_first_frame
 	tests/corpus/decode_known_diff_manifest.tsv = Byte-close classifier holding splines.jxl alone: exactly one byte differs, asserted bounded to +/-1 with identical PAM dimensions and payload size

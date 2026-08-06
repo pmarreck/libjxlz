@@ -79,13 +79,14 @@ UNSUPPORTED.
 
 ### 1.3 The three pinned defects, located
 
-**(a) Truncation is reported as a generic error.** Validate's reproducer
-`FF 0A 00 00` fails inside `ensureParsed` (`src/capi_root.zig:1136`). Root
-cause is `BitReader.close()` at `src/lib/base/bit_reader.zig:161`, which
-returns `JxlError.GenericError` when more bits were consumed than the input
-holds. Consuming past the end of a closed input *is* truncation, and the error
-set already has `NotEnoughBytes` for it. This mirrors upstream libjxl's
-`BitReader::Close`, which has no truncation code to return; we do.
+**(a) Truncation was reported as a generic error.** Validate's reproducer
+`FF 0A 00 00` reads 41 bits from a 16-bit input inside `ensureParsed`
+(`src/capi_root.zig:1136`). `BitReader.close()` now returns
+`NotEnoughBytes` on its own overread, but metadata validation can return
+`GenericError` first. The bounded header path therefore gives a proven reader
+overread precedence over a later generic parser error. The public C control
+now reports CORRUPT/TRUNCATED, while in-bounds non-zero alignment padding
+remains `GenericError`.
 
 **(b) `bicycles.jxl` fails in modular AC group 8 of 12.** Measured frame
 header: `encoding=.modular type=.regular_frame flags=0 dc_level=0 upsampling=1
@@ -162,11 +163,13 @@ Validate cannot consume our headers through a Zig URL dependency:
 so `lib/include/jxl/*.h` and `include/jxl/*.h` are omitted from the fetched
 package. Validate worked around it with a local extern ABI mirror.
 
-- [ ] Add `include` and `lib/include` to `.paths`.
-- [ ] Test the *fetched* package shape, not the working tree: fetch the package
+- [x] Add `include` and `lib/include` to `.paths` — 2026-08-06 11:13 AM EDT.
+- [x] Test the *fetched* package shape, not the working tree: fetch the package
       into a scratch global cache and assert the headers are present. A test
       that stats `lib/include/jxl/validate.h` in the repo passes vacuously and
-      is exactly the check that would have missed this.
+      is exactly the check that would have missed this. The control failed
+      before the manifest change and when both paths were reverted — 2026-08-06
+      11:13 AM EDT.
 - [ ] Add a `jxlz validate` subcommand that calls `JxlValidate` and prints
       verdict, finding code, byte offset, host offset, exactness, and frames
       validated, with `--json`. Every measurement in section 1 was taken with a
@@ -191,10 +194,11 @@ only map that to INDETERMINATE.
       was violated, the file is provably corrupt) alongside `GenericError`
       (we do not know). Keep the four-variant `Status` mapping at the C
       boundary so the existing FFI surface is unchanged.
-- [ ] `BitReader.close()` returns `NotEnoughBytes` on overread rather than
-      `GenericError`. This alone fixes validate's `FF 0A 00 00` reproducer.
-      Check the blast radius: `jumpToByteBoundary`'s non-zero-padding error is
-      genuinely `Malformed` and must not be swept into the same change.
+- [x] `BitReader.close()` returns `NotEnoughBytes` on overread rather than
+      `GenericError`, and the bounded header path reports a measured overread
+      before a later generic metadata error can mask it. The public `FF 0A 00
+      00` control now returns CORRUPT/TRUNCATED; `jumpToByteBoundary`'s
+      non-zero padding remains `GenericError` — 2026-08-06 11:13 AM EDT.
 - [ ] Sweep every `return error.GenericError` in the decode path and classify
       each one: truncation, malformed, unsupported, or genuinely unknown.
       There are 221 such sites across 20 non-encoder files (counted, not

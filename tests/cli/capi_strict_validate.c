@@ -55,6 +55,7 @@ int main(int argc, char** argv) {
 		0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
 	};
 	static const uint8_t raw_signature_only[] = {0xff, 0x0a};
+	static const uint8_t truncated_metadata[] = {0xff, 0x0a, 0x00, 0x00};
 	JxlValidationOptions options = JXL_VALIDATION_OPTIONS_INIT;
 	JxlValidationResult result;
 	uint8_t* accepted = NULL;
@@ -89,6 +90,8 @@ int main(int argc, char** argv) {
 	ok &= expect_result("invalid signature", invalid_signature, sizeof(invalid_signature), &options,
 		JXL_VALIDATION_CORRUPT, JXL_VALIDATION_FINDING_INVALID_SIGNATURE);
 	ok &= expect_result("truncated codestream", raw_signature_only, sizeof(raw_signature_only), &options,
+		JXL_VALIDATION_CORRUPT, JXL_VALIDATION_FINDING_TRUNCATED);
+	ok &= expect_result("truncated metadata", truncated_metadata, sizeof(truncated_metadata), &options,
 		JXL_VALIDATION_CORRUPT, JXL_VALIDATION_FINDING_TRUNCATED);
 
 	options.host_byte_offset = 41;
