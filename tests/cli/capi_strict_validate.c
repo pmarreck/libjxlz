@@ -60,19 +60,19 @@ int main(int argc, char** argv) {
 	JxlValidationResult result;
 	uint8_t* accepted = NULL;
 	uint8_t* unsupported = NULL;
-	uint8_t* unclassified = NULL;
+	uint8_t* bicycles = NULL;
 	size_t accepted_size = 0;
 	size_t unsupported_size = 0;
-	size_t unclassified_size = 0;
+	size_t bicycles_size = 0;
 	int ok = 1;
 
 	if (argc != 4 || !read_file(argv[1], &accepted, &accepted_size) ||
 		!read_file(argv[2], &unsupported, &unsupported_size) ||
-		!read_file(argv[3], &unclassified, &unclassified_size)) {
-		fprintf(stderr, "usage: %s ACCEPTED.jxl UNSUPPORTED_VALID.jxl UNCLASSIFIED_VALID.jxl\n", argv[0]);
+		!read_file(argv[3], &bicycles, &bicycles_size)) {
+		fprintf(stderr, "usage: %s ACCEPTED.jxl UNSUPPORTED_VALID.jxl BICYCLES_VALID.jxl\n", argv[0]);
 		free(accepted);
 		free(unsupported);
-		free(unclassified);
+		free(bicycles);
 		return 2;
 	}
 
@@ -85,8 +85,8 @@ int main(int argc, char** argv) {
 	}
 	ok &= expect_result("unsupported valid", unsupported, unsupported_size, &options,
 		JXL_VALIDATION_UNSUPPORTED, JXL_VALIDATION_FINDING_UNSUPPORTED_FEATURE);
-	ok &= expect_result("unclassified valid", unclassified, unclassified_size, &options,
-		JXL_VALIDATION_INDETERMINATE, JXL_VALIDATION_FINDING_UNCLASSIFIED_DECODER_ERROR);
+	ok &= expect_result("bicycles modular", bicycles, bicycles_size, &options,
+		JXL_VALIDATION_VALID, JXL_VALIDATION_FINDING_NONE);
 	ok &= expect_result("invalid signature", invalid_signature, sizeof(invalid_signature), &options,
 		JXL_VALIDATION_CORRUPT, JXL_VALIDATION_FINDING_INVALID_SIGNATURE);
 	ok &= expect_result("truncated codestream", raw_signature_only, sizeof(raw_signature_only), &options,
@@ -108,6 +108,6 @@ int main(int argc, char** argv) {
 
 	free(accepted);
 	free(unsupported);
-	free(unclassified);
+	free(bicycles);
 	return ok ? 0 : 1;
 }

@@ -20,33 +20,30 @@ next session can re-run it rather than trust it.
 | `good/alpha_premultiplied.jxl` | UNSUPPORTED | unsupported-feature | 0 | 1024x1024 12-bit RGB+A, lossy |
 | `good/animation_icos4d.jxl` | UNSUPPORTED | unsupported-feature | 0 | 128x128 animation |
 | `good/patches_lossless.jxl` | UNSUPPORTED | unsupported-feature | 1 | 1600x1096 8-bit RGB+A |
-| `good/bicycles.jxl` | **INDETERMINATE** | unclassified-decoder-error | 0 | 1024x631 8-bit RGB, lossy |
-| `corrupt/bicycles_corrupt_1..5.jxl` | **INDETERMINATE** ×5 | unclassified-decoder-error | 0 | — |
+| `good/bicycles.jxl` | **VALID** | none | 1 | 1024x631 8-bit RGB, lossy modular |
+| `corrupt/bicycles_corrupt_1..4.jxl` | rejected by `djxlz` | — | — | Clean base now decodes, so these are discriminating controls |
+| `corrupt/bicycles_corrupt_5.jxl` | accepted by `djxlz` and stock `djxl` | — | — | Externally labeled mutation, but not an invalid-bitstream control |
 
-Three of eight known-good files decode. Four are honestly rejected as
-unsupported. One is untyped.
+Four of eight known-good files decode. Four are honestly rejected as
+unsupported.
 
 ### 1.2 The corrupt bucket proves nothing today
 
-All five files in `corrupt/` are derived from `bicycles.jxl`, which already
-fails before any frame is validated. Their INDETERMINATE verdict is inherited
-from the clean file, so the bucket currently measures nothing about corruption
-detection. This is the "green by exclusion" failure mode Einstein's
-2026-07-24 note warned about, in its purest form: the corpus looks like a
-5-case detection suite and is a 5-case restatement of one pre-existing bug.
-This was already known and already declared. `tests/cli/labeled_corpus_matrix_smoke.sh`
-prints it on every `./test` run:
+All five files in `corrupt/` are derived from `bicycles.jxl`. Now that the
+clean base decodes, four reject and count as discriminating detections.
+`bicycles_corrupt_5.jxl` is accepted by both libjxlz and the stock `djxl`
+oracle, so it stays recorded as a false acceptance rather than pretending it
+is a valid corruption-detection control. `tests/cli/labeled_corpus_matrix_smoke.sh`
+prints the measured matrix on every `./test` run:
 
 ```
-  labeled-good     n=8  accepted=2  unsupported-valid=6  oracle-disagreement=0
-  labeled-corrupt  n=5  rejected=5  falsely-accepted=0
-  discriminating detections=0 of 5 rejections (a rejection counts only when the clean base fixture is accepted)
-  NOT YET DISCRIMINATING: every corrupt rejection above is unproven.
+  labeled-good     n=8  accepted=3  unsupported-valid=5  oracle-disagreement=0
+  labeled-corrupt  n=5  rejected=4  falsely-accepted=1
+  discriminating detections=4 of 4 rejections (a rejection counts only when the clean base fixture is accepted)
 ```
 
-A gate that reports its own vacuity rather than a green tick is the right
-design, and it means the work below is closing a gap someone deliberately left
-visible instead of one that was hidden.
+A gate that reports its false acceptance alongside the four actual detections
+keeps the remaining corpus work visible.
 
 This is not a claim that nobody built a control here. `tests/lib/mutation_detection.bash`
 is a real MFIC harness: 15 bases, 270 mutants, an independent pinned djxl
@@ -88,14 +85,14 @@ overread precedence over a later generic parser error. The public C control
 now reports CORRUPT/TRUNCATED, while in-bounds non-zero alignment padding
 remains `GenericError`.
 
-**(b) `bicycles.jxl` fails in modular AC group 8 of 12.** Measured frame
-header: `encoding=.modular type=.regular_frame flags=0 dc_level=0 upsampling=1
-is_last=true`, TOC 15 entries, 1 DC group, 12 AC groups, 1 pass. DC global and
-DC group decode fine; AC groups 0-7 decode fine; group 8 returns
-`error.GenericError` from `ModularDecoder.decodeGroup`. So this is a genuine
-modular decoding bug on a real-world lossy-modular (XYB) file, not a missing
-feature and not a DC-frame misclassification. Both of those hypotheses were
-tested and refuted.
+**(b) `bicycles.jxl` failed in modular AC group 8 of 12 and now decodes.** The
+upstream differential showed the cause at the first bottom-edge group:
+upstream gives modular decoding a raw 256×256 group rect, then clamps each
+shifted channel against its own full dimensions. The group therefore contains
+mixed `64×60`, `32×30`, and `128×59` channels. libjxlz had treated the edge as
+one clamped group size, which produces no single correct ceiling or floor
+calculation. `groupChannelExtent` now reproduces the shifted-and-clamped
+construction; the public C validation control reports VALID.
 
 **(c) A VALID verdict is not backed by a successful decode.** `sunset_logo.jxl`
 validates VALID with 2 frames, and `djxlz` fails on it with
@@ -106,8 +103,8 @@ the specific cause, VALID currently means "every frame's coefficients decoded",
 not "this file decodes".
 
 The corpus matrix gate corroborates this from the other side without knowing
-about it: it reports `accepted=2` of 8 known-good files (that is `djxlz`
-decoding), while `JxlValidate` returns VALID for 3. `sunset_logo.jxl` is the
+about it: it reports `accepted=3` of 8 known-good files (that is `djxlz`
+decoding), while `JxlValidate` returns VALID for 4. `sunset_logo.jxl` is the
 one file in the gap.
 
 ### 1.4 What of the format is implemented
@@ -235,13 +232,12 @@ CORRUPT/TRUNCATED and a typed verdict respectively.
 
 ### Phase 2 — Fix modular, then re-earn the corrupt corpus (days)
 
-- [ ] Fix `bicycles.jxl` AC group 8. Start by dumping the group's MA tree,
-      predictor set, and channel shape and comparing against groups 0-7, which
-      succeed on the same file. A differential against upstream's
-      `ModularDecode` on the same group is the strongest available oracle and
-      does not depend on libjxlz explaining itself.
+- [x] Fix `bicycles.jxl` AC group 8. The upstream `ModularDecode`
+      differential exposed the raw-group, per-channel-clamp rule; a public C
+      control moved from INDETERMINATE to VALID — 2026-08-06 7:20 PM EDT.
 - [ ] Rebuild `tests/corpus/labeled/corrupt/` so it is derived from files we
-      decode. Keep the bicycles mutants once bicycles decodes; add mutants of
+      decode. Keep `bicycles_corrupt_1..4`; retain oracle-accepted
+      `bicycles_corrupt_5` only as a may-ignore record, then add mutants of
       `delta_palette`, `from_gif`, and `sunset_logo`.
 - [ ] Reconcile the strict path with the decode path (§1.3c) so VALID means the
       file decodes end to end. Either strict validation runs the output stage,

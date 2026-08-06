@@ -6,7 +6,7 @@ set -u
 # Declared denominators live here rather than in the manifest so a silently
 # truncated or partially-read manifest cannot masquerade as a full sweep.
 LABELED_CORPUS_CASES=13
-LABELED_CORPUS_DISCRIMINATING=0
+LABELED_CORPUS_DISCRIMINATING=4
 
 # Negative controls over the pure classifier and manifest validators. These run
 # first and cost no decode work. Without them a runner that never reports a

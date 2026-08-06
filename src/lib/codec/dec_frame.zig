@@ -224,6 +224,27 @@ pub const ModularStreamId = struct {
     }
 };
 
+/// Returns the extent of a full-image channel covered by one raw group rect.
+/// The group is shifted first, then clamped to the channel, matching libjxl's
+/// `Rect` construction for differently-sized subsampled channels at an edge.
+fn groupChannelExtent(
+    full_size: usize,
+    group_start: usize,
+    group_size: usize,
+    shift: i32,
+) usize {
+	if (shift <= 0) {
+		if (group_start >= full_size) return 0;
+		return @min(group_size, full_size - group_start);
+	}
+	if (shift >= @bitSizeOf(usize)) return 0;
+
+	const shifted_start = group_start >> @intCast(shift);
+	if (shifted_start >= full_size) return 0;
+	const shifted_size = group_size >> @intCast(shift);
+	return @min(shifted_size, full_size - shifted_start);
+}
+
 // ── ModularFrameDecoder ──
 
 pub const ModularFrameDecoder = struct {
@@ -397,8 +418,9 @@ pub const ModularFrameDecoder = struct {
         const gy = group_id / self.frame_dim.xsize_groups;
         const x0 = gx * self.frame_dim.grp_dim;
         const y0 = gy * self.frame_dim.grp_dim;
-        const xsize = @min(self.frame_dim.grp_dim, if (self.frame_dim.xsize > x0) self.frame_dim.xsize - x0 else 0);
-        const ysize = @min(self.frame_dim.grp_dim, if (self.frame_dim.ysize > y0) self.frame_dim.ysize - y0 else 0);
+        if (x0 >= self.frame_dim.xsize or y0 >= self.frame_dim.ysize) return;
+        const xsize = self.frame_dim.grp_dim;
+        const ysize = self.frame_dim.grp_dim;
 
         if (xsize == 0 or ysize == 0) return;
 
@@ -418,11 +440,11 @@ pub const ModularFrameDecoder = struct {
         const group_channel_capacity = self.full_image.channels.items.len - beginc;
         try gi.channels.ensureTotalCapacity(self.allocator, group_channel_capacity);
 
-        while (c < self.full_image.channels.items.len) : (c += 1) {
-            const fch = &self.full_image.channels.items[c];
-            const rw = common.subsampledSize(xsize, fch.hshift);
-            const rh = common.subsampledSize(ysize, fch.vshift);
-            if (rw == 0 or rh == 0) continue;
+		while (c < self.full_image.channels.items.len) : (c += 1) {
+			const fch = &self.full_image.channels.items[c];
+			const rw = groupChannelExtent(fch.w, x0, xsize, fch.hshift);
+			const rh = groupChannelExtent(fch.h, y0, ysize, fch.vshift);
+			if (rw == 0 or rh == 0) continue;
             var gc = try Channel.create(self.allocator, rw, rh, fch.hshift, fch.vshift);
             _ = &gc;
             try gi.channels.append(self.allocator, gc);
@@ -697,6 +719,14 @@ test "ModularStreamId modularAC" {
     const sid = ModularStreamId.modularAC(2, 0);
     const expected = 1 + 3 * fd.num_dc_groups + kNumQuantTables + 2;
     try testing.expectEqual(expected, sid.id(fd));
+}
+
+test "groupChannelExtent clamps shifted edge groups per channel" {
+	try testing.expectEqual(@as(usize, 60), groupChannelExtent(316, 512, 256, 1));
+	try testing.expectEqual(@as(usize, 30), groupChannelExtent(158, 512, 256, 2));
+	try testing.expectEqual(@as(usize, 59), groupChannelExtent(315, 512, 256, 1));
+	try testing.expectEqual(@as(usize, 119), groupChannelExtent(631, 512, 256, 0));
+	try testing.expectEqual(@as(usize, 0), groupChannelExtent(315, 768, 256, 1));
 }
 
 test "ModularFrameDecoder init/deinit" {
