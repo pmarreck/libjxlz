@@ -4,6 +4,12 @@
 
 - [x] Reconcile project-owned Markdown, the coverage plan, and the live worktree with the stricter JPEG XL parser goal; trashed the obsolete handoff, identified archive/removal candidates, traced the dirty Highway submodule, and recorded the prioritized completion list in `CODE_REVIEW.md`. Security policy remains for replacement rather than deletion because it currently routes reports upstream — 2026-08-14 3:15 PM EDT.
 
+## Strict-parser release blockers (2026-08-14 review)
+
+- [ ] Repair decoder input ownership before parent integration. `JxlDecoderReleaseInput` currently lets a C caller free the raw codestream while `frame_data` retains a slice into it; copy/retain the unread bytes or report the true unconsumed suffix, clear all derived slices on release/rewind, and pin a two-chunk C lifetime control.
+- [ ] Add checked C image-output size arithmetic. Malicious dimensions or a caller-supplied channel count can overflow row and full-buffer multiplications before allocation; make the public size and write paths return an error instead of panicking or wrapping.
+- [ ] Make the published C ABI honest. The installed upstream-shaped headers declare many symbols absent from the archive, and non-null `JxlMemoryManager` callbacks cover only the top-level object; publish a symbol-complete supported subset or explicit stubs, then either propagate the manager through each instance allocation or reject it.
+
 ## Mecha Validate v1 strict leaf gate (2026-08-04 overnight)
 
 - [x] Add a bounded Zig/C validation API with four non-overlapping verdicts: valid, corrupt, unsupported, and indeterminate. Generic decoder failures remain indeterminate until tied to a typed violated invariant; this prevents known-valid `bicycles.jxl` from being mislabeled corrupt. `JxlValidationResult` carries a stable finding code, payload-relative offset, host-relative offset, exactness flag, and validated-frame count. Witnessed red before implementation via missing `jxl/validate.h`, then behavior-red for the known-valid generic failure — 2026-08-04 11:55 PM EDT.
