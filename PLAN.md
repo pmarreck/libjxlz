@@ -4,6 +4,10 @@
 
 - [x] Reconcile project-owned Markdown, the coverage plan, and the live worktree with the stricter JPEG XL parser goal; trashed the obsolete handoff, identified archive/removal candidates, traced the dirty Highway submodule, and recorded the prioritized completion list in `CODE_REVIEW.md`. Security policy remains for replacement rather than deletion because it currently routes reports upstream — 2026-08-14 3:15 PM EDT.
 
+## Worktree hygiene (2026-08-19)
+
+- [x] Restore the unexplained deletion of the pinned Highway file `hwy/contrib/sort/result-inl.h` from the existing submodule commit. Superproject and submodule are clean; the dependency revision remains `457c891775a7397bdb0376bb1031e6e027af1c48` — 2026-08-19 9:57 PM EDT.
+
 ## Strict-parser release blockers (2026-08-14 review)
 
 - [ ] Repair decoder input ownership before parent integration. `JxlDecoderReleaseInput` currently lets a C caller free the raw codestream while `frame_data` retains a slice into it; copy/retain the unread bytes or report the true unconsumed suffix, clear all derived slices on release/rewind, and pin a two-chunk C lifetime control.
