@@ -16,7 +16,8 @@ decoder output.
 Priority before feature coverage or encoder work:
 
 1. Make input ownership and JxlDecoderReleaseInput safe.
-2. Make strict verdicts sound and decide what VALID promises.
+2. Make strict verdicts sound and enforce the theoretical-maximum promise of
+   VALID.
 3. Add a strict-validation mutation matrix with clean exit classification and
    working-set limits.
 4. Reconcile installed headers, exported symbols, and memory-manager behavior.
@@ -36,15 +37,31 @@ Parse a complete frame header before this verdict, or return INDETERMINATE for
 a prefix-only feature decision. Add packaged-C controls for a malformed prefix
 and the recorded mutation.
 
-### CRITICAL — VALID does not imply public-decoder success
+### CRITICAL — VALID is weaker than the chosen validation policy
 
 Validation returns VALID after FrameDecoder.decodeFrame at
 src/capi_root.zig:1337-1349. The public decoder also requires
 writeFrameDecoderOutput at src/capi_root.zig:1218-1223. sunset_logo.jxl is the
 measured counterexample in COVERAGE_GAMEPLAN.md:97-107.
 
-Run output-independent render checks during validation, or narrow and document
-the success contract.
+Peter decided on 2026-08-19 that VALID is reserved for reaching the theoretical
+validation ceiling for this file and validation context: every invariant that
+can in principle be checked from the available bytes, format semantics, and
+supplied context or keys was checked and passed. That does not imply every byte
+is semantically constrained. Specification-permitted arbitrary payload,
+information-dense entropy data, or encrypted content without a key can lower
+the theoretical ceiling and still coexist with VALID once every remaining
+checkable invariant is exhausted. The reduced ceiling needs a machine-readable
+qualifier, suitable for displaying the "asterisk" Peter proposed.
+
+An implementation shortfall is different: if current code stops below that
+file-specific theoretical ceiling, it must not return VALID. The result model
+must therefore keep the verdict separate from the theoretical ceiling, current
+implementation ceiling, achieved validation depth or coverage, and limiting
+reasons. A cursory or structural pass records a lower achieved depth unless
+structure is all the format and file make checkable. The exact public names
+remain to be reconciled with the nomenclature Peter and Einstein are developing
+before the C and Zig ABIs are frozen.
 
 ### WARNING — successful decoder settings are inert
 
@@ -171,13 +188,14 @@ metadata-decompression budget.
 
 ## 8. Files and documentation with unclear purpose
 
-### WARNING — the published security route belongs to upstream libjxl
+### RESOLVED 2026-08-19 — repository-owned security route
 
-CONTRIBUTING.md:5 sends reporters to SECURITY.md, which identifies libjxl,
-uses its CPE, and directs mail to Google's libjxl-security@google.com at
-SECURITY.md:1-7,47. doc/vuln_playbook.md:5 repeats that destination. Replace
-these with a libjxlz-owned reporting and supported-version policy. Do not
-delete security guidance without a replacement.
+The audit found that the inherited policy sent libjxlz reports to upstream
+Google maintainers. Private vulnerability reporting is now enabled on the
+pmarreck/libjxlz repository. SECURITY.md, CONTRIBUTING.md, and
+doc/vuln_playbook.md now name GitHub private advisories as the primary route
+and security@validate.pics as the fallback. They do not promise an unapproved
+response SLA, support window, bounty, or disclosure deadline.
 
 ### WARNING — README promotes upstream C++ manuals as local guidance
 
@@ -283,7 +301,7 @@ Not applicable. This repository has no database or ORM layer.
 | HANDOFF-20260805103315EDT.md | Moved to system Trash after review. It described completed August 6 work as pending. |
 | PLAN.md | Refreshed during this audit: removed the obsolete bicycles failure and 3/8 matrix claims; added strict-parser blockers. More historical pruning remains useful. |
 | COVERAGE_GAMEPLAN.md | Current priority source. Keep. |
-| SECURITY.md, CONTRIBUTING.md, doc/vuln_playbook.md | Replace the upstream-only reporting route before public parent integration. This needs Peter's security contact and supported-version policy. |
+| SECURITY.md, CONTRIBUTING.md, doc/vuln_playbook.md | Replaced 2026-08-19 with a repository-owned policy. GitHub private vulnerability reporting is enabled; security@validate.pics is the fallback. |
 | README.md | Update before release: remove or label April ReleaseFast benchmark claims, fix ./build --debug to ./build debug, and distinguish local docs from upstream C++ references. |
 | docs/plans/2026-03-06-*, IMPROVEMENTS.md, PROJECT_OVERVIEW.md | Archive or consolidate after retaining decisions useful to the current coverage plan. |
 | upstream C++ docs | Retain while the CMake-based cross-oracle remains; mark them as upstream reference rather than libjxlz instructions. |

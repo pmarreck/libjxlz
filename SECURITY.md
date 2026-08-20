@@ -1,73 +1,58 @@
-# Security and Vulnerability Policy for libjxl
+# Security policy for libjxlz
 
-## TL;DR:
+libjxlz parses untrusted JPEG XL data and is still under active pre-release
+development. Please report suspected vulnerabilities privately.
 
-CPE prefix: `cpe:2.3:a:libjxl_project:libjxl`
+## Reporting a vulnerability
 
-To report a security issue, please email libjxl-security@google.com.
+Use GitHub's private vulnerability-reporting form:
 
-Include in your email a description of the issue, the steps you took to create
-the issue, affected versions, and if known, mitigations for the issue. Our
-vulnerability management team will acknowledge receiving your email within 3
-working days.
+https://github.com/pmarreck/libjxlz/security/advisories/new
 
-This project follows a 90 day disclosure timeline.
+If that form is unavailable, email security@validate.pics.
 
-For all other bugs, where there are no security implications about disclosing
-the unpatched bug, open a [new issue](https://github.com/libjxl/libjxl/issues)
-checking first for existing similar issues. If in doubt about the security
-impact of a bug you discovered, email first.
+Do not open a public issue, pull request, or discussion containing exploit
+details before the report has been assessed and a disclosure plan agreed.
 
-## Policy overview
+A useful report includes:
 
-libjxl's Security Policy is based on the [Google Open Source program
-guidelines](https://github.com/google/oss-vulnerability-guide) for coordinated
-vulnerability disclosure.
+- the affected libjxlz commit or release;
+- the operating system, architecture, compiler, and optimize mode;
+- a minimized input or deterministic reproduction steps;
+- the observed result and expected safety property;
+- any known impact, affected parent project, or suggested mitigation;
+- the name and affiliation to use for credit, or a request for anonymity.
 
-Early versions of `libjxl` had a different security policy that didn't provide
-security and vulnerability disclosure support. Versions up to and including
-0.3.7 are not covered and won't receive any security advisory.
+## Supported versions
 
-Only released versions, starting from version 0.5, are covered by this policy.
-Development branches, arbitrary commits from `main` branch or even releases with
-backported features externally patched on top are not covered. Only those
-versions with a release tag in `libjxl`'s repository are covered, starting from
-version 0.5.
+libjxlz does not yet have a stable versioned release. Security maintenance
+targets the current yolo branch. Parent projects should pin an exact audited
+commit and update when a security fix lands.
 
-## What's a "Security bug"
+Older commits, local modifications, and the retained upstream libjxl C++
+reference tree are not separate supported libjxlz releases. This policy will be
+revised when versioned releases begin.
 
-A security bug is a bug that can potentially be exploited to let an attacker
-gain unauthorized access or privileges such as disclosing information or
-arbitrary code execution. Not all fuzzer-found bugs and not all assert()
-failures are considered security bugs in libjxl. For a detailed explanation and
-examples see our [Security Vulnerabilities Playbook](doc/vuln_playbook.md).
+## Scope
 
-## What to expect
+Please report memory-safety failures, out-of-bounds access, integer overflow,
+uncontrolled resource consumption, use-after-free, unsafe FFI behavior,
+malformed input accepted as valid, or another defect that could affect a host
+processing attacker-controlled data.
 
-To report a security issue, please email libjxl-security@google.com with all the
-details about the bug you encountered.
+A failed assertion or ordinary rejection is not automatically a vulnerability.
+When uncertain, report privately and let the project classify it.
 
- * Include a description of the issue, steps to reproduce, etc. Compiler
-   versions, flags, exact version used and even CPU are often relevant given our
-   usage of SIMD and run-time dispatch of SIMD instructions.
+## Response and disclosure
 
- * A member of our security team will reply to you within 3 business days. Note
-   that business days are different in different countries.
+The project will acknowledge and investigate reports as capacity permits. No
+response-time or disclosure-window guarantee is promised during pre-release
+development.
 
- * We will evaluate the issue and we may require more input from your side to
-   reproduce it.
+Confirmed vulnerabilities will be fixed and tested privately where practical.
+The reporter and project will coordinate publication. A GitHub Security
+Advisory and CVE will be used when the affected release state and impact warrant
+them. Reporter credit will follow the reporter's preference.
 
- * If the issue fits in the description of a security bug, we will issue a
-   CVE, publish a fix and make a new minor or patch release with it. There is
-   a maximum of 90 day disclosure timeline, we ask you to not publish the
-   details before the 90 day deadline or the release date (whichever comes
-   first).
-
- * In the case that we publish a CVE we will credit the external researcher who
-   reported the issue. When reporting security issues please let us know if you
-   need to include specific information while doing so, like for example a
-   company affiliation.
-
-Our security team follows the [Security Vulnerabilities
-Playbook](doc/vuln_playbook.md). For more details about the process and policies
-please take a look at it.
+Maintainer procedure is documented in
+[doc/vuln_playbook.md](doc/vuln_playbook.md).

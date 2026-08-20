@@ -8,6 +8,10 @@
 
 - [x] Restore the unexplained deletion of the pinned Highway file `hwy/contrib/sort/result-inl.h` from the existing submodule commit. Superproject and submodule are clean; the dependency revision remains `457c891775a7397bdb0376bb1031e6e027af1c48` — 2026-08-19 9:57 PM EDT.
 
+## Security reporting route (2026-08-19)
+
+- [x] Enable GitHub private vulnerability reporting for `pmarreck/libjxlz`; replace the inherited upstream security policy, contribution guidance, and vulnerability playbook with libjxlz-owned instructions using GitHub advisories first and `security@validate.pics` as fallback. No SLA, support window, bounty, or disclosure deadline was promised — 2026-08-19 10:04 PM EDT.
+
 ## Strict-parser release blockers (2026-08-14 review)
 
 - [ ] Repair decoder input ownership before parent integration. `JxlDecoderReleaseInput` currently lets a C caller free the raw codestream while `frame_data` retains a slice into it; copy/retain the unread bytes or report the true unconsumed suffix, clear all derived slices on release/rewind, and pin a two-chunk C lifetime control.
@@ -34,7 +38,7 @@
 - [x] Fix `bicycles.jxl` modular AC group 8. The upstream differential established that it passes a raw 256×256 bottom-edge rect and clamps each shifted channel independently, yielding mixed `64×60`, `32×30`, and `128×59` channel shapes. `groupChannelExtent` now matches that construction, a unit control pins the shapes, and the public C control changed red (`INDETERMINATE`/unclassified) to VALID — 2026-08-06 7:20 PM EDT.
 - [ ] Rebuild the labeled corrupt corpus around accepted bases. The remeasurement is now discriminating for `bicycles_corrupt_1..4`; `bicycles_corrupt_5` remains an expected false acceptance because stock djxl also decodes it. Curiosity poke: preserve oracle-accepted mutations as may-ignore cases rather than claiming them as undetected corruption.
 - [ ] Make `UNSUPPORTED` sound before parent integration: do not classify a frame from the unvalidated `peekFrameEncoding` prefix. Parse a full well-formed frame header first, or return INDETERMINATE, and pin the malformed-prefix and `sunset_logo` mutation controls through the packaged C API.
-- [ ] Decide and enforce what `JXL_VALIDATION_VALID` promises. Either run the remaining output/render checks so every VALID stream also completes through the public decoder, or rename/document the narrower coefficient-decode contract and pin the `sunset_logo.jxl` divergence.
+- [ ] Enforce Peter's 2026-08-19 validation policy: reserve `JXL_VALIDATION_VALID` for reaching this file's theoretical validation ceiling, meaning every invariant checkable in principle from its bytes, format semantics, and supplied context or keys was checked and passed. Replace the one-dimensional claim with an MFIC-controlled result model that reports the verdict, theoretical ceiling, current implementation ceiling, achieved depth or coverage, and limiting reasons. Information-dense or specification-unconstrained bytes and encrypted content without a key may lower the theoretical ceiling and still permit qualified `VALID*`; a current-code shortfall may not. Make the qualifier machine-readable, then reconcile final names with the Peter/Einstein nomenclature before freezing the C and Zig ABIs. Curiosity poke: prove controls distinguish a theoretically exhausted but intrinsically opaque file from a file the implementation merely gave up on.
 - [ ] Turn the oracle mutation corpus into a strict-validation matrix. It must require a clean decoder exit, VALID bases, and typed outcomes for oracle-rejected mutants; crashes, hangs, and INDETERMINATE results are failures rather than detections.
 - [ ] Bound validation working memory and metadata expansion. Apply a checked decoded-byte limit across full and extra planes, cap `brob` decompression, and pass the selected allocator through validation so parent hosts can account for all allocations.
 
