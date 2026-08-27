@@ -166,6 +166,7 @@ fn applyExtraChannelDimShift(
 pub const AcStrategyType = enum(u32) {
 	dct = 0,
 	identity = 1,
+	dct2x2 = 2,
 };
 
 pub const QuantMode = enum(u8) {
@@ -204,13 +205,21 @@ const kSumRequiredXy: usize = 2056;
 const kTotalTableSize: usize = kSumRequiredXy * kDctBlockSize * 3;
 const kRequiredSizeX = [_]u8{ 1, 1, 1, 1, 2, 4, 1, 1, 2, 1, 1, 8, 4, 16, 8, 32, 16 };
 const kRequiredSizeY = [_]u8{ 1, 1, 1, 1, 2, 4, 2, 4, 4, 1, 1, 8, 8, 16, 16, 32, 32 };
-const kAcStrategyToQuantTable = [_]u8{ 0, 1 }; // DCT, IDENTITY
+const kAcStrategyToQuantTable = [_]u8{ 0, 1, 2 }; // DCT, IDENTITY, DCT2X2
 const kLibraryIdentity = QuantEncoding{
 	.mode = .identity,
 	.idweights = .{
 		.{ 280.0, 3160.0, 3160.0 },
 		.{ 60.0, 864.0, 864.0 },
 		.{ 18.0, 200.0, 200.0 },
+	},
+};
+const kLibraryDct2 = QuantEncoding{
+	.mode = .dct2,
+	.dct2weights = .{
+		.{ 3840.0, 2560.0, 1280.0, 640.0, 480.0, 300.0 },
+		.{ 960.0, 640.0, 320.0, 180.0, 140.0, 120.0 },
+		.{ 640.0, 320.0, 128.0, 64.0, 32.0, 16.0 },
 	},
 };
 const kAlmostZero: f32 = 1.0e-8;
@@ -420,15 +429,40 @@ pub const DequantMatrices = struct {
 			if ((computed_kind_mask & table_bit) != 0) continue;
 			var quant_enc = self.encodings[table_idx];
 			if (quant_enc.mode == .library) {
-				if (table_idx != 1) return unsupported_mod.unsupported(.vardct_frame);
-				quant_enc = kLibraryIdentity;
+				quant_enc = libraryEncoding(table_idx) orelse return unsupported_mod.unsupported(.vardct_frame);
 			}
-			if (quant_enc.mode != .identity) return unsupported_mod.unsupported(.vardct_frame);
-			try computeIdentityTable(self, table_idx, quant_enc);
+			switch (quant_enc.mode) {
+				.identity => try computeIdentityTable(self, table_idx, quant_enc),
+				.dct2 => try computeDct2Table(self, table_idx, quant_enc),
+				else => return unsupported_mod.unsupported(.vardct_frame),
+			}
 		}
 		self.computed_mask |= acs_mask;
 	}
 };
+
+fn libraryEncoding(table_idx: usize) ?QuantEncoding {
+	return switch (table_idx) {
+		1 => kLibraryIdentity,
+		2 => kLibraryDct2,
+		else => null,
+	};
+}
+
+fn invertAndStore(self: *DequantMatrices, table_idx: usize, weights: []const f32) JxlError!void {
+	const num = requiredSize(table_idx) * kDctBlockSize;
+	if (weights.len != 3 * num) return error.GenericError;
+	const dest = self.table_offsets[table_idx * 3];
+	for (0..3 * num) |i| {
+		const w = weights[i];
+		if (@abs(w) < kAlmostZero or @abs(w) >= 1.0 / kAlmostZero) return error.GenericError;
+		self.table[dest + i] = 1.0 / w;
+		self.inv_table[dest + i] = w;
+	}
+	for (0..3) |c| {
+		self.inv_table[dest + c * num] = 0;
+	}
+}
 
 fn computeIdentityTable(self: *DequantMatrices, table_idx: usize, quant_encoding: QuantEncoding) JxlError!void {
 	const num = requiredSize(table_idx) * kDctBlockSize;
@@ -443,16 +477,36 @@ fn computeIdentityTable(self: *DequantMatrices, table_idx: usize, quant_encoding
 		weights[start + 8] = quant_encoding.idweights[c][1];
 		weights[start + 9] = quant_encoding.idweights[c][2];
 	}
-	const dest = self.table_offsets[table_idx * 3];
-	for (0..3 * num) |i| {
-		const w = weights[i];
-		if (@abs(w) < kAlmostZero or @abs(w) >= 1.0 / kAlmostZero) return error.GenericError;
-		self.table[dest + i] = 1.0 / w;
-		self.inv_table[dest + i] = w;
-	}
+	try invertAndStore(self, table_idx, &weights);
+}
+
+fn computeDct2Table(self: *DequantMatrices, table_idx: usize, quant_encoding: QuantEncoding) JxlError!void {
+	const num = requiredSize(table_idx) * kDctBlockSize;
+	if (num != kDctBlockSize) return error.GenericError;
+	var weights: [3 * kDctBlockSize]f32 = undefined;
 	for (0..3) |c| {
-		self.inv_table[dest + c * num] = 0;
+		const start = c * kDctBlockSize;
+		const w = quant_encoding.dct2weights[c];
+		weights[start] = 0xBAD;
+		weights[start + 1] = w[0];
+		weights[start + 8] = w[0];
+		weights[start + 9] = w[1];
+		for (0..2) |y| {
+			for (0..2) |x| {
+				weights[start + y * 8 + x + 2] = w[2];
+				weights[start + (y + 2) * 8 + x] = w[2];
+				weights[start + (y + 2) * 8 + x + 2] = w[3];
+			}
+		}
+		for (0..4) |y| {
+			for (0..4) |x| {
+				weights[start + y * 8 + x + 4] = w[4];
+				weights[start + (y + 4) * 8 + x] = w[4];
+				weights[start + (y + 4) * 8 + x + 4] = w[5];
+			}
+		}
 	}
+	try invertAndStore(self, table_idx, &weights);
 }
 
 // ── ModularStreamId ──
@@ -1296,6 +1350,24 @@ test "ensureComputed identity library table inverts the known weights" {
 	try testing.expectApproxEqAbs(@as(f32, 1.0 / 60.0), y[0], 1e-6);
 	const b = matrices.matrix(.identity, 2);
 	try testing.expectApproxEqAbs(@as(f32, 1.0 / 18.0), b[0], 1e-6);
+}
+
+test "ensureComputed dct2 library table inverts the known weights" {
+	const allocator = testing.allocator;
+	var data = [_]u8{0x01};
+	var br = BitReader.init(&data);
+	var matrices = DequantMatrices{};
+	defer matrices.deinit(allocator);
+	try matrices.decode(&br);
+	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.dct2x2));
+	const x = matrices.matrix(.dct2x2, 0);
+	try testing.expectApproxEqAbs(@as(f32, 1.0 / 3840.0), x[1], 1e-6);
+	try testing.expectApproxEqAbs(@as(f32, 1.0 / 3840.0), x[8], 1e-6);
+	try testing.expectApproxEqAbs(@as(f32, 1.0 / 2560.0), x[9], 1e-6);
+	try testing.expectApproxEqAbs(@as(f32, 1.0 / 1280.0), x[2], 1e-6);
+	try testing.expectApproxEqAbs(@as(f32, 1.0 / 640.0), x[18], 1e-6);
+	try testing.expectApproxEqAbs(@as(f32, 1.0 / 480.0), x[4], 1e-6);
+	try testing.expectApproxEqAbs(@as(f32, 1.0 / 300.0), x[36], 1e-6);
 }
 
 test "processDCGlobal rejects unsupported frame features" {
