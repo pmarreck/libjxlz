@@ -158,27 +158,94 @@ fn applyExtraChannelDimShift(
 	}
 }
 
-// ── DequantMatrices DC quantization ──
-// Transliterated from lib/jxl/quant_weights.cc DequantMatrices::DecodeDC
+// ── DequantMatrices ──
+// Transliterated from lib/jxl/quant_weights.cc DequantMatrices::{DecodeDC,Decode}
+
+/// C++ QuantEncoding::Mode. Values are bitstream ABI: 3-bit kLog2NumQuantModes.
+pub const QuantMode = enum(u8) {
+	library = 0,
+	identity = 1,
+	dct2 = 2,
+	dct4 = 3,
+	dct4x8 = 4,
+	afv = 5,
+	dct = 6,
+	raw = 7,
+};
+
+/// Per-table encoding of an AC dequant matrix. Library mode is the default
+/// cjxl path; the other modes carry custom weights read by `decode`.
+pub const QuantEncoding = struct {
+	mode: QuantMode = .library,
+	predefined: u8 = 0,
+	idweights: [3][3]f32 = @splat(@splat(0)),
+};
+
+const kNumQuantTables: usize = 17; // DequantMatrices::kNum in C++
+const kRequiredSizeX = [_]u8{ 1, 1, 1, 1, 2, 4, 1, 1, 2, 1, 1, 8, 4, 16, 8, 32, 16 };
+const kRequiredSizeY = [_]u8{ 1, 1, 1, 1, 2, 4, 2, 4, 4, 1, 1, 8, 8, 16, 16, 32, 32 };
+const kAlmostZero: f32 = 1.0e-8;
+
+comptime {
+	if (kRequiredSizeX.len != kNumQuantTables or kRequiredSizeY.len != kNumQuantTables) {
+		@compileError("quant-table size arrays must match kNumQuantTables");
+	}
+}
 
 pub const DequantMatrices = struct {
-    dc_quant: [3]f32 = .{ 1.0 / 4096.0, 1.0 / 512.0, 1.0 / 256.0 }, // defaults from C++
+	dc_quant: [3]f32 = .{ 1.0 / 4096.0, 1.0 / 512.0, 1.0 / 256.0 }, // defaults from C++
+	encodings: [kNumQuantTables]QuantEncoding = [_]QuantEncoding{.{}} ** kNumQuantTables,
 
-    /// Read DC quantization parameters from the bitstream.
-    /// Must be called before DecodeGlobalInfo, matching C++ ProcessDCGlobal flow.
-    pub fn decodeDC(self: *DequantMatrices, br: *BitReader) JxlError!void {
-        const all_default = br.readBits(1);
-        if (all_default == 0) {
-            for (0..3) |c| {
-                const bits16: u16 = @intCast(br.readBits(16));
-                const biased_exp = (bits16 >> 10) & 0x1F;
-                if (biased_exp == 31) return error.GenericError; // infinity/NaN not allowed
-                const val = float_utils.loadFloat16(bits16);
-                self.dc_quant[c] = val * (1.0 / 128.0);
-                if (self.dc_quant[c] < 1.0e-8) return error.GenericError; // kAlmostZero
-            }
-        }
-    }
+	/// Read DC quantization parameters from the bitstream.
+	/// Must be called before DecodeGlobalInfo, matching C++ ProcessDCGlobal flow.
+	pub fn decodeDC(self: *DequantMatrices, br: *BitReader) JxlError!void {
+		const all_default = br.readBits(1);
+		if (all_default == 0) {
+			for (0..3) |c| {
+				const bits16: u16 = @intCast(br.readBits(16));
+				const biased_exp = (bits16 >> 10) & 0x1F;
+				if (biased_exp == 31) return error.GenericError; // infinity/NaN not allowed
+				const val = float_utils.loadFloat16(bits16);
+				self.dc_quant[c] = val * (1.0 / 128.0);
+				if (self.dc_quant[c] < kAlmostZero) return error.GenericError;
+			}
+		}
+	}
+
+	/// Read the 17 AC dequant table encodings from the AC-global section.
+	/// C++ DequantMatrices::Decode. all_default=1 installs Library<0> for every
+	/// table and consumes one bit — the path default cjxl lossy encodes take.
+	pub fn decode(self: *DequantMatrices, br: *BitReader) JxlError!void {
+		const all_default = br.readBits(1);
+		if (all_default != 0) {
+			self.encodings = [_]QuantEncoding{.{ .mode = .library, .predefined = 0 }} ** kNumQuantTables;
+			return;
+		}
+		for (0..kNumQuantTables) |i| {
+			const mode_bits: u8 = @intCast(br.readBits(3));
+			const mode: QuantMode = @enumFromInt(mode_bits);
+			switch (mode) {
+				.library => {
+					// kCeilLog2NumPredefinedTables == 0: no extra bits.
+					self.encodings[i] = .{ .mode = .library, .predefined = 0 };
+				},
+				.identity => {
+					const required_size = @as(usize, kRequiredSizeX[i]) * @as(usize, kRequiredSizeY[i]);
+					if (required_size != 1) return error.GenericError;
+					var weights: [3][3]f32 = undefined;
+					for (0..3) |c| {
+						for (0..3) |j| {
+							const val = try fc.F16Coder.read(br);
+							if (@abs(val) < kAlmostZero) return error.GenericError;
+							weights[c][j] = val * 64.0;
+						}
+					}
+					self.encodings[i] = .{ .mode = .identity, .idweights = weights };
+				},
+				else => return unsupported_mod.unsupported(.vardct_frame),
+			}
+		}
+	}
 };
 
 // ── ModularStreamId ──
@@ -191,8 +258,6 @@ pub const ModularStreamKind = enum {
     quant_table,
     modular_ac,
 };
-
-const kNumQuantTables: usize = 17; // DequantMatrices::kNum in C++
 
 pub const ModularStreamId = struct {
     kind: ModularStreamKind = .global_data,
@@ -772,6 +837,81 @@ test "computeSectionLayout rejects truncated payload" {
     };
 
     try testing.expectError(error.GenericError, computeSectionLayout(allocator, 5, 16, &entries));
+}
+
+test "DequantMatrices.decode all_default consumes one bit and uses library encodings" {
+	// C++ DequantMatrices::Decode: a 1-bit all_default flag. When set, every
+	// one of the 17 quant tables is QuantEncoding::Library<0>() and no further
+	// bits are read. This is the path default cjxl lossy encodes take.
+	var data = [_]u8{0x01};
+	var br = BitReader.init(&data);
+	var matrices = DequantMatrices{};
+	try matrices.decode(&br);
+	try testing.expectEqual(@as(usize, 1), br.totalBitsConsumed());
+	try testing.expectEqual(@as(usize, kNumQuantTables), matrices.encodings.len);
+	for (matrices.encodings) |enc| {
+		try testing.expectEqual(QuantMode.library, enc.mode);
+		try testing.expectEqual(@as(u8, 0), enc.predefined);
+	}
+}
+
+test "DequantMatrices.decode custom-flag library tables consume 3 bits each" {
+	// all_default=0, then 17 tables each with 3-bit mode=library and no
+	// predefined index bits (kCeilLog2NumPredefinedTables == 0).
+	var data = [_]u8{0} ** 8;
+	var br = BitReader.init(&data);
+	var matrices = DequantMatrices{};
+	try matrices.decode(&br);
+	try testing.expectEqual(@as(usize, 1 + 3 * kNumQuantTables), br.totalBitsConsumed());
+	for (matrices.encodings) |enc| {
+		try testing.expectEqual(QuantMode.library, enc.mode);
+		try testing.expectEqual(@as(u8, 0), enc.predefined);
+	}
+}
+
+test "DequantMatrices.decode identity table scales F16 weights by 64" {
+	const BitWriter = @import("../base/bit_writer.zig").BitWriter;
+	const allocator = testing.allocator;
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writer.write(1, 0);
+	try writer.write(3, @intFromEnum(QuantMode.identity));
+	for (0..9) |_| {
+		try writer.write(16, 0x3C00);
+	}
+	for (1..kNumQuantTables) |_| {
+		try writer.write(3, @intFromEnum(QuantMode.library));
+	}
+	try writer.zeroPadToByte();
+	var br = BitReader.init(writer.bytes());
+	var matrices = DequantMatrices{};
+	try matrices.decode(&br);
+	try testing.expectEqual(QuantMode.identity, matrices.encodings[0].mode);
+	for (matrices.encodings[0].idweights) |row| {
+		for (row) |weight| {
+			try testing.expectEqual(@as(f32, 64.0), weight);
+		}
+	}
+	for (matrices.encodings[1..]) |enc| {
+		try testing.expectEqual(QuantMode.library, enc.mode);
+	}
+}
+
+test "DequantMatrices.decode rejects identity mode on a table that is not 1x1" {
+	const BitWriter = @import("../base/bit_writer.zig").BitWriter;
+	const allocator = testing.allocator;
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writer.write(1, 0);
+	// Tables 0-3 are 1x1; table 4 (DCT16X16) is 2x2. Identity is illegal there.
+	for (0..4) |_| {
+		try writer.write(3, @intFromEnum(QuantMode.library));
+	}
+	try writer.write(3, @intFromEnum(QuantMode.identity));
+	try writer.zeroPadToByte();
+	var br = BitReader.init(writer.bytes());
+	var matrices = DequantMatrices{};
+	try testing.expectError(error.GenericError, matrices.decode(&br));
 }
 
 test "processDCGlobal rejects unsupported frame features" {

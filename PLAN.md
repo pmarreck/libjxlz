@@ -6,6 +6,8 @@
   finished 20:51:11Z, 465s. `mechatron-ci log --project libjxlz --commit 4cb13298 --json`
   reports `"status": "success"`. First push exercising the four-target
   manifest including `test-releasefast` — 2026-08-27 5:19 PM EDT
+- [x] `0791846c` (`jxlz validate`) **success** on Mechatron: started 21:29:49Z,
+  finished 21:37:16Z, 447s — 2026-08-27 5:37 PM EDT
 
 ## Peter's ruling: support ALL JPEG XL features (2026-08-27)
 
@@ -83,6 +85,11 @@ done first because it is cheap and it makes B's progress measurable per file.
   already decode); (5) JPEG reconstruction (`jbrd`), then BMFF and ICC breadth.
   Each slice differential-gated against pinned djxl v0.12.0 on synthesized
   fixtures, plus a per-feature corruption sweep.
+  - [x] `DequantMatrices.decode` all-default path (1 bit, 17 Library tables),
+    custom-flag library tables (3 bits each), and identity tables (9 F16
+    weights × 64, rejected on non-1×1 tables). Remaining modes: dct2, dct4,
+    dct4x8, afv, dct, raw. C++ `Decode` lives in AC-global, so modular files
+    are unaffected — 2026-08-27 5:45 PM EDT
 - [x] Add a `jxlz validate` subcommand (verdict, finding, feature name, offsets,
   frames, `--json`). `jxlz validate` / `jxlz v` dogfoods `JxlValidate` through
   the published header. Exit 0 only for VALID; other verdicts exit 1 with the
