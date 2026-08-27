@@ -175,21 +175,63 @@ pub const QuantMode = enum(u8) {
 
 /// Per-table encoding of an AC dequant matrix. Library mode is the default
 /// cjxl path; the other modes carry custom weights read by `decode`.
+pub const DctQuantWeightParams = struct {
+	num_distance_bands: u8 = 0,
+	distance_bands: [3][kMaxDistanceBands]f32 = @splat(@splat(0)),
+};
+
 pub const QuantEncoding = struct {
 	mode: QuantMode = .library,
 	predefined: u8 = 0,
 	idweights: [3][3]f32 = @splat(@splat(0)),
+	dct2weights: [3][6]f32 = @splat(@splat(0)),
+	dct4multipliers: [3][2]f32 = @splat(@splat(0)),
+	dct4x8multipliers: [3]f32 = @splat(0),
+	afv_weights: [3][9]f32 = @splat(@splat(0)),
+	dct_params: DctQuantWeightParams = .{},
+	dct_params_afv_4x4: DctQuantWeightParams = .{},
 };
 
 const kNumQuantTables: usize = 17; // DequantMatrices::kNum in C++
 const kRequiredSizeX = [_]u8{ 1, 1, 1, 1, 2, 4, 1, 1, 2, 1, 1, 8, 4, 16, 8, 32, 16 };
 const kRequiredSizeY = [_]u8{ 1, 1, 1, 1, 2, 4, 2, 4, 4, 1, 1, 8, 8, 16, 16, 32, 32 };
 const kAlmostZero: f32 = 1.0e-8;
+const kLog2MaxDistanceBands: usize = 4;
+const kMaxDistanceBands: usize = 1 + (1 << kLog2MaxDistanceBands);
 
 comptime {
 	if (kRequiredSizeX.len != kNumQuantTables or kRequiredSizeY.len != kNumQuantTables) {
 		@compileError("quant-table size arrays must match kNumQuantTables");
 	}
+}
+
+fn requiredSize(table_index: usize) usize {
+	return @as(usize, kRequiredSizeX[table_index]) * @as(usize, kRequiredSizeY[table_index]);
+}
+
+fn readScaledF16(br: *BitReader) JxlError!f32 {
+	const val = try fc.F16Coder.read(br);
+	if (@abs(val) < kAlmostZero) return error.GenericError;
+	return val * 64.0;
+}
+
+fn readNonzeroF16(br: *BitReader) JxlError!f32 {
+	const val = try fc.F16Coder.read(br);
+	if (@abs(val) < kAlmostZero) return error.GenericError;
+	return val;
+}
+
+fn decodeDctParams(br: *BitReader) JxlError!DctQuantWeightParams {
+	var params = DctQuantWeightParams{};
+	params.num_distance_bands = @intCast(br.readBits(kLog2MaxDistanceBands) + 1);
+	for (0..3) |c| {
+		for (0..params.num_distance_bands) |j| {
+			params.distance_bands[c][j] = try fc.F16Coder.read(br);
+		}
+		if (params.distance_bands[c][0] < kAlmostZero) return error.GenericError;
+		params.distance_bands[c][0] *= 64.0;
+	}
+	return params;
 }
 
 pub const DequantMatrices = struct {
@@ -230,19 +272,73 @@ pub const DequantMatrices = struct {
 					self.encodings[i] = .{ .mode = .library, .predefined = 0 };
 				},
 				.identity => {
-					const required_size = @as(usize, kRequiredSizeX[i]) * @as(usize, kRequiredSizeY[i]);
-					if (required_size != 1) return error.GenericError;
+					if (requiredSize(i) != 1) return error.GenericError;
 					var weights: [3][3]f32 = undefined;
 					for (0..3) |c| {
 						for (0..3) |j| {
-							const val = try fc.F16Coder.read(br);
-							if (@abs(val) < kAlmostZero) return error.GenericError;
-							weights[c][j] = val * 64.0;
+							weights[c][j] = try readScaledF16(br);
 						}
 					}
 					self.encodings[i] = .{ .mode = .identity, .idweights = weights };
 				},
-				else => return unsupported_mod.unsupported(.vardct_frame),
+				.dct2 => {
+					if (requiredSize(i) != 1) return error.GenericError;
+					var weights: [3][6]f32 = undefined;
+					for (0..3) |c| {
+						for (0..6) |j| {
+							weights[c][j] = try readScaledF16(br);
+						}
+					}
+					self.encodings[i] = .{ .mode = .dct2, .dct2weights = weights };
+				},
+				.dct => {
+					self.encodings[i] = .{ .mode = .dct, .dct_params = try decodeDctParams(br) };
+				},
+				.dct4 => {
+					if (requiredSize(i) != 1) return error.GenericError;
+					var multipliers: [3][2]f32 = undefined;
+					for (0..3) |c| {
+						for (0..2) |j| {
+							multipliers[c][j] = try readNonzeroF16(br);
+						}
+					}
+					self.encodings[i] = .{
+						.mode = .dct4,
+						.dct4multipliers = multipliers,
+						.dct_params = try decodeDctParams(br),
+					};
+				},
+				.dct4x8 => {
+					if (requiredSize(i) != 1) return error.GenericError;
+					var multipliers: [3]f32 = undefined;
+					for (0..3) |c| {
+						multipliers[c] = try readNonzeroF16(br);
+					}
+					self.encodings[i] = .{
+						.mode = .dct4x8,
+						.dct4x8multipliers = multipliers,
+						.dct_params = try decodeDctParams(br),
+					};
+				},
+				.afv => {
+					if (requiredSize(i) != 1) return error.GenericError;
+					var weights: [3][9]f32 = undefined;
+					for (0..3) |c| {
+						for (0..9) |j| {
+							weights[c][j] = try fc.F16Coder.read(br);
+						}
+						for (0..6) |j| {
+							weights[c][j] *= 64.0;
+						}
+					}
+					self.encodings[i] = .{
+						.mode = .afv,
+						.afv_weights = weights,
+						.dct_params = try decodeDctParams(br),
+						.dct_params_afv_4x4 = try decodeDctParams(br),
+					};
+				},
+				.raw => return unsupported_mod.unsupported(.vardct_frame),
 			}
 		}
 	}
@@ -912,6 +1008,162 @@ test "DequantMatrices.decode rejects identity mode on a table that is not 1x1" {
 	var br = BitReader.init(writer.bytes());
 	var matrices = DequantMatrices{};
 	try testing.expectError(error.GenericError, matrices.decode(&br));
+}
+
+test "DequantMatrices.decode dct2 table scales F16 weights by 64" {
+	const BitWriter = @import("../base/bit_writer.zig").BitWriter;
+	const allocator = testing.allocator;
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writer.write(1, 0);
+	try writer.write(3, @intFromEnum(QuantMode.dct2));
+	for (0..18) |_| {
+		try writer.write(16, 0x3C00);
+	}
+	for (1..kNumQuantTables) |_| {
+		try writer.write(3, @intFromEnum(QuantMode.library));
+	}
+	try writer.zeroPadToByte();
+	var br = BitReader.init(writer.bytes());
+	var matrices = DequantMatrices{};
+	try matrices.decode(&br);
+	try testing.expectEqual(QuantMode.dct2, matrices.encodings[0].mode);
+	for (matrices.encodings[0].dct2weights) |row| {
+		for (row) |weight| {
+			try testing.expectEqual(@as(f32, 64.0), weight);
+		}
+	}
+}
+
+test "DequantMatrices.decode dct params scale the seed band by 64" {
+	const BitWriter = @import("../base/bit_writer.zig").BitWriter;
+	const allocator = testing.allocator;
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writer.write(1, 0);
+	try writer.write(3, @intFromEnum(QuantMode.dct));
+	try writer.write(4, 0);
+	for (0..3) |_| {
+		try writer.write(16, 0x3C00);
+	}
+	for (1..kNumQuantTables) |_| {
+		try writer.write(3, @intFromEnum(QuantMode.library));
+	}
+	try writer.zeroPadToByte();
+	var br = BitReader.init(writer.bytes());
+	var matrices = DequantMatrices{};
+	try matrices.decode(&br);
+	try testing.expectEqual(QuantMode.dct, matrices.encodings[0].mode);
+	try testing.expectEqual(@as(u8, 1), matrices.encodings[0].dct_params.num_distance_bands);
+	for (0..3) |c| {
+		try testing.expectEqual(@as(f32, 64.0), matrices.encodings[0].dct_params.distance_bands[c][0]);
+	}
+}
+
+test "DequantMatrices.decode dct4 multipliers stay unscaled" {
+	const BitWriter = @import("../base/bit_writer.zig").BitWriter;
+	const allocator = testing.allocator;
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writer.write(1, 0);
+	try writer.write(3, @intFromEnum(QuantMode.dct4));
+	for (0..6) |_| {
+		try writer.write(16, 0x3C00);
+	}
+	try writer.write(4, 0);
+	for (0..3) |_| {
+		try writer.write(16, 0x3C00);
+	}
+	for (1..kNumQuantTables) |_| {
+		try writer.write(3, @intFromEnum(QuantMode.library));
+	}
+	try writer.zeroPadToByte();
+	var br = BitReader.init(writer.bytes());
+	var matrices = DequantMatrices{};
+	try matrices.decode(&br);
+	try testing.expectEqual(QuantMode.dct4, matrices.encodings[0].mode);
+	for (matrices.encodings[0].dct4multipliers) |row| {
+		for (row) |mul| {
+			try testing.expectEqual(@as(f32, 1.0), mul);
+		}
+	}
+	try testing.expectEqual(@as(f32, 64.0), matrices.encodings[0].dct_params.distance_bands[0][0]);
+}
+
+test "DequantMatrices.decode dct4x8 multipliers stay unscaled" {
+	const BitWriter = @import("../base/bit_writer.zig").BitWriter;
+	const allocator = testing.allocator;
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writer.write(1, 0);
+	try writer.write(3, @intFromEnum(QuantMode.dct4x8));
+	for (0..3) |_| {
+		try writer.write(16, 0x3C00);
+	}
+	try writer.write(4, 0);
+	for (0..3) |_| {
+		try writer.write(16, 0x3C00);
+	}
+	for (1..kNumQuantTables) |_| {
+		try writer.write(3, @intFromEnum(QuantMode.library));
+	}
+	try writer.zeroPadToByte();
+	var br = BitReader.init(writer.bytes());
+	var matrices = DequantMatrices{};
+	try matrices.decode(&br);
+	try testing.expectEqual(QuantMode.dct4x8, matrices.encodings[0].mode);
+	for (matrices.encodings[0].dct4x8multipliers) |mul| {
+		try testing.expectEqual(@as(f32, 1.0), mul);
+	}
+}
+
+test "DequantMatrices.decode afv scales the first six weights of each channel" {
+	const BitWriter = @import("../base/bit_writer.zig").BitWriter;
+	const allocator = testing.allocator;
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writer.write(1, 0);
+	try writer.write(3, @intFromEnum(QuantMode.afv));
+	for (0..27) |_| {
+		try writer.write(16, 0x3C00);
+	}
+	for (0..2) |_| {
+		try writer.write(4, 0);
+		for (0..3) |_| {
+			try writer.write(16, 0x3C00);
+		}
+	}
+	for (1..kNumQuantTables) |_| {
+		try writer.write(3, @intFromEnum(QuantMode.library));
+	}
+	try writer.zeroPadToByte();
+	var br = BitReader.init(writer.bytes());
+	var matrices = DequantMatrices{};
+	try matrices.decode(&br);
+	try testing.expectEqual(QuantMode.afv, matrices.encodings[0].mode);
+	for (0..3) |c| {
+		for (0..6) |j| {
+			try testing.expectEqual(@as(f32, 64.0), matrices.encodings[0].afv_weights[c][j]);
+		}
+		for (6..9) |j| {
+			try testing.expectEqual(@as(f32, 1.0), matrices.encodings[0].afv_weights[c][j]);
+		}
+	}
+	try testing.expectEqual(@as(u8, 1), matrices.encodings[0].dct_params.num_distance_bands);
+	try testing.expectEqual(@as(u8, 1), matrices.encodings[0].dct_params_afv_4x4.num_distance_bands);
+}
+
+test "DequantMatrices.decode raw tables stay unsupported until modular quant tables exist" {
+	const BitWriter = @import("../base/bit_writer.zig").BitWriter;
+	const allocator = testing.allocator;
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writer.write(1, 0);
+	try writer.write(3, @intFromEnum(QuantMode.raw));
+	try writer.zeroPadToByte();
+	var br = BitReader.init(writer.bytes());
+	var matrices = DequantMatrices{};
+	try testing.expectError(error.Unsupported, matrices.decode(&br));
 }
 
 test "processDCGlobal rejects unsupported frame features" {

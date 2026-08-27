@@ -8,6 +8,8 @@
   manifest including `test-releasefast` — 2026-08-27 5:19 PM EDT
 - [x] `0791846c` (`jxlz validate`) **success** on Mechatron: started 21:29:49Z,
   finished 21:37:16Z, 447s — 2026-08-27 5:37 PM EDT
+- [x] `20cbcb65` (`DequantMatrices.decode` first slice) **success** on Mechatron:
+  started 21:49:10Z, finished 21:56:28Z, 438s — 2026-08-27 5:56 PM EDT
 
 ## Peter's ruling: support ALL JPEG XL features (2026-08-27)
 
@@ -86,10 +88,11 @@ done first because it is cheap and it makes B's progress measurable per file.
   Each slice differential-gated against pinned djxl v0.12.0 on synthesized
   fixtures, plus a per-feature corruption sweep.
   - [x] `DequantMatrices.decode` all-default path (1 bit, 17 Library tables),
-    custom-flag library tables (3 bits each), and identity tables (9 F16
-    weights × 64, rejected on non-1×1 tables). Remaining modes: dct2, dct4,
-    dct4x8, afv, dct, raw. C++ `Decode` lives in AC-global, so modular files
-    are unaffected — 2026-08-27 5:45 PM EDT
+    custom-flag library tables (3 bits each), identity/dct2 (F16 × 64),
+    dct params (seed band × 64), dct4/dct4x8 (unscaled multipliers + params),
+    and afv (first six weights × 64, two param sets). Raw tables still
+    return unsupported pending modular quant-table decode. C++ `Decode`
+    lives in AC-global, so modular files are unaffected — 2026-08-27 5:58 PM EDT
 - [x] Add a `jxlz validate` subcommand (verdict, finding, feature name, offsets,
   frames, `--json`). `jxlz validate` / `jxlz v` dogfoods `JxlValidate` through
   the published header. Exit 0 only for VALID; other verdicts exit 1 with the
