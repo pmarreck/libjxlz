@@ -102,6 +102,12 @@ done first because it is cheap and it makes B's progress measurable per file.
     strategies still unsupported. — 2026-08-27 6:15 PM EDT
   - [x] `EnsureComputed` DCT2 library table: inverts the known integer
     weights ((0,1)/(1,0) 1/3840, (1,1) 1/2560). — 2026-08-27 6:27 PM EDT
+  - [x] Dequant tables and encodings use randomz's integer soft-float
+    (`m · 2^(e−62)`), copied from `random/src/fixed.zig` at `8fdd4a5`.
+    Bitstream F16 is reconstructed as mantissa/exponent integers; invert is
+    `div(1, w)` with exact equality tests. `dc_quant` is still f32 (older
+    spline/XYB path). IEEE-754 arithmetic stays at the XYB display step.
+    — 2026-08-27 ~6:40 PM EDT
 - [x] Add a `jxlz validate` subcommand (verdict, finding, feature name, offsets,
   frames, `--json`). `jxlz validate` / `jxlz v` dogfoods `JxlValidate` through
   the published header. Exit 0 only for VALID; other verdicts exit 1 with the

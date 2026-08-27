@@ -32,6 +32,7 @@ const options_mod = @import("../modular/options.zig");
 const ModularOptions = options_mod.ModularOptions;
 const transform_mod = @import("../modular/transform.zig");
 const float_utils = @import("../base/float.zig");
+const sf = @import("../base/soft_float.zig");
 
 const SectionLayout = struct {
     offsets: []u64,
@@ -184,17 +185,17 @@ pub const QuantMode = enum(u8) {
 /// cjxl path; the other modes carry custom weights read by `decode`.
 pub const DctQuantWeightParams = struct {
 	num_distance_bands: u8 = 0,
-	distance_bands: [3][kMaxDistanceBands]f32 = @splat(@splat(0)),
+	distance_bands: [3][kMaxDistanceBands]sf.Fixed = @splat(@splat(sf.Fixed.zero)),
 };
 
 pub const QuantEncoding = struct {
 	mode: QuantMode = .library,
 	predefined: u8 = 0,
-	idweights: [3][3]f32 = @splat(@splat(0)),
-	dct2weights: [3][6]f32 = @splat(@splat(0)),
-	dct4multipliers: [3][2]f32 = @splat(@splat(0)),
-	dct4x8multipliers: [3]f32 = @splat(0),
-	afv_weights: [3][9]f32 = @splat(@splat(0)),
+	idweights: [3][3]sf.Fixed = @splat(@splat(sf.Fixed.zero)),
+	dct2weights: [3][6]sf.Fixed = @splat(@splat(sf.Fixed.zero)),
+	dct4multipliers: [3][2]sf.Fixed = @splat(@splat(sf.Fixed.zero)),
+	dct4x8multipliers: [3]sf.Fixed = @splat(sf.Fixed.zero),
+	afv_weights: [3][9]sf.Fixed = @splat(@splat(sf.Fixed.zero)),
 	dct_params: DctQuantWeightParams = .{},
 	dct_params_afv_4x4: DctQuantWeightParams = .{},
 };
@@ -209,20 +210,23 @@ const kAcStrategyToQuantTable = [_]u8{ 0, 1, 2 }; // DCT, IDENTITY, DCT2X2
 const kLibraryIdentity = QuantEncoding{
 	.mode = .identity,
 	.idweights = .{
-		.{ 280.0, 3160.0, 3160.0 },
-		.{ 60.0, 864.0, 864.0 },
-		.{ 18.0, 200.0, 200.0 },
+		.{ sf.fromInt(280), sf.fromInt(3160), sf.fromInt(3160) },
+		.{ sf.fromInt(60), sf.fromInt(864), sf.fromInt(864) },
+		.{ sf.fromInt(18), sf.fromInt(200), sf.fromInt(200) },
 	},
 };
 const kLibraryDct2 = QuantEncoding{
 	.mode = .dct2,
 	.dct2weights = .{
-		.{ 3840.0, 2560.0, 1280.0, 640.0, 480.0, 300.0 },
-		.{ 960.0, 640.0, 320.0, 180.0, 140.0, 120.0 },
-		.{ 640.0, 320.0, 128.0, 64.0, 32.0, 16.0 },
+		.{ sf.fromInt(3840), sf.fromInt(2560), sf.fromInt(1280), sf.fromInt(640), sf.fromInt(480), sf.fromInt(300) },
+		.{ sf.fromInt(960), sf.fromInt(640), sf.fromInt(320), sf.fromInt(180), sf.fromInt(140), sf.fromInt(120) },
+		.{ sf.fromInt(640), sf.fromInt(320), sf.fromInt(128), sf.fromInt(64), sf.fromInt(32), sf.fromInt(16) },
 	},
 };
-const kAlmostZero: f32 = 1.0e-8;
+const kOne = sf.fromInt(1);
+const kSixtyFour = sf.fromInt(64);
+const kAlmostZero = sf.div(kOne, sf.fromInt(100_000_000));
+const kAlmostInf = sf.fromInt(100_000_000);
 const kLog2MaxDistanceBands: usize = 4;
 const kMaxDistanceBands: usize = 1 + (1 << kLog2MaxDistanceBands);
 
@@ -236,15 +240,51 @@ fn requiredSize(table_index: usize) usize {
 	return @as(usize, kRequiredSizeX[table_index]) * @as(usize, kRequiredSizeY[table_index]);
 }
 
-fn readScaledF16(br: *BitReader) JxlError!f32 {
-	const val = try fc.F16Coder.read(br);
-	if (@abs(val) < kAlmostZero) return error.GenericError;
-	return val * 64.0;
+fn absFixed(value: sf.Fixed) sf.Fixed {
+	return if (value.m < 0) sf.neg(value) else value;
 }
 
-fn readNonzeroF16(br: *BitReader) JxlError!f32 {
-	const val = try fc.F16Coder.read(br);
-	if (@abs(val) < kAlmostZero) return error.GenericError;
+fn tooSmall(value: sf.Fixed) bool {
+	return sf.cmp(absFixed(value), kAlmostZero) < 0;
+}
+
+fn tooLarge(value: sf.Fixed) bool {
+	return sf.cmp(absFixed(value), kAlmostInf) >= 0;
+}
+
+/// Reconstruct bitstream F16 as a randomz soft-float without IEEE-754 arithmetic.
+fn fromF16Bits(bits: u16) JxlError!sf.Fixed {
+	const sign = (bits >> 15) != 0;
+	const exp: i32 = @intCast((bits >> 10) & 0x1F);
+	const frac: i64 = bits & 0x3FF;
+	if (exp == 31) return error.GenericError;
+	var value: sf.Fixed = undefined;
+	if (exp == 0) {
+		if (frac == 0) return sf.Fixed.zero;
+		value = sf.div(sf.fromInt(frac), sf.fromInt(@as(i64, 1) << 24));
+	} else {
+		value = sf.div(sf.fromInt(1024 + frac), sf.fromInt(1024));
+		const new_e: i64 = @as(i64, value.e) + (exp - 15);
+		if (new_e < std.math.minInt(i32) or new_e > std.math.maxInt(i32)) return error.GenericError;
+		value.e = @intCast(new_e);
+	}
+	return if (sign) sf.neg(value) else value;
+}
+
+fn readF16(br: *BitReader) JxlError!sf.Fixed {
+	const bits: u16 = @intCast(br.readBits(16));
+	return fromF16Bits(bits);
+}
+
+fn readScaledF16(br: *BitReader) JxlError!sf.Fixed {
+	const val = try readF16(br);
+	if (tooSmall(val)) return error.GenericError;
+	return sf.mul(val, kSixtyFour);
+}
+
+fn readNonzeroF16(br: *BitReader) JxlError!sf.Fixed {
+	const val = try readF16(br);
+	if (tooSmall(val)) return error.GenericError;
 	return val;
 }
 
@@ -253,10 +293,10 @@ fn decodeDctParams(br: *BitReader) JxlError!DctQuantWeightParams {
 	params.num_distance_bands = @intCast(br.readBits(kLog2MaxDistanceBands) + 1);
 	for (0..3) |c| {
 		for (0..params.num_distance_bands) |j| {
-			params.distance_bands[c][j] = try fc.F16Coder.read(br);
+			params.distance_bands[c][j] = try readF16(br);
 		}
-		if (params.distance_bands[c][0] < kAlmostZero) return error.GenericError;
-		params.distance_bands[c][0] *= 64.0;
+		if (tooSmall(params.distance_bands[c][0])) return error.GenericError;
+		params.distance_bands[c][0] = sf.mul(params.distance_bands[c][0], kSixtyFour);
 	}
 	return params;
 }
@@ -264,9 +304,9 @@ fn decodeDctParams(br: *BitReader) JxlError!DctQuantWeightParams {
 pub const DequantMatrices = struct {
 	dc_quant: [3]f32 = .{ 1.0 / 4096.0, 1.0 / 512.0, 1.0 / 256.0 }, // defaults from C++
 	encodings: [kNumQuantTables]QuantEncoding = [_]QuantEncoding{.{}} ** kNumQuantTables,
-	storage: []f32 = &.{},
-	table: []f32 = &.{},
-	inv_table: []f32 = &.{},
+	storage: []sf.Fixed = &.{},
+	table: []sf.Fixed = &.{},
+	inv_table: []sf.Fixed = &.{},
 	table_offsets: [kNumQuantTables * 3]usize = @splat(0),
 	computed_mask: u32 = 0,
 
@@ -281,7 +321,7 @@ pub const DequantMatrices = struct {
 				if (biased_exp == 31) return error.GenericError; // infinity/NaN not allowed
 				const val = float_utils.loadFloat16(bits16);
 				self.dc_quant[c] = val * (1.0 / 128.0);
-				if (self.dc_quant[c] < kAlmostZero) return error.GenericError;
+				if (self.dc_quant[c] < 1.0e-8) return error.GenericError;
 			}
 		}
 	}
@@ -305,7 +345,7 @@ pub const DequantMatrices = struct {
 				},
 				.identity => {
 					if (requiredSize(i) != 1) return error.GenericError;
-					var weights: [3][3]f32 = undefined;
+					var weights: [3][3]sf.Fixed = undefined;
 					for (0..3) |c| {
 						for (0..3) |j| {
 							weights[c][j] = try readScaledF16(br);
@@ -315,7 +355,7 @@ pub const DequantMatrices = struct {
 				},
 				.dct2 => {
 					if (requiredSize(i) != 1) return error.GenericError;
-					var weights: [3][6]f32 = undefined;
+					var weights: [3][6]sf.Fixed = undefined;
 					for (0..3) |c| {
 						for (0..6) |j| {
 							weights[c][j] = try readScaledF16(br);
@@ -328,7 +368,7 @@ pub const DequantMatrices = struct {
 				},
 				.dct4 => {
 					if (requiredSize(i) != 1) return error.GenericError;
-					var multipliers: [3][2]f32 = undefined;
+					var multipliers: [3][2]sf.Fixed = undefined;
 					for (0..3) |c| {
 						for (0..2) |j| {
 							multipliers[c][j] = try readNonzeroF16(br);
@@ -342,7 +382,7 @@ pub const DequantMatrices = struct {
 				},
 				.dct4x8 => {
 					if (requiredSize(i) != 1) return error.GenericError;
-					var multipliers: [3]f32 = undefined;
+					var multipliers: [3]sf.Fixed = undefined;
 					for (0..3) |c| {
 						multipliers[c] = try readNonzeroF16(br);
 					}
@@ -354,13 +394,13 @@ pub const DequantMatrices = struct {
 				},
 				.afv => {
 					if (requiredSize(i) != 1) return error.GenericError;
-					var weights: [3][9]f32 = undefined;
+					var weights: [3][9]sf.Fixed = undefined;
 					for (0..3) |c| {
 						for (0..9) |j| {
-							weights[c][j] = try fc.F16Coder.read(br);
+							weights[c][j] = try readF16(br);
 						}
 						for (0..6) |j| {
-							weights[c][j] *= 64.0;
+							weights[c][j] = sf.mul(weights[c][j], kSixtyFour);
 						}
 					}
 					self.encodings[i] = .{
@@ -387,7 +427,7 @@ pub const DequantMatrices = struct {
 
 	/// C++ DequantMatrices::Matrix. `kind` must have been requested in a prior
 	/// `ensureComputed` call.
-	pub fn matrix(self: *const DequantMatrices, kind: AcStrategyType, c: usize) []const f32 {
+	pub fn matrix(self: *const DequantMatrices, kind: AcStrategyType, c: usize) []const sf.Fixed {
 		const table_idx = kAcStrategyToQuantTable[@intFromEnum(kind)];
 		const num = requiredSize(table_idx) * kDctBlockSize;
 		const off = self.table_offsets[table_idx * 3 + c];
@@ -399,8 +439,8 @@ pub const DequantMatrices = struct {
 	/// only; other requested kinds return unsupported.
 	pub fn ensureComputed(self: *DequantMatrices, allocator: std.mem.Allocator, acs_mask: u32) JxlError!void {
 		if (self.storage.len == 0) {
-			const storage = try allocator.alloc(f32, 2 * kTotalTableSize);
-			@memset(storage, 0);
+			const storage = try allocator.alloc(sf.Fixed, 2 * kTotalTableSize);
+			@memset(storage, sf.Fixed.zero);
 			self.storage = storage;
 			self.table = storage[0..kTotalTableSize];
 			self.inv_table = storage[kTotalTableSize..];
@@ -449,25 +489,25 @@ fn libraryEncoding(table_idx: usize) ?QuantEncoding {
 	};
 }
 
-fn invertAndStore(self: *DequantMatrices, table_idx: usize, weights: []const f32) JxlError!void {
+fn invertAndStore(self: *DequantMatrices, table_idx: usize, weights: []const sf.Fixed) JxlError!void {
 	const num = requiredSize(table_idx) * kDctBlockSize;
 	if (weights.len != 3 * num) return error.GenericError;
 	const dest = self.table_offsets[table_idx * 3];
 	for (0..3 * num) |i| {
 		const w = weights[i];
-		if (@abs(w) < kAlmostZero or @abs(w) >= 1.0 / kAlmostZero) return error.GenericError;
-		self.table[dest + i] = 1.0 / w;
+		if (tooSmall(w) or tooLarge(w)) return error.GenericError;
+		self.table[dest + i] = sf.div(kOne, w);
 		self.inv_table[dest + i] = w;
 	}
 	for (0..3) |c| {
-		self.inv_table[dest + c * num] = 0;
+		self.inv_table[dest + c * num] = sf.Fixed.zero;
 	}
 }
 
 fn computeIdentityTable(self: *DequantMatrices, table_idx: usize, quant_encoding: QuantEncoding) JxlError!void {
 	const num = requiredSize(table_idx) * kDctBlockSize;
 	if (num != kDctBlockSize) return error.GenericError;
-	var weights: [3 * kDctBlockSize]f32 = undefined;
+	var weights: [3 * kDctBlockSize]sf.Fixed = undefined;
 	for (0..3) |c| {
 		const start = c * kDctBlockSize;
 		for (0..kDctBlockSize) |i| {
@@ -483,11 +523,11 @@ fn computeIdentityTable(self: *DequantMatrices, table_idx: usize, quant_encoding
 fn computeDct2Table(self: *DequantMatrices, table_idx: usize, quant_encoding: QuantEncoding) JxlError!void {
 	const num = requiredSize(table_idx) * kDctBlockSize;
 	if (num != kDctBlockSize) return error.GenericError;
-	var weights: [3 * kDctBlockSize]f32 = undefined;
+	var weights: [3 * kDctBlockSize]sf.Fixed = undefined;
 	for (0..3) |c| {
 		const start = c * kDctBlockSize;
 		const w = quant_encoding.dct2weights[c];
-		weights[start] = 0xBAD;
+		weights[start] = sf.fromInt(0xBAD);
 		weights[start + 1] = w[0];
 		weights[start + 8] = w[0];
 		weights[start + 9] = w[1];
@@ -1101,6 +1141,14 @@ test "computeSectionLayout rejects truncated payload" {
     try testing.expectError(error.GenericError, computeSectionLayout(allocator, 5, 16, &entries));
 }
 
+test "fromF16Bits reconstructs 1, 2, and 1/2 as randomz soft-floats" {
+	try testing.expectEqual(kOne, try fromF16Bits(0x3C00));
+	try testing.expectEqual(sf.fromInt(2), try fromF16Bits(0x4000));
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(2)), try fromF16Bits(0x3800));
+	try testing.expectEqual(sf.Fixed.zero, try fromF16Bits(0x0000));
+	try testing.expectError(error.GenericError, fromF16Bits(0x7C00));
+}
+
 test "DequantMatrices.decode all_default consumes one bit and uses library encodings" {
 	// C++ DequantMatrices::Decode: a 1-bit all_default flag. When set, every
 	// one of the 17 quant tables is QuantEncoding::Library<0>() and no further
@@ -1151,7 +1199,7 @@ test "DequantMatrices.decode identity table scales F16 weights by 64" {
 	try testing.expectEqual(QuantMode.identity, matrices.encodings[0].mode);
 	for (matrices.encodings[0].idweights) |row| {
 		for (row) |weight| {
-			try testing.expectEqual(@as(f32, 64.0), weight);
+			try testing.expectEqual(kSixtyFour, weight);
 		}
 	}
 	for (matrices.encodings[1..]) |enc| {
@@ -1196,7 +1244,7 @@ test "DequantMatrices.decode dct2 table scales F16 weights by 64" {
 	try testing.expectEqual(QuantMode.dct2, matrices.encodings[0].mode);
 	for (matrices.encodings[0].dct2weights) |row| {
 		for (row) |weight| {
-			try testing.expectEqual(@as(f32, 64.0), weight);
+			try testing.expectEqual(kSixtyFour, weight);
 		}
 	}
 }
@@ -1222,7 +1270,7 @@ test "DequantMatrices.decode dct params scale the seed band by 64" {
 	try testing.expectEqual(QuantMode.dct, matrices.encodings[0].mode);
 	try testing.expectEqual(@as(u8, 1), matrices.encodings[0].dct_params.num_distance_bands);
 	for (0..3) |c| {
-		try testing.expectEqual(@as(f32, 64.0), matrices.encodings[0].dct_params.distance_bands[c][0]);
+		try testing.expectEqual(kSixtyFour, matrices.encodings[0].dct_params.distance_bands[c][0]);
 	}
 }
 
@@ -1250,10 +1298,10 @@ test "DequantMatrices.decode dct4 multipliers stay unscaled" {
 	try testing.expectEqual(QuantMode.dct4, matrices.encodings[0].mode);
 	for (matrices.encodings[0].dct4multipliers) |row| {
 		for (row) |mul| {
-			try testing.expectEqual(@as(f32, 1.0), mul);
+			try testing.expectEqual(kOne, mul);
 		}
 	}
-	try testing.expectEqual(@as(f32, 64.0), matrices.encodings[0].dct_params.distance_bands[0][0]);
+	try testing.expectEqual(kSixtyFour, matrices.encodings[0].dct_params.distance_bands[0][0]);
 }
 
 test "DequantMatrices.decode dct4x8 multipliers stay unscaled" {
@@ -1279,7 +1327,7 @@ test "DequantMatrices.decode dct4x8 multipliers stay unscaled" {
 	try matrices.decode(&br);
 	try testing.expectEqual(QuantMode.dct4x8, matrices.encodings[0].mode);
 	for (matrices.encodings[0].dct4x8multipliers) |mul| {
-		try testing.expectEqual(@as(f32, 1.0), mul);
+		try testing.expectEqual(kOne, mul);
 	}
 }
 
@@ -1309,10 +1357,10 @@ test "DequantMatrices.decode afv scales the first six weights of each channel" {
 	try testing.expectEqual(QuantMode.afv, matrices.encodings[0].mode);
 	for (0..3) |c| {
 		for (0..6) |j| {
-			try testing.expectEqual(@as(f32, 64.0), matrices.encodings[0].afv_weights[c][j]);
+			try testing.expectEqual(kSixtyFour, matrices.encodings[0].afv_weights[c][j]);
 		}
 		for (6..9) |j| {
-			try testing.expectEqual(@as(f32, 1.0), matrices.encodings[0].afv_weights[c][j]);
+			try testing.expectEqual(kOne, matrices.encodings[0].afv_weights[c][j]);
 		}
 	}
 	try testing.expectEqual(@as(u8, 1), matrices.encodings[0].dct_params.num_distance_bands);
@@ -1341,15 +1389,15 @@ test "ensureComputed identity library table inverts the known weights" {
 	try matrices.decode(&br);
 	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.identity));
 	const x = matrices.matrix(.identity, 0);
-	try testing.expectApproxEqAbs(@as(f32, 1.0 / 280.0), x[0], 1e-6);
-	try testing.expectApproxEqAbs(@as(f32, 1.0 / 3160.0), x[1], 1e-6);
-	try testing.expectApproxEqAbs(@as(f32, 1.0 / 3160.0), x[8], 1e-6);
-	try testing.expectApproxEqAbs(@as(f32, 1.0 / 3160.0), x[9], 1e-6);
-	try testing.expectApproxEqAbs(@as(f32, 1.0 / 280.0), x[2], 1e-6);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(280)), x[0]);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(3160)), x[1]);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(3160)), x[8]);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(3160)), x[9]);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(280)), x[2]);
 	const y = matrices.matrix(.identity, 1);
-	try testing.expectApproxEqAbs(@as(f32, 1.0 / 60.0), y[0], 1e-6);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(60)), y[0]);
 	const b = matrices.matrix(.identity, 2);
-	try testing.expectApproxEqAbs(@as(f32, 1.0 / 18.0), b[0], 1e-6);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(18)), b[0]);
 }
 
 test "ensureComputed dct2 library table inverts the known weights" {
@@ -1361,13 +1409,13 @@ test "ensureComputed dct2 library table inverts the known weights" {
 	try matrices.decode(&br);
 	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.dct2x2));
 	const x = matrices.matrix(.dct2x2, 0);
-	try testing.expectApproxEqAbs(@as(f32, 1.0 / 3840.0), x[1], 1e-6);
-	try testing.expectApproxEqAbs(@as(f32, 1.0 / 3840.0), x[8], 1e-6);
-	try testing.expectApproxEqAbs(@as(f32, 1.0 / 2560.0), x[9], 1e-6);
-	try testing.expectApproxEqAbs(@as(f32, 1.0 / 1280.0), x[2], 1e-6);
-	try testing.expectApproxEqAbs(@as(f32, 1.0 / 640.0), x[18], 1e-6);
-	try testing.expectApproxEqAbs(@as(f32, 1.0 / 480.0), x[4], 1e-6);
-	try testing.expectApproxEqAbs(@as(f32, 1.0 / 300.0), x[36], 1e-6);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(3840)), x[1]);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(3840)), x[8]);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(2560)), x[9]);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(1280)), x[2]);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(640)), x[18]);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(480)), x[4]);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(300)), x[36]);
 }
 
 test "processDCGlobal rejects unsupported frame features" {

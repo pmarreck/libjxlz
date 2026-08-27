@@ -6,6 +6,7 @@ pub const base = struct {
 	pub const bit_writer = @import("base/bit_writer.zig");
 	pub const byte_order = @import("base/byte_order.zig");
 	pub const fixed_point = @import("base/fixed_point.zig");
+	pub const soft_float = @import("base/soft_float.zig");
 	pub const random = @import("base/random.zig");
 	pub const rect = @import("base/rect.zig");
 	pub const float16 = @import("base/float.zig");
@@ -75,6 +76,7 @@ test {
 	_ = @import("base/bit_writer.zig");
 	_ = @import("base/byte_order.zig");
 	_ = @import("base/fixed_point.zig");
+	_ = @import("base/soft_float.zig");
 	_ = @import("base/random.zig");
 	_ = @import("base/rect.zig");
 	_ = @import("base/float.zig");
