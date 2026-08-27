@@ -46,7 +46,7 @@ fi
 if ! "${JXLZ}" --help >"${OUT}" 2>"${ERR}"; then
 	fail "--help exited non-zero: $(cat "${ERR}")"
 fi
-for sub in decode encode info; do
+for sub in decode encode info validate; do
 	grep -q "  ${sub}" "${OUT}" || fail "--help does not list the '${sub}' subcommand"
 done
 

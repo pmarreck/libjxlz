@@ -18,6 +18,7 @@
 #include <strings.h>
 
 #include <jxl/decode.h>
+#include <jxl/validate.h>
 
 extern int djxlz_main(int argc, char** argv);
 extern int cjxlz_main(int argc, char** argv);
@@ -59,9 +60,10 @@ static void print_help(FILE* out) {
 		"  decode      Decode a JPEG XL file to PPM, PGM, PAM or GIF\n"
 		"  encode      Encode an image into a JPEG XL file\n"
 		"  info        Report codestream metadata without writing pixels\n"
+		"  validate    Strict-validate a JPEG XL buffer (verdict, finding, feature)\n"
 		"  transform   Lossless transforms of an existing file (not yet implemented)\n"
 		"\n"
-		"Aliases: d/dec = decode, e/enc = encode, i = info\n"
+		"Aliases: d/dec = decode, e/enc = encode, i = info, v = validate\n"
 		"\n"
 		"Options:\n"
 		"  -h, --help       Show this help, or a subcommand's help after it\n"
@@ -77,6 +79,8 @@ static void print_help(FILE* out) {
 		"Examples:\n"
 		"  jxlz info photo.jxl\n"
 		"  jxlz info --json photo.jxl\n"
+		"  jxlz validate photo.jxl\n"
+		"  jxlz validate --json photo.jxl\n"
 		"  jxlz decode photo.jxl out.ppm\n"
 		"  jxlz encode in.ppm out.jxl\n");
 }
@@ -263,6 +267,128 @@ static int run_info(int argc, char** argv) {
 	return 0;
 }
 
+static const char* verdict_name(JxlValidationVerdict verdict) {
+	switch (verdict) {
+	case JXL_VALIDATION_VALID: return "valid";
+	case JXL_VALIDATION_CORRUPT: return "corrupt";
+	case JXL_VALIDATION_UNSUPPORTED: return "unsupported";
+	case JXL_VALIDATION_INDETERMINATE: return "indeterminate";
+	}
+	return "indeterminate";
+}
+
+static const char* finding_name(JxlValidationFindingCode code) {
+	switch (code) {
+	case JXL_VALIDATION_FINDING_NONE: return "none";
+	case JXL_VALIDATION_FINDING_INVALID_SIGNATURE: return "invalid_signature";
+	case JXL_VALIDATION_FINDING_TRUNCATED: return "truncated";
+	case JXL_VALIDATION_FINDING_MALFORMED: return "malformed";
+	case JXL_VALIDATION_FINDING_UNSUPPORTED_FEATURE: return "unsupported_feature";
+	case JXL_VALIDATION_FINDING_RESOURCE_LIMIT: return "resource_limit";
+	case JXL_VALIDATION_FINDING_OUT_OF_MEMORY: return "out_of_memory";
+	case JXL_VALIDATION_FINDING_INVALID_ARGUMENT: return "invalid_argument";
+	case JXL_VALIDATION_FINDING_UNCLASSIFIED_DECODER_ERROR: return "unclassified_decoder_error";
+	}
+	return "unclassified_decoder_error";
+}
+
+static void print_validate_text(FILE* out, const JxlValidationResult* r) {
+	fprintf(out, "verdict\t%s\n", verdict_name(r->verdict));
+	fprintf(out, "finding\t%s\n", finding_name(r->code));
+	fprintf(out, "feature\t%s\n", JxlValidationFeatureName(r->feature));
+	fprintf(out, "byte_offset\t%llu\n", (unsigned long long)r->byte_offset);
+	fprintf(out, "host_byte_offset\t%llu\n", (unsigned long long)r->host_byte_offset);
+	fprintf(out, "offset_is_exact\t%s\n", r->offset_is_exact ? "yes" : "no");
+	fprintf(out, "frames_validated\t%u\n", r->frames_validated);
+}
+
+static void print_validate_json(FILE* out, const JxlValidationResult* r) {
+	fprintf(out,
+		"{\n"
+		"  \"verdict\": \"%s\",\n"
+		"  \"finding\": \"%s\",\n"
+		"  \"feature\": \"%s\",\n"
+		"  \"byte_offset\": %llu,\n"
+		"  \"host_byte_offset\": %llu,\n"
+		"  \"offset_is_exact\": %s,\n"
+		"  \"frames_validated\": %u\n"
+		"}\n",
+		verdict_name(r->verdict),
+		finding_name(r->code),
+		JxlValidationFeatureName(r->feature),
+		(unsigned long long)r->byte_offset,
+		(unsigned long long)r->host_byte_offset,
+		r->offset_is_exact ? "true" : "false",
+		r->frames_validated);
+}
+
+// Strict-validates one bounded buffer through the public C FFI, the same
+// surface jpegz/tiffz/validate consume. Exit 0 only for VALID so a one-liner
+// coverage matrix can branch on status and still read the JSON body.
+static int run_validate(int argc, char** argv) {
+	bool json = false;
+	bool no_more_switches = false;
+	const char* path = NULL;
+	JxlValidationOptions options = JXL_VALIDATION_OPTIONS_INIT;
+
+	for (int i = 0; i < argc; i++) {
+		const char* arg = argv[i];
+		if (!no_more_switches && strcmp(arg, "--") == 0) {
+			no_more_switches = true;
+			continue;
+		}
+		if (!no_more_switches && arg[0] == '-' && arg[1] != '\0') {
+			if (strcmp(arg, "--json") == 0) {
+				json = true;
+			} else if (strcmp(arg, "-h") == 0 || strcmp(arg, "--help") == 0) {
+				fprintf(stdout,
+					"Usage: jxlz validate [--json] <input.jxl>\n"
+					"\n"
+					"Strictly validate a JPEG XL codestream or container without\n"
+					"decoding through an external implementation. Prints verdict,\n"
+					"finding, named feature, offsets, exactness, and frames validated.\n"
+					"Accepts `-` or `@stdin` for the input path.\n"
+					"\n"
+					"Exit status: 0 if valid, 1 if a verdict other than valid was\n"
+					"reached (the report is still written to stdout), 2 on usage errors.\n"
+					"\n"
+					"Options:\n"
+					"      --json   Emit the same fields as JSON for tooling\n"
+					"  -h, --help   Show this help\n");
+				return 0;
+			} else {
+				fprintf(stderr, "jxlz validate: unknown option '%s'\n", arg);
+				return 2;
+			}
+			continue;
+		}
+		path = arg;
+	}
+
+	if (path == NULL) {
+		fprintf(stderr, "jxlz validate: expected an input path\n");
+		return 2;
+	}
+
+	size_t size = 0;
+	uint8_t* data = read_path(path, &size);
+	if (data == NULL) {
+		fprintf(stderr, "jxlz validate: could not read '%s'\n", path);
+		return 1;
+	}
+
+	JxlValidationResult result;
+	JxlValidationVerdict verdict = JxlValidate(data, size, &options, &result);
+	free(data);
+
+	if (json) {
+		print_validate_json(stdout, &result);
+	} else {
+		print_validate_text(stdout, &result);
+	}
+	return verdict == JXL_VALIDATION_VALID ? 0 : 1;
+}
+
 // Rebuilds argv for a delegated subcommand so argv[0] reads as `jxlz decode`
 // rather than the bare program name, then hands off to the existing entry point.
 static int delegate(int (*entry)(int, char**), const char* display, int argc, char** argv) {
@@ -359,6 +485,14 @@ int jxlz_main(int argc, char** argv) {
 			return run_info(1, help_argv);
 		}
 		return run_info(rest_argc, rest_argv);
+	}
+	if (matches(sub, "validate", "v", NULL)) {
+		if (want_help) {
+			char* help_argv[1];
+			help_argv[0] = (char*)"--help";
+			return run_validate(1, help_argv);
+		}
+		return run_validate(rest_argc, rest_argv);
 	}
 	if (matches(sub, "transform", "t", NULL)) {
 		fprintf(stderr,

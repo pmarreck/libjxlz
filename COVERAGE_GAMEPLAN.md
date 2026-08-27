@@ -200,13 +200,13 @@ package. Validate worked around it with a local extern ABI mirror.
       is exactly the check that would have missed this. The control failed
       before the manifest change and when both paths were reverted — 2026-08-06
       11:13 AM EDT.
-- [ ] Add a `jxlz validate` subcommand that calls `JxlValidate` and prints
-      verdict, finding code, byte offset, host offset, exactness, and frames
-      validated, with `--json`. Every measurement in section 1 was taken with a
-      throwaway C probe, which means it is not reproducible without rebuilding
-      the probe. A real subcommand makes the whole coverage matrix a one-liner,
-      gives validate a CLI to diff against, and is the natural surface for the
-      per-file scores the later phases produce.
+- [x] Add a `jxlz validate` subcommand that calls `JxlValidate` and prints
+      verdict, finding code, named feature, byte offset, host offset,
+      exactness, and frames validated, with `--json`. Coverage measurements no
+      longer need a throwaway C probe: `jxlz validate --json file.jxl` is the
+      one-liner, and `tests/cli/jxlz_validate_smoke.sh` locks the labeled-good
+      unsupported set at 0 `unknown` with both `patches` and `vardct_frame`
+      present — 2026-08-27 5:03 PM EDT.
 
 **Control:** the test must fail if `.paths` is reverted. Verify that by
 reverting it once.

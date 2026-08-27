@@ -1,5 +1,12 @@
 # libjxlz Plan
 
+## Mechatron CI (2026-08-27)
+
+- [x] `4cb13298` (feature naming) **success** on Mechatron: started 20:43:26Z,
+  finished 20:51:11Z, 465s. `mechatron-ci log --project libjxlz --commit 4cb13298 --json`
+  reports `"status": "success"`. First push exercising the four-target
+  manifest including `test-releasefast` — 2026-08-27 5:19 PM EDT
+
 ## Peter's ruling: support ALL JPEG XL features (2026-08-27)
 
 Verbatim, relayed by validate: *"we need jpegz/libjxlz to support ALL jpegxl
@@ -46,11 +53,25 @@ done first because it is cheap and it makes B's progress measurable per file.
     garbage, and speculative in-band versioning is the wrong trade for
     pre-1.0 software with three in-fleet consumers and a coordinated pin
     protocol. Say so in the follow-up note.
-- [ ] Sweep the remaining `error.Unsupported` sites and give each a feature
-  name. Only four are named so far (the peek guard, the noise/patches frame
-  flags, the non-modular frame guard, and the sub-3-channel guard); every other
-  site reports `unknown`. Measure by counting `unknown` outcomes over the
-  corpus and driving that to zero.
+- [x] Sweep measurement over the in-repo JXL corpus: **unknown = 0**. 43 files
+  (`tests/corpus`, `src/lib/testdata`, vendored `testdata/jxl`): 32 VALID, 7
+  UNSUPPORTED (6 `vardct_frame`, 1 `patches` on `patches_lossless.jxl`), 4
+  INDETERMINATE (`bicycles_corrupt_1..4`). The remaining ~116 bare
+  `return error.Unsupported` hits are encoder-path (simple-encode surface,
+  extra-channel write, color-profile write) and are not reachable from
+  `JxlValidate`. Decoder-path leftover: `icc_codec.zig` unknown ICC command.
+  Encoder-site naming is a separate, lower-priority cleanup — 2026-08-27
+  ~4:55 PM EDT
+- [ ] jpegz FYI 2026-08-27 (no response requested): `src/validation.zig`
+  `@import`s `capi_root.zig`, whose 21 `JxlEncoder*` `export fn`s are not lazy,
+  so a validation-only Zig consumer still needs `libbrotlienc` via
+  `JxlEncoderAddBox` → `brotli.compress`. Same closure defect jpegz fixed in
+  its U0 (`a60ecc7`). Their suggested shapes: split C ABI into two archives
+  with a shared marshalling module (caveat: two thread-local last-error slots
+  are alternatives, not composable), or have `validation.zig` import the
+  validation path without the encoder exports. Does **not** remove
+  `brotlidec`/`brotlicommon` — `validateBrobPayload` legitimately decompresses.
+  Additive to the unknown sweep; do not reorder unless it blocks a consumer.
 - [ ] Feature-coverage roadmap, sequenced by real-world frequency (sent to
   validate 2026-08-27): (1) VarDCT decode — `DequantMatrices` in full, the
   quantizer and adaptive quant field, coefficient order tables, AC strategy
@@ -62,10 +83,12 @@ done first because it is cheap and it makes B's progress measurable per file.
   already decode); (5) JPEG reconstruction (`jbrd`), then BMFF and ICC breadth.
   Each slice differential-gated against pinned djxl v0.12.0 on synthesized
   fixtures, plus a per-feature corruption sweep.
-- [ ] Add a `jxlz validate` subcommand (verdict, finding, feature name, offsets,
-  frames, `--json`). Every coverage measurement so far has come from a
-  throwaway C probe rebuilt from scratch each session, which is why the numbers
-  are expensive to refresh. This also gives validate a CLI to diff against.
+- [x] Add a `jxlz validate` subcommand (verdict, finding, feature name, offsets,
+  frames, `--json`). `jxlz validate` / `jxlz v` dogfoods `JxlValidate` through
+  the published header. Exit 0 only for VALID; other verdicts exit 1 with the
+  report still on stdout. Classifier over labeled-good: 0 unknown, both
+  `patches` and `vardct_frame` present. Gate: `tests/cli/jxlz_validate_smoke.sh`
+  — 2026-08-27 5:03 PM EDT
 
 ## Documentation and release-readiness audit (2026-08-14)
 
