@@ -30,6 +30,7 @@ if ! "${CHECK_BIN}" \
 	tests/corpus/labeled/good/delta_palette.jxl \
 	tests/corpus/labeled/good/patches_lossless.jxl \
 	tests/corpus/labeled/good/bicycles.jxl \
+	tests/corpus/labeled/good/grayscale.jxl \
 	>/dev/null 2>"${RUN_STDERR}"; then
 	cat "${RUN_STDERR}"
 	exit 1

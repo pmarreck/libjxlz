@@ -4,6 +4,7 @@
 const std = @import("std");
 const BitReader = @import("../base/bit_reader.zig").BitReader;
 const JxlError = @import("../base/status.zig").JxlError;
+const unsupported_mod = @import("../base/unsupported.zig");
 const common = @import("../base/common.zig");
 const fc = @import("field_coders.zig");
 const frame_header_mod = @import("frame_header.zig");
@@ -564,7 +565,9 @@ pub const FrameDecoder = struct {
         const unsupported_flags = frame_header_mod.FrameFlags.noise |
             frame_header_mod.FrameFlags.patches;
         if ((self.frame_header.flags & unsupported_flags) != 0) {
-            return error.Unsupported;
+            return unsupported_mod.unsupported(
+                if ((self.frame_header.flags & frame_header_mod.FrameFlags.patches) != 0) .patches else .noise,
+            );
         }
 
         if ((self.frame_header.flags & frame_header_mod.FrameFlags.splines) != 0) {
@@ -601,7 +604,7 @@ pub const FrameDecoder = struct {
         try header_br.close();
 
         if (self.frame_header.encoding != .modular) {
-            return error.Unsupported;
+            return unsupported_mod.unsupported(.vardct_frame);
         }
 
         const layout = try computeSectionLayout(self.allocator, header_byte_offset, data.len, self.toc_entries);
@@ -673,7 +676,7 @@ pub const FrameDecoder = struct {
     pub fn renderSplineOverlays(self: *FrameDecoder) JxlError!void {
         self.clearRenderedImage();
         if (!self.splines.hasAny()) return;
-        if (self.modular_decoder.full_image.channels.items.len < 3) return error.Unsupported;
+        if (self.modular_decoder.full_image.channels.items.len < 3) return unsupported_mod.unsupported(.color_channel_count);
 
         try self.splines.initializeDrawCache(self.frame_dim.xsize, self.frame_dim.ysize, .{});
         const use_xyb_lift = self.metadata.m.xyb_encoded or self.frame_header.color_transform == .xyb;

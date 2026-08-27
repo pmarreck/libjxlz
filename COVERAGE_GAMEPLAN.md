@@ -5,6 +5,39 @@ Written 2026-08-05. Every number below was measured on this machine against
 harness is described in "How these numbers were produced" at the bottom so the
 next session can re-run it rather than trust it.
 
+
+## 0. Peter's ruling, 2026-08-27: all features
+
+Verbatim, relayed by validate: *"we need jpegz/libjxlz to support ALL jpegxl
+features."*
+
+This does not change the analysis below; it changes which half is optional.
+Target B (decode completeness, §2) was written as the expensive half that could
+wait. It cannot. Target A still goes first, because it is cheap and because it
+turns B's progress into a per-file measurement rather than a feeling, but the
+plan now runs to the end rather than stopping when validate is unblocked.
+
+Two things landed the same day and are recorded here so §1's tables are read in
+the right light:
+
+**Findings now name the feature.** `JxlValidationResult.feature` plus
+`JxlValidationFeatureName()` report which specific feature stopped validation.
+Four rejection sites are named so far; every other site reports `unknown`,
+deliberately, so the remaining sweep is visible rather than silently mislabeled
+as "no feature". See `src/lib/base/unsupported.zig`.
+
+**The witnessed real-world case needs two features, not one.** A private 12MP
+iPhone-class photo (diagnosed locally, never copied) has a 239-byte
+`modular` / `reference_only` frame 0 followed by a `var_dct` / `regular_frame`
+frame 1 with `flags=0x2` (`kPatches`). So the file needs **VarDCT and patches**.
+This is the shape to expect from consumer photo tooling, and it is why the
+roadmap order is VarDCT, then the render pipeline VarDCT output requires, then
+patches and noise.
+
+Worth noting against §1.4's framing: `jxlinfo` calling such a file
+"(possibly) lossless" reports `uses_original_profile`, which is a colour
+management fact. It says nothing about whether the frame is modular or VarDCT,
+and it misled a consumer into guessing modular transforms were the gap.
 ## 1. Where we actually are
 
 ### 1.1 The labeled corpus, by strict-validation verdict

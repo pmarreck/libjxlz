@@ -35,6 +35,37 @@ typedef enum {
 	JXL_VALIDATION_FINDING_UNCLASSIFIED_DECODER_ERROR = 8,
 } JxlValidationFindingCode;
 
+/**
+ * The specific JPEG XL feature that stopped validation, when the verdict is
+ * unsupported. `UNKNOWN` means a rejection site has not been given a name yet;
+ * it is reported rather than `NONE` so uninstrumented sites stay visible.
+ * Values are ABI: appended, never renumbered.
+ */
+typedef enum {
+	JXL_VALIDATION_FEATURE_NONE = 0,
+	JXL_VALIDATION_FEATURE_UNKNOWN = 1,
+	JXL_VALIDATION_FEATURE_VARDCT_FRAME = 2,
+	JXL_VALIDATION_FEATURE_PATCHES = 3,
+	JXL_VALIDATION_FEATURE_NOISE = 4,
+	JXL_VALIDATION_FEATURE_SPLINES = 5,
+	JXL_VALIDATION_FEATURE_PROGRESSIVE_DC_FRAME = 6,
+	JXL_VALIDATION_FEATURE_REFERENCE_FRAME = 7,
+	JXL_VALIDATION_FEATURE_MODULAR_TRANSFORM = 8,
+	JXL_VALIDATION_FEATURE_EXTRA_CHANNEL_TYPE = 9,
+	JXL_VALIDATION_FEATURE_COLOR_ENCODING = 10,
+	JXL_VALIDATION_FEATURE_ICC_PROFILE = 11,
+	JXL_VALIDATION_FEATURE_BIT_DEPTH = 12,
+	JXL_VALIDATION_FEATURE_CHROMA_SUBSAMPLING = 13,
+	JXL_VALIDATION_FEATURE_FRAME_BLENDING = 14,
+	JXL_VALIDATION_FEATURE_UPSAMPLING = 15,
+	JXL_VALIDATION_FEATURE_CONTAINER_BOX = 16,
+	JXL_VALIDATION_FEATURE_JPEG_RECONSTRUCTION = 17,
+	JXL_VALIDATION_FEATURE_ANIMATION = 18,
+	JXL_VALIDATION_FEATURE_PREVIEW_FRAME = 19,
+	JXL_VALIDATION_FEATURE_COLOR_CHANNEL_COUNT = 20,
+	JXL_VALIDATION_FEATURE_CODESTREAM_EXTENSION = 21,
+} JxlValidationFeature;
+
 enum {
 	JXL_VALIDATION_DEFAULT_MAX_INPUT_BYTES = 512U * 1024U * 1024U,
 	JXL_VALIDATION_DEFAULT_MAX_FRAMES = 65535U,
@@ -64,6 +95,8 @@ typedef struct {
 	uint64_t host_byte_offset;
 	JXL_BOOL offset_is_exact;
 	uint32_t frames_validated;
+	/** Set when `verdict` is unsupported; `NONE` otherwise. */
+	JxlValidationFeature feature;
 } JxlValidationResult;
 
 /**
@@ -81,6 +114,9 @@ JXL_EXPORT JxlValidationVerdict JxlValidate(
 	const JxlValidationOptions* options,
 	JxlValidationResult* result
 );
+
+/** Stable ASCII name for a feature code. Never NULL, never empty. */
+JXL_EXPORT const char* JxlValidationFeatureName(JxlValidationFeature feature);
 
 #ifdef __cplusplus
 }  /* extern "C" */

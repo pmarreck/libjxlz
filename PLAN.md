@@ -1,5 +1,72 @@
 # libjxlz Plan
 
+## Peter's ruling: support ALL JPEG XL features (2026-08-27)
+
+Verbatim, relayed by validate: *"we need jpegz/libjxlz to support ALL jpegxl
+features."* This makes `COVERAGE_GAMEPLAN.md` Target B (decode completeness)
+mandatory rather than optional. Target A (validation completeness) is still
+done first because it is cheap and it makes B's progress measurable per file.
+
+- [x] **Named the two unsupported features in the witnessed case,
+  `~/Downloads/Samson.jxl`** (PRIVATE family photo — diagnosed locally only,
+  never copied, no derivative fixture; instrumentation reverted and the tree
+  verified clean). Two frames: frame 0 at offset 0 is `modular` /
+  `reference_only` / 239 bytes / 1 TOC entry, and frame 1 at offset 239 is
+  **`var_dct`** / `regular_frame` / `flags=0x2` / 198 TOC entries. `0x2` is
+  `FrameFlags.patches` (`src/lib/codec/frame_header.zig:49`), so frame 0 is the
+  patch dictionary reference frame. The file therefore needs **two** features:
+  VarDCT and patches. Validate's guess (modular squeeze/palette/RCT) was wrong;
+  all three modular transforms are implemented with working inverses —
+  2026-08-27 12:47 PM EDT
+- [x] **Fine-grained finding detail: the strict result now NAMES the feature.**
+  `JxlValidationResult` gains a `feature` field, `JxlValidationFeature` gains 22
+  stable codes, and `JxlValidationFeatureName()` returns a stable ASCII string
+  so consumers need not mirror the enum. Mechanism: Zig error sets carry no
+  payload, so `src/lib/base/unsupported.zig` holds a thread-local slot that
+  rejection sites set via `return unsupported(.patches);`. The slot is cleared
+  at `JxlValidate` entry and consumed at the boundary, so a reason can neither
+  survive into a later call nor be reported against an accepted file. A site
+  that still returns a bare `error.Unsupported` reads back as `unknown` rather
+  than `none`, which keeps the remaining sweep visible instead of silently
+  mislabeled — 2026-08-27
+  - Written red first: the C control failed to compile on the missing type,
+    field, and function. Non-vacuity proven by mutation: pointing the patches
+    site at `.vardct_frame` makes the control fail with
+    `patches names itself: ... feature=2 (vardct_frame), expected ... 3 (patches)`.
+    The Zig unit tests were proven to actually run (11 matched the filter) by
+    breaking one assertion and watching it fail.
+  - Specificity control in the same test: an accepted file must report
+    `FEATURE_NONE`, so a stale reason cannot masquerade as a finding.
+  - **ABI break.** `JxlValidationResult` grew a field. Handled by the pin
+    protocol (libjxlz → jpegz → tiffz → validate, mapping note before each
+    push) rather than in-band versioning. This corrects what I told validate in
+    the 2026-08-27 reply, where I said the result struct would also gain a
+    `struct_size` guard: it did not. A caller-initialized size field on a
+    result struct that every existing call site leaves uninitialized would read
+    garbage, and speculative in-band versioning is the wrong trade for
+    pre-1.0 software with three in-fleet consumers and a coordinated pin
+    protocol. Say so in the follow-up note.
+- [ ] Sweep the remaining `error.Unsupported` sites and give each a feature
+  name. Only four are named so far (the peek guard, the noise/patches frame
+  flags, the non-modular frame guard, and the sub-3-channel guard); every other
+  site reports `unknown`. Measure by counting `unknown` outcomes over the
+  corpus and driving that to zero.
+- [ ] Feature-coverage roadmap, sequenced by real-world frequency (sent to
+  validate 2026-08-27): (1) VarDCT decode — `DequantMatrices` in full, the
+  quantizer and adaptive quant field, coefficient order tables, AC strategy
+  (DCT2 through DCT256 plus Hornuss and AFV), chroma-from-luma, the inverse
+  DCT, and VarDCT DC groups; (2) the render pipeline VarDCT output needs (XYB
+  to linear, upsampling, Gaborish, EPF); (3) patches and noise, which together
+  with (1) complete Samson; (4) progressive structure (DC frames, LF frames,
+  multiple passes, reference frames beyond the single `reference_only` case we
+  already decode); (5) JPEG reconstruction (`jbrd`), then BMFF and ICC breadth.
+  Each slice differential-gated against pinned djxl v0.12.0 on synthesized
+  fixtures, plus a per-feature corruption sweep.
+- [ ] Add a `jxlz validate` subcommand (verdict, finding, feature name, offsets,
+  frames, `--json`). Every coverage measurement so far has come from a
+  throwaway C probe rebuilt from scratch each session, which is why the numbers
+  are expensive to refresh. This also gives validate a CLI to diff against.
+
 ## Documentation and release-readiness audit (2026-08-14)
 
 - [x] Reconcile project-owned Markdown, the coverage plan, and the live worktree with the stricter JPEG XL parser goal; trashed the obsolete handoff, identified archive/removal candidates, traced the dirty Highway submodule, and recorded the prioritized completion list in `CODE_REVIEW.md`. Security policy remains for replacement rather than deletion because it currently routes reports upstream — 2026-08-14 3:15 PM EDT.

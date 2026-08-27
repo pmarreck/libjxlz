@@ -3,6 +3,7 @@ const std = @import("std");
 const common = @import("lib/base/common.zig");
 const BitReader = @import("lib/base/bit_reader.zig").BitReader;
 const JxlError = @import("lib/base/status.zig").JxlError;
+const unsupported_mod = @import("lib/base/unsupported.zig");
 const headers = @import("lib/codec/headers.zig");
 const color_encoding_mod = @import("lib/codec/color_encoding.zig");
 const icc_codec = @import("lib/codec/icc_codec.zig");
@@ -63,6 +64,8 @@ pub const JxlValidationOptions = extern struct {
 	max_frames: u32,
 };
 
+pub const JxlValidationFeature = unsupported_mod.Feature;
+
 pub const JxlValidationResult = extern struct {
 	verdict: JxlValidationVerdict,
 	code: JxlValidationFindingCode,
@@ -70,6 +73,7 @@ pub const JxlValidationResult = extern struct {
 	host_byte_offset: u64,
 	offset_is_exact: JXL_BOOL,
 	frames_validated: u32,
+	feature: JxlValidationFeature,
 };
 
 pub const default_validation_options = JxlValidationOptions{
@@ -1244,6 +1248,10 @@ fn setValidationResult(
 		.host_byte_offset = std.math.add(u64, host_byte_offset, byte_offset) catch std.math.maxInt(u64),
 		.offset_is_exact = @intFromBool(offset_is_exact),
 		.frames_validated = frames_validated,
+		// Only an unsupported verdict names a feature. Reading the slot here
+		// (rather than at each call site) also consumes it, so a recorded
+		// reason can never leak into a later, unrelated result.
+		.feature = if (verdict == .JXL_VALIDATION_UNSUPPORTED) unsupported_mod.take() else .none,
 	};
 	return verdict;
 }
@@ -1266,12 +1274,17 @@ fn validationFailure(
 
 /// Strictly validates a bounded JPEG XL buffer without decoding through an external implementation.
 /// Unsupported syntax and incomplete validation remain distinct from proven corruption.
+pub export fn JxlValidationFeatureName(feature: JxlValidationFeature) [*:0]const u8 {
+	return feature.name();
+}
+
 pub export fn JxlValidate(
 	data: ?[*]const u8,
 	size: usize,
 	options_ptr: ?*const JxlValidationOptions,
 	result_ptr: ?*JxlValidationResult,
 ) JxlValidationVerdict {
+	unsupported_mod.clear();
 	const result = result_ptr orelse return .JXL_VALIDATION_INDETERMINATE;
 	const options = options_ptr orelse &default_validation_options;
 	const host_offset = options.host_byte_offset;
@@ -1321,7 +1334,7 @@ pub export fn JxlValidate(
 		// frame without decoding it. Strict validation must classify that frame.
 		var kind_br = BitReader.init(dec.frame_data[dec.frame_offset..]);
 		if (frame_header_mod.peekFrameEncoding(&kind_br) != .modular) {
-			return validationFailure(result, error.Unsupported, dec.frame_offset, host_offset, false, frames_validated);
+			return validationFailure(result, unsupported_mod.unsupported(.vardct_frame), dec.frame_offset, host_offset, false, frames_validated);
 		}
 		kind_br.close() catch |err| {
 			return validationFailure(result, err, dec.frame_offset, host_offset, false, frames_validated);
