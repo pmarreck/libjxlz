@@ -225,8 +225,10 @@ const kLibraryDct2 = QuantEncoding{
 };
 const kOne = sf.fromInt(1);
 const kSixtyFour = sf.fromInt(64);
-const kAlmostZero = sf.div(kOne, sf.fromInt(100_000_000));
-const kAlmostInf = sf.fromInt(100_000_000);
+// randomz Fixed: |value| ∈ [2^e, 2^(e+1)), so e is a bit count. C++ used
+// decimal 1e-8 / 1e8 (~2^-26.6 / 2^26.6); we bound on the exponent itself.
+const kMinWeightExp: i32 = -26;
+const kMaxWeightExp: i32 = 26;
 const kLog2MaxDistanceBands: usize = 4;
 const kMaxDistanceBands: usize = 1 + (1 << kLog2MaxDistanceBands);
 
@@ -245,11 +247,11 @@ fn absFixed(value: sf.Fixed) sf.Fixed {
 }
 
 fn tooSmall(value: sf.Fixed) bool {
-	return sf.cmp(absFixed(value), kAlmostZero) < 0;
+	return value.m == 0 or absFixed(value).e < kMinWeightExp;
 }
 
 fn tooLarge(value: sf.Fixed) bool {
-	return sf.cmp(absFixed(value), kAlmostInf) >= 0;
+	return value.m != 0 and absFixed(value).e > kMaxWeightExp;
 }
 
 /// Reconstruct bitstream F16 as a randomz soft-float without IEEE-754 arithmetic.
@@ -1147,6 +1149,20 @@ test "fromF16Bits reconstructs 1, 2, and 1/2 as randomz soft-floats" {
 	try testing.expectEqual(sf.div(kOne, sf.fromInt(2)), try fromF16Bits(0x3800));
 	try testing.expectEqual(sf.Fixed.zero, try fromF16Bits(0x0000));
 	try testing.expectError(error.GenericError, fromF16Bits(0x7C00));
+}
+
+test "weight bounds use the binary exponent, not a decimal 1e-8 fence" {
+	// randomz Fixed: |value| ∈ [2^e, 2^(e+1)). A 1.5 × 2^-27 weight is
+	// ~1.12e-8, which a decimal 1e-8 fence accepts and a bit-count fence
+	// (e < -26) rejects.
+	const one_and_half: i64 = @bitCast(sf.TWO62 + sf.TWO61);
+	const just_under_two_minus_26 = sf.Fixed{ .m = one_and_half, .e = -27 };
+	try testing.expect(tooSmall(just_under_two_minus_26));
+	try testing.expect(!tooSmall(sf.Fixed{ .m = @bitCast(sf.TWO62), .e = -26 }));
+	try testing.expect(tooSmall(sf.Fixed.zero));
+	const just_over_1e8 = sf.Fixed{ .m = one_and_half, .e = 26 };
+	try testing.expect(!tooLarge(just_over_1e8));
+	try testing.expect(tooLarge(sf.Fixed{ .m = @bitCast(sf.TWO62), .e = 27 }));
 }
 
 test "DequantMatrices.decode all_default consumes one bit and uses library encodings" {

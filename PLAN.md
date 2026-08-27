@@ -14,6 +14,8 @@
   started 22:04:23Z, finished 22:11:57Z, 454s — 2026-08-27 6:12 PM EDT
 - [x] `8348306c` (EnsureComputed identity) **success** on Mechatron: started
   22:18:22Z, finished 22:25:40Z, 438s — 2026-08-27 6:26 PM EDT
+- [x] `cfdd4857` (EnsureComputed DCT2) **success** on Mechatron: started
+  22:30:03Z, finished 22:37:22Z, 439s — 2026-08-27 6:37 PM EDT
 
 ## Peter's ruling: support ALL JPEG XL features (2026-08-27)
 
@@ -107,7 +109,8 @@ done first because it is cheap and it makes B's progress measurable per file.
     Bitstream F16 is reconstructed as mantissa/exponent integers; invert is
     `div(1, w)` with exact equality tests. `dc_quant` is still f32 (older
     spline/XYB path). IEEE-754 arithmetic stays at the XYB display step.
-    — 2026-08-27 ~6:40 PM EDT
+    Weight magnitude bounds use the binary exponent (`e < -26` / `e > 26`),
+    not a decimal 1e-8 fence. — 2026-08-27 6:48 PM EDT
 - [x] Add a `jxlz validate` subcommand (verdict, finding, feature name, offsets,
   frames, `--json`). `jxlz validate` / `jxlz v` dogfoods `JxlValidate` through
   the published header. Exit 0 only for VALID; other verdicts exit 1 with the
