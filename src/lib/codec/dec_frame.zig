@@ -162,6 +162,12 @@ fn applyExtraChannelDimShift(
 // Transliterated from lib/jxl/quant_weights.cc DequantMatrices::{DecodeDC,Decode}
 
 /// C++ QuantEncoding::Mode. Values are bitstream ABI: 3-bit kLog2NumQuantModes.
+/// C++ AcStrategyType. Values are bitstream ABI and EnsureComputed mask bits.
+pub const AcStrategyType = enum(u32) {
+	dct = 0,
+	identity = 1,
+};
+
 pub const QuantMode = enum(u8) {
 	library = 0,
 	identity = 1,
@@ -193,8 +199,20 @@ pub const QuantEncoding = struct {
 };
 
 const kNumQuantTables: usize = 17; // DequantMatrices::kNum in C++
+const kDctBlockSize: usize = 64;
+const kSumRequiredXy: usize = 2056;
+const kTotalTableSize: usize = kSumRequiredXy * kDctBlockSize * 3;
 const kRequiredSizeX = [_]u8{ 1, 1, 1, 1, 2, 4, 1, 1, 2, 1, 1, 8, 4, 16, 8, 32, 16 };
 const kRequiredSizeY = [_]u8{ 1, 1, 1, 1, 2, 4, 2, 4, 4, 1, 1, 8, 8, 16, 16, 32, 32 };
+const kAcStrategyToQuantTable = [_]u8{ 0, 1 }; // DCT, IDENTITY
+const kLibraryIdentity = QuantEncoding{
+	.mode = .identity,
+	.idweights = .{
+		.{ 280.0, 3160.0, 3160.0 },
+		.{ 60.0, 864.0, 864.0 },
+		.{ 18.0, 200.0, 200.0 },
+	},
+};
 const kAlmostZero: f32 = 1.0e-8;
 const kLog2MaxDistanceBands: usize = 4;
 const kMaxDistanceBands: usize = 1 + (1 << kLog2MaxDistanceBands);
@@ -237,6 +255,11 @@ fn decodeDctParams(br: *BitReader) JxlError!DctQuantWeightParams {
 pub const DequantMatrices = struct {
 	dc_quant: [3]f32 = .{ 1.0 / 4096.0, 1.0 / 512.0, 1.0 / 256.0 }, // defaults from C++
 	encodings: [kNumQuantTables]QuantEncoding = [_]QuantEncoding{.{}} ** kNumQuantTables,
+	storage: []f32 = &.{},
+	table: []f32 = &.{},
+	inv_table: []f32 = &.{},
+	table_offsets: [kNumQuantTables * 3]usize = @splat(0),
+	computed_mask: u32 = 0,
 
 	/// Read DC quantization parameters from the bitstream.
 	/// Must be called before DecodeGlobalInfo, matching C++ ProcessDCGlobal flow.
@@ -342,7 +365,95 @@ pub const DequantMatrices = struct {
 			}
 		}
 	}
+
+	pub fn deinit(self: *DequantMatrices, allocator: std.mem.Allocator) void {
+		if (self.storage.len != 0) {
+			allocator.free(self.storage);
+			self.storage = &.{};
+			self.table = &.{};
+			self.inv_table = &.{};
+		}
+		self.computed_mask = 0;
+	}
+
+	/// C++ DequantMatrices::Matrix. `kind` must have been requested in a prior
+	/// `ensureComputed` call.
+	pub fn matrix(self: *const DequantMatrices, kind: AcStrategyType, c: usize) []const f32 {
+		const table_idx = kAcStrategyToQuantTable[@intFromEnum(kind)];
+		const num = requiredSize(table_idx) * kDctBlockSize;
+		const off = self.table_offsets[table_idx * 3 + c];
+		return self.table[off .. off + num];
+	}
+
+	/// Materialize dequant tables for the AC strategies in `acs_mask`.
+	/// C++ DequantMatrices::EnsureComputed. First slice: identity library tables
+	/// only; other requested kinds return unsupported.
+	pub fn ensureComputed(self: *DequantMatrices, allocator: std.mem.Allocator, acs_mask: u32) JxlError!void {
+		if (self.storage.len == 0) {
+			const storage = try allocator.alloc(f32, 2 * kTotalTableSize);
+			@memset(storage, 0);
+			self.storage = storage;
+			self.table = storage[0..kTotalTableSize];
+			self.inv_table = storage[kTotalTableSize..];
+			var pos: usize = 0;
+			for (0..kNumQuantTables) |i| {
+				const num = requiredSize(i) * kDctBlockSize;
+				for (0..3) |c| {
+					self.table_offsets[3 * i + c] = pos + c * num;
+				}
+				pos += 3 * num;
+			}
+		}
+
+		var kind_mask: u32 = 0;
+		var computed_kind_mask: u32 = 0;
+		for (0..kAcStrategyToQuantTable.len) |i| {
+			const strategy_bit = @as(u32, 1) << @intCast(i);
+			const table_bit = @as(u32, 1) << @intCast(kAcStrategyToQuantTable[i]);
+			if ((acs_mask & strategy_bit) != 0) kind_mask |= table_bit;
+			if ((self.computed_mask & strategy_bit) != 0) computed_kind_mask |= table_bit;
+		}
+
+		for (0..kNumQuantTables) |table_idx| {
+			const table_bit = @as(u32, 1) << @intCast(table_idx);
+			if ((kind_mask & table_bit) == 0) continue;
+			if ((computed_kind_mask & table_bit) != 0) continue;
+			var quant_enc = self.encodings[table_idx];
+			if (quant_enc.mode == .library) {
+				if (table_idx != 1) return unsupported_mod.unsupported(.vardct_frame);
+				quant_enc = kLibraryIdentity;
+			}
+			if (quant_enc.mode != .identity) return unsupported_mod.unsupported(.vardct_frame);
+			try computeIdentityTable(self, table_idx, quant_enc);
+		}
+		self.computed_mask |= acs_mask;
+	}
 };
+
+fn computeIdentityTable(self: *DequantMatrices, table_idx: usize, quant_encoding: QuantEncoding) JxlError!void {
+	const num = requiredSize(table_idx) * kDctBlockSize;
+	if (num != kDctBlockSize) return error.GenericError;
+	var weights: [3 * kDctBlockSize]f32 = undefined;
+	for (0..3) |c| {
+		const start = c * kDctBlockSize;
+		for (0..kDctBlockSize) |i| {
+			weights[start + i] = quant_encoding.idweights[c][0];
+		}
+		weights[start + 1] = quant_encoding.idweights[c][1];
+		weights[start + 8] = quant_encoding.idweights[c][1];
+		weights[start + 9] = quant_encoding.idweights[c][2];
+	}
+	const dest = self.table_offsets[table_idx * 3];
+	for (0..3 * num) |i| {
+		const w = weights[i];
+		if (@abs(w) < kAlmostZero or @abs(w) >= 1.0 / kAlmostZero) return error.GenericError;
+		self.table[dest + i] = 1.0 / w;
+		self.inv_table[dest + i] = w;
+	}
+	for (0..3) |c| {
+		self.inv_table[dest + c * num] = 0;
+	}
+}
 
 // ── ModularStreamId ──
 
@@ -686,6 +797,7 @@ pub const FrameDecoder = struct {
 
     pub fn deinit(self: *FrameDecoder) void {
         self.clearRenderedImage();
+        self.dequant_matrices.deinit(self.allocator);
         self.modular_decoder.deinit();
         self.splines.deinit();
         if (self.toc_entries.len > 0) {
@@ -1164,6 +1276,26 @@ test "DequantMatrices.decode raw tables stay unsupported until modular quant tab
 	var br = BitReader.init(writer.bytes());
 	var matrices = DequantMatrices{};
 	try testing.expectError(error.Unsupported, matrices.decode(&br));
+}
+
+test "ensureComputed identity library table inverts the known weights" {
+	const allocator = testing.allocator;
+	var data = [_]u8{0x01};
+	var br = BitReader.init(&data);
+	var matrices = DequantMatrices{};
+	defer matrices.deinit(allocator);
+	try matrices.decode(&br);
+	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.identity));
+	const x = matrices.matrix(.identity, 0);
+	try testing.expectApproxEqAbs(@as(f32, 1.0 / 280.0), x[0], 1e-6);
+	try testing.expectApproxEqAbs(@as(f32, 1.0 / 3160.0), x[1], 1e-6);
+	try testing.expectApproxEqAbs(@as(f32, 1.0 / 3160.0), x[8], 1e-6);
+	try testing.expectApproxEqAbs(@as(f32, 1.0 / 3160.0), x[9], 1e-6);
+	try testing.expectApproxEqAbs(@as(f32, 1.0 / 280.0), x[2], 1e-6);
+	const y = matrices.matrix(.identity, 1);
+	try testing.expectApproxEqAbs(@as(f32, 1.0 / 60.0), y[0], 1e-6);
+	const b = matrices.matrix(.identity, 2);
+	try testing.expectApproxEqAbs(@as(f32, 1.0 / 18.0), b[0], 1e-6);
 }
 
 test "processDCGlobal rejects unsupported frame features" {

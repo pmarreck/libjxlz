@@ -10,6 +10,8 @@
   finished 21:37:16Z, 447s — 2026-08-27 5:37 PM EDT
 - [x] `20cbcb65` (`DequantMatrices.decode` first slice) **success** on Mechatron:
   started 21:49:10Z, finished 21:56:28Z, 438s — 2026-08-27 5:56 PM EDT
+- [x] `8387bf08` (remaining decode modes except raw) **success** on Mechatron:
+  started 22:04:23Z, finished 22:11:57Z, 454s — 2026-08-27 6:12 PM EDT
 
 ## Peter's ruling: support ALL JPEG XL features (2026-08-27)
 
@@ -93,6 +95,9 @@ done first because it is cheap and it makes B's progress measurable per file.
     and afv (first six weights × 64, two param sets). Raw tables still
     return unsupported pending modular quant-table decode. C++ `Decode`
     lives in AC-global, so modular files are unaffected — 2026-08-27 5:58 PM EDT
+  - [x] `EnsureComputed` first slice: identity library table inverts the
+    known weights (X DC 1/280, (0,1)/(1,0)/(1,1) 1/3160). Other AC
+    strategies still unsupported. — 2026-08-27 6:15 PM EDT
 - [x] Add a `jxlz validate` subcommand (verdict, finding, feature name, offsets,
   frames, `--json`). `jxlz validate` / `jxlz v` dogfoods `JxlValidate` through
   the published header. Exit 0 only for VALID; other verdicts exit 1 with the
