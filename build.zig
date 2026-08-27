@@ -286,6 +286,22 @@ pub fn build(b: *std.Build) void {
 	const encode_codestream_bench_step = b.step("encode-codestream-bench", "Build the modular encode codestream benchmark");
 	encode_codestream_bench_step.dependOn(&install_encode_codestream_bench.step);
 
+	const dequant_bench_mod = b.createModule(.{
+		.root_source_file = b.path("bench_dequant_ensure_computed.zig"),
+		.target = target,
+		.optimize = optimize,
+		.link_libc = true,
+	});
+	linkBrotliModule(dequant_bench_mod, brotli_include_dir, brotli_lib_dir);
+	const dequant_bench = b.addExecutable(.{
+		.name = "bench_dequant_ensure_computed",
+		.root_module = dequant_bench_mod,
+	});
+	const install_dequant_bench = b.addInstallArtifact(dequant_bench, .{});
+	b.getInstallStep().dependOn(&install_dequant_bench.step);
+	const dequant_bench_step = b.step("dequant-bench", "Build the VarDCT dequant EnsureComputed benchmark");
+	dequant_bench_step.dependOn(&install_dequant_bench.step);
+
 	const unit_tests_mod = b.createModule(.{
 		.root_source_file = b.path("src/root.zig"),
 		.target = target,
@@ -352,6 +368,19 @@ pub fn build(b: *std.Build) void {
 	});
 
 	const run_encode_codestream_bench_tests = b.addRunArtifact(encode_codestream_bench_tests);
+	const dequant_bench_tests_mod = b.createModule(.{
+		.root_source_file = b.path("bench_dequant_ensure_computed.zig"),
+		.target = target,
+		.optimize = optimize,
+		.link_libc = true,
+	});
+	linkBrotliModule(dequant_bench_tests_mod, brotli_include_dir, brotli_lib_dir);
+	const dequant_bench_tests = b.addTest(.{
+		.root_module = dequant_bench_tests_mod,
+		.filters = test_filters,
+	});
+
+	const run_dequant_bench_tests = b.addRunArtifact(dequant_bench_tests);
 	const capi_tests_mod = b.createModule(.{
 		.root_source_file = b.path("src/capi_root.zig"),
 		.target = target,
@@ -371,6 +400,7 @@ pub fn build(b: *std.Build) void {
 	test_step.dependOn(&run_weighted_bench_tests.step);
 	test_step.dependOn(&run_encode_prep_bench_tests.step);
 	test_step.dependOn(&run_encode_codestream_bench_tests.step);
+	test_step.dependOn(&run_dequant_bench_tests.step);
 	test_step.dependOn(&run_capi_tests.step);
 
 	// `test-compile` builds every test binary but does not run them. The
@@ -400,6 +430,10 @@ pub fn build(b: *std.Build) void {
 	test_compile_step.dependOn(&b.addInstallArtifact(encode_codestream_bench_tests, .{
 		.dest_dir = .{ .override = .{ .custom = "test-bins" } },
 		.dest_sub_path = "encode_codestream_bench_tests",
+	}).step);
+	test_compile_step.dependOn(&b.addInstallArtifact(dequant_bench_tests, .{
+		.dest_dir = .{ .override = .{ .custom = "test-bins" } },
+		.dest_sub_path = "dequant_bench_tests",
 	}).step);
 	test_compile_step.dependOn(&b.addInstallArtifact(capi_tests, .{
 		.dest_dir = .{ .override = .{ .custom = "test-bins" } },

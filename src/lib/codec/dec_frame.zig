@@ -223,6 +223,31 @@ const kLibraryDct2 = QuantEncoding{
 		.{ sf.fromInt(640), sf.fromInt(320), sf.fromInt(128), sf.fromInt(64), sf.fromInt(32), sf.fromInt(16) },
 	},
 };
+
+fn libraryDct() QuantEncoding {
+	const neg_two_fifths = sf.div(sf.fromInt(-2), sf.fromInt(5));
+	const neg_three_tenths = sf.div(sf.fromInt(-3), sf.fromInt(10));
+	var params = DctQuantWeightParams{ .num_distance_bands = 6 };
+	params.distance_bands[0][0] = sf.fromInt(3150);
+	params.distance_bands[0][1] = sf.fromInt(0);
+	params.distance_bands[0][2] = neg_two_fifths;
+	params.distance_bands[0][3] = neg_two_fifths;
+	params.distance_bands[0][4] = neg_two_fifths;
+	params.distance_bands[0][5] = sf.fromInt(-2);
+	params.distance_bands[1][0] = sf.fromInt(560);
+	params.distance_bands[1][1] = sf.fromInt(0);
+	params.distance_bands[1][2] = neg_three_tenths;
+	params.distance_bands[1][3] = neg_three_tenths;
+	params.distance_bands[1][4] = neg_three_tenths;
+	params.distance_bands[1][5] = neg_three_tenths;
+	params.distance_bands[2][0] = sf.fromInt(512);
+	params.distance_bands[2][1] = sf.fromInt(-2);
+	params.distance_bands[2][2] = sf.fromInt(-1);
+	params.distance_bands[2][3] = sf.fromInt(0);
+	params.distance_bands[2][4] = sf.fromInt(-1);
+	params.distance_bands[2][5] = sf.fromInt(-2);
+	return .{ .mode = .dct, .dct_params = params };
+}
 const kOne = sf.fromInt(1);
 const kSixtyFour = sf.fromInt(64);
 // randomz Fixed: |value| ∈ [2^e, 2^(e+1)), so e is a bit count. C++ used
@@ -437,8 +462,8 @@ pub const DequantMatrices = struct {
 	}
 
 	/// Materialize dequant tables for the AC strategies in `acs_mask`.
-	/// C++ DequantMatrices::EnsureComputed. First slice: identity library tables
-	/// only; other requested kinds return unsupported.
+	/// C++ DequantMatrices::EnsureComputed. Identity, DCT2, and DCT8 library
+	/// tables are live; larger DCT sizes and other encodings stay unsupported.
 	pub fn ensureComputed(self: *DequantMatrices, allocator: std.mem.Allocator, acs_mask: u32) JxlError!void {
 		if (self.storage.len == 0) {
 			const storage = try allocator.alloc(sf.Fixed, 2 * kTotalTableSize);
@@ -476,6 +501,7 @@ pub const DequantMatrices = struct {
 			switch (quant_enc.mode) {
 				.identity => try computeIdentityTable(self, table_idx, quant_enc),
 				.dct2 => try computeDct2Table(self, table_idx, quant_enc),
+				.dct => try computeDctTable(self, table_idx, quant_enc),
 				else => return unsupported_mod.unsupported(.vardct_frame),
 			}
 		}
@@ -485,10 +511,81 @@ pub const DequantMatrices = struct {
 
 fn libraryEncoding(table_idx: usize) ?QuantEncoding {
 	return switch (table_idx) {
+		0 => libraryDct(),
 		1 => kLibraryIdentity,
 		2 => kLibraryDct2,
 		else => null,
 	};
+}
+
+fn bandMult(v: sf.Fixed) sf.Fixed {
+	if (sf.cmp(v, sf.Fixed.zero) > 0) return sf.add(kOne, v);
+	return sf.div(kOne, sf.sub(kOne, v));
+}
+
+fn interpolateBands(pos: sf.Fixed, bands: []const sf.Fixed) JxlError!sf.Fixed {
+	const idx_i = sf.toIntTrunc(pos);
+	if (idx_i < 0) return error.GenericError;
+	const idx: usize = @intCast(idx_i);
+	if (idx + 1 >= bands.len) return error.GenericError;
+	const frac_part = sf.sub(pos, sf.fromInt(idx_i));
+	if (frac_part.m == 0) return bands[idx];
+	const a = bands[idx];
+	const b = bands[idx + 1];
+	return sf.mul(a, sf.pow(sf.div(b, a), frac_part));
+}
+
+/// Fills `out` with 3·rows·cols distance-band quant weights.
+/// C++ GetQuantWeights: eccentricity bands, radial `sqrt`, geometric lerp.
+/// complexity: O(rows·cols) per channel (band Mult is O(num_bands) setup).
+pub fn getQuantWeights(
+	rows: usize,
+	cols: usize,
+	params: DctQuantWeightParams,
+	out: []sf.Fixed,
+) JxlError!void {
+	if (rows == 0 or cols == 0) return error.GenericError;
+	const num = rows * cols;
+	if (out.len != 3 * num) return error.GenericError;
+	const num_bands: usize = params.num_distance_bands;
+	if (num_bands == 0 or num_bands > kMaxDistanceBands) return error.GenericError;
+
+	const sqrt2 = sf.sqrt(sf.fromInt(2));
+	const eps = sf.div(kOne, sf.fromInt(1_000_000));
+	const scale = sf.div(sf.fromInt(@intCast(num_bands - 1)), sf.add(sqrt2, eps));
+	const rcpcol = if (cols > 1) sf.div(scale, sf.fromInt(@intCast(cols - 1))) else sf.Fixed.zero;
+	const rcprow = if (rows > 1) sf.div(scale, sf.fromInt(@intCast(rows - 1))) else sf.Fixed.zero;
+
+	for (0..3) |c| {
+		var bands: [kMaxDistanceBands]sf.Fixed = @splat(sf.Fixed.zero);
+		bands[0] = params.distance_bands[c][0];
+		if (tooSmall(bands[0])) return error.GenericError;
+		var i: usize = 1;
+		while (i < num_bands) : (i += 1) {
+			bands[i] = sf.mul(bands[i - 1], bandMult(params.distance_bands[c][i]));
+			if (tooSmall(bands[i])) return error.GenericError;
+		}
+		for (0..rows) |y| {
+			const dy = sf.mul(sf.fromInt(@intCast(y)), rcprow);
+			const dy2 = sf.mul(dy, dy);
+			for (0..cols) |x| {
+				const dx = sf.mul(sf.fromInt(@intCast(x)), rcpcol);
+				const dist = sf.sqrt(sf.add(sf.mul(dx, dx), dy2));
+				const weight = if (num_bands == 1) bands[0] else try interpolateBands(dist, bands[0..num_bands]);
+				out[c * num + y * cols + x] = weight;
+			}
+		}
+	}
+}
+
+fn computeDctTable(self: *DequantMatrices, table_idx: usize, quant_encoding: QuantEncoding) JxlError!void {
+	const rows: usize = 8 * @as(usize, kRequiredSizeX[table_idx]);
+	const cols: usize = 8 * @as(usize, kRequiredSizeY[table_idx]);
+	const num = rows * cols;
+	if (num != kDctBlockSize) return unsupported_mod.unsupported(.vardct_frame);
+	var weights: [3 * kDctBlockSize]sf.Fixed = undefined;
+	try getQuantWeights(rows, cols, quant_encoding.dct_params, &weights);
+	try invertAndStore(self, table_idx, &weights);
 }
 
 fn invertAndStore(self: *DequantMatrices, table_idx: usize, weights: []const sf.Fixed) JxlError!void {
@@ -1432,6 +1529,57 @@ test "ensureComputed dct2 library table inverts the known weights" {
 	try testing.expectEqual(sf.div(kOne, sf.fromInt(640)), x[18]);
 	try testing.expectEqual(sf.div(kOne, sf.fromInt(480)), x[4]);
 	try testing.expectEqual(sf.div(kOne, sf.fromInt(300)), x[36]);
+}
+
+test "ensureComputed dct library table inverts the DC weights" {
+	const allocator = testing.allocator;
+	var data = [_]u8{0x01};
+	var br = BitReader.init(&data);
+	var matrices = DequantMatrices{};
+	defer matrices.deinit(allocator);
+	try matrices.decode(&br);
+	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.dct));
+	const x = matrices.matrix(.dct, 0);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(3150)), x[0]);
+	const y = matrices.matrix(.dct, 1);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(560)), y[0]);
+	const b = matrices.matrix(.dct, 2);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(512)), b[0]);
+}
+
+test "ensureComputed dct one-band fills every cell with the seed" {
+	const allocator = testing.allocator;
+	var matrices = DequantMatrices{};
+	defer matrices.deinit(allocator);
+	const seed = sf.fromInt(100);
+	var params = DctQuantWeightParams{ .num_distance_bands = 1 };
+	params.distance_bands[0][0] = seed;
+	params.distance_bands[1][0] = seed;
+	params.distance_bands[2][0] = seed;
+	matrices.encodings[0] = .{ .mode = .dct, .dct_params = params };
+	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.dct));
+	const expected = sf.div(kOne, seed);
+	for (0..3) |c| {
+		for (matrices.matrix(.dct, c)) |w| {
+			try testing.expectEqual(expected, w);
+		}
+	}
+}
+
+test "ensureComputed dct two-band interpolates away from DC at the corner" {
+	const allocator = testing.allocator;
+	var matrices = DequantMatrices{};
+	defer matrices.deinit(allocator);
+	var params = DctQuantWeightParams{ .num_distance_bands = 2 };
+	for (0..3) |c| {
+		params.distance_bands[c][0] = sf.fromInt(100);
+		params.distance_bands[c][1] = sf.fromInt(1);
+	}
+	matrices.encodings[0] = .{ .mode = .dct, .dct_params = params };
+	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.dct));
+	const x = matrices.matrix(.dct, 0);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(100)), x[0]);
+	try testing.expect(sf.cmp(x[63], x[0]) < 0);
 }
 
 test "processDCGlobal rejects unsupported frame features" {

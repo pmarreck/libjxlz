@@ -111,6 +111,23 @@ done first because it is cheap and it makes B's progress measurable per file.
     spline/XYB path). IEEE-754 arithmetic stays at the XYB display step.
     Weight magnitude bounds use the binary exponent (`e < -26` / `e > 26`),
     not a decimal 1e-8 fence. — 2026-08-27 6:48 PM EDT
+  - [x] `EnsureComputed` DCT library table: distance-band
+    `GetQuantWeights` (Mult chain, radial `sqrt`, geometric interpolate)
+    in randomz Fixed. Library<0> DC inverts 1/3150, 1/560, 1/512. One-band
+    fills every cell; two-band corner is strictly finer than DC. Larger
+    DCT16/32/64/128/256 tables still unsupported. Curiosity poke held:
+    the C++ `1e-6` fudge on `kSqrt2` is in the scale so the far corner
+    never lands on `idx+1 == num_bands`. — 2026-08-27 7:06 PM EDT
+  - [ ] `./bm` dequant/VarDCT history seed (Peter 2026-08-27, additive):
+    harness is live. `bench_dequant_ensure_computed` checksum-smokes
+    DCT8 library EnsureComputed (`0x82731ce8a23584ec`). `./bm` runs the
+    bench `--scaling` gate (`O(rows·cols)`): first attempt doubled the side length
+    and the gate fired red at 4.00× (quadratic in n, as it should);
+    corrected to double `rows` with `cols` fixed, then 2.01× under the
+    2.8 linear cap. Do **not** seed `dequant_ensure_computed_history.tsv`
+    until DCT256 or a public-C VarDCT decode vs libjxl is worth quoting.
+    `DEQUANT_READY=0` in `./bm` keeps the TSV unseeded while still
+    running the scaling gate.
 - [x] Add a `jxlz validate` subcommand (verdict, finding, feature name, offsets,
   frames, `--json`). `jxlz validate` / `jxlz v` dogfoods `JxlValidate` through
   the published header. Exit 0 only for VALID; other verdicts exit 1 with the
