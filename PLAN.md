@@ -41,6 +41,10 @@
   2026-08-27 10:34 PM EDT
 - [ ] Promote `capture.bash` to a standalone library (Peter 2026-08-27).
   In-tree copy unblocks Actions; a sibling repo is the durable home.
+  Curiosity poke: `capture`'s FD-juggle stalled `zig fetch` on GitHub
+  x86_64 (job cancelled after ~30 min in `./test`) while macOS and
+  linux-aarch64 finished. The headers smoke now fetches via files plus
+  a 60s `timeout`, and still uses `capture` for `tar -tzf`.
 
 ## Peter's ruling: support ALL JPEG XL features (2026-08-27)
 

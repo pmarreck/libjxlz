@@ -23,7 +23,7 @@ jobs:
           - runner: ubuntu-latest
             system: x86_64-linux
             name: linux-x86_64
-            timeout: 30
+            timeout: 45
           - runner: ubuntu-24.04-arm
             system: aarch64-linux
             name: linux-aarch64
