@@ -170,6 +170,7 @@ pub const AcStrategyType = enum(u32) {
 	dct2x2 = 2,
 	dct4x4 = 3,
 	dct16x16 = 4,
+	dct32x32 = 5,
 };
 
 pub const QuantMode = enum(u8) {
@@ -208,7 +209,7 @@ const kSumRequiredXy: usize = 2056;
 const kTotalTableSize: usize = kSumRequiredXy * kDctBlockSize * 3;
 const kRequiredSizeX = [_]u8{ 1, 1, 1, 1, 2, 4, 1, 1, 2, 1, 1, 8, 4, 16, 8, 32, 16 };
 const kRequiredSizeY = [_]u8{ 1, 1, 1, 1, 2, 4, 2, 4, 4, 1, 1, 8, 8, 16, 16, 32, 32 };
-const kAcStrategyToQuantTable = [_]u8{ 0, 1, 2, 3, 4 }; // DCT .. DCT16X16
+const kAcStrategyToQuantTable = [_]u8{ 0, 1, 2, 3, 4, 5 }; // DCT .. DCT32X32
 const kLibraryIdentity = QuantEncoding{
 	.mode = .identity,
 	.idweights = .{
@@ -283,6 +284,44 @@ fn libraryDct16() QuantEncoding {
 		"-0.42708730624733904",
 		"-1.4856834539296244",
 		"-4.9209142884401604",
+	};
+	for (x, 0..) |s, i| params.distance_bands[0][i] = libraryFixed(s);
+	for (y, 0..) |s, i| params.distance_bands[1][i] = libraryFixed(s);
+	for (b, 0..) |s, i| params.distance_bands[2][i] = libraryFixed(s);
+	return .{ .mode = .dct, .dct_params = params };
+}
+
+fn libraryDct32() QuantEncoding {
+	var params = DctQuantWeightParams{ .num_distance_bands = 8 };
+	const x = [_][]const u8{
+		"15718.40830982518931456",
+		"-1.025",
+		"-0.98",
+		"-0.9012",
+		"-0.4",
+		"-0.48819395464",
+		"-0.421064",
+		"-0.27",
+	};
+	const y = [_][]const u8{
+		"7305.7636810695983104",
+		"-0.8041958212306401",
+		"-0.7633036457487539",
+		"-0.55660379990111464",
+		"-0.49785304658857626",
+		"-0.43699592683512467",
+		"-0.40180866526242109",
+		"-0.27321683125358037",
+	};
+	const b = [_][]const u8{
+		"3803.53173721215041536",
+		"-3.060733579805728",
+		"-2.0413270132490346",
+		"-2.0235650159727417",
+		"-0.5495389509954993",
+		"-0.4",
+		"-0.4",
+		"-0.3",
 	};
 	for (x, 0..) |s, i| params.distance_bands[0][i] = libraryFixed(s);
 	for (y, 0..) |s, i| params.distance_bands[1][i] = libraryFixed(s);
@@ -503,8 +542,8 @@ pub const DequantMatrices = struct {
 	}
 
 	/// Materialize dequant tables for the AC strategies in `acs_mask`.
-	/// C++ DequantMatrices::EnsureComputed. Identity, DCT2, DCT8, and DCT16
-	/// library tables are live; larger DCT sizes and other encodings stay unsupported.
+	/// C++ DequantMatrices::EnsureComputed. Identity, DCT2, DCT8, DCT16, and
+	/// DCT32 library tables are live; larger DCT sizes and other encodings stay unsupported.
 	pub fn ensureComputed(self: *DequantMatrices, allocator: std.mem.Allocator, acs_mask: u32) JxlError!void {
 		if (self.storage.len == 0) {
 			const storage = try allocator.alloc(sf.Fixed, 2 * kTotalTableSize);
@@ -542,7 +581,7 @@ pub const DequantMatrices = struct {
 			switch (quant_enc.mode) {
 				.identity => try computeIdentityTable(self, table_idx, quant_enc),
 				.dct2 => try computeDct2Table(self, table_idx, quant_enc),
-				.dct => try computeDctTable(self, table_idx, quant_enc),
+				.dct => try computeDctTable(self, allocator, table_idx, quant_enc),
 				else => return unsupported_mod.unsupported(.vardct_frame),
 			}
 		}
@@ -556,6 +595,7 @@ fn libraryEncoding(table_idx: usize) ?QuantEncoding {
 		1 => kLibraryIdentity,
 		2 => kLibraryDct2,
 		4 => libraryDct16(),
+		5 => libraryDct32(),
 		else => null,
 	};
 }
@@ -620,16 +660,22 @@ pub fn getQuantWeights(
 	}
 }
 
-fn computeDctTable(self: *DequantMatrices, table_idx: usize, quant_encoding: QuantEncoding) JxlError!void {
+fn computeDctTable(
+	self: *DequantMatrices,
+	allocator: std.mem.Allocator,
+	table_idx: usize,
+	quant_encoding: QuantEncoding,
+) JxlError!void {
 	const rows: usize = 8 * @as(usize, kRequiredSizeX[table_idx]);
 	const cols: usize = 8 * @as(usize, kRequiredSizeY[table_idx]);
 	const num = rows * cols;
-	// First live sizes: 8×8 (DCT) and 16×16 (DCT16). Larger stay unsupported.
-	const kMaxLiveCells: usize = 16 * 16;
+	// Live sizes through 32×32. DCT64+ stays unsupported.
+	const kMaxLiveCells: usize = 32 * 32;
 	if (num > kMaxLiveCells) return unsupported_mod.unsupported(.vardct_frame);
-	var weights: [3 * kMaxLiveCells]sf.Fixed = undefined;
-	try getQuantWeights(rows, cols, quant_encoding.dct_params, weights[0 .. 3 * num]);
-	try invertAndStore(self, table_idx, weights[0 .. 3 * num]);
+	const weights = try allocator.alloc(sf.Fixed, 3 * num);
+	defer allocator.free(weights);
+	try getQuantWeights(rows, cols, quant_encoding.dct_params, weights);
+	try invertAndStore(self, table_idx, weights);
 }
 
 fn invertAndStore(self: *DequantMatrices, table_idx: usize, weights: []const sf.Fixed) JxlError!void {
@@ -1658,6 +1704,43 @@ test "ensureComputed dct16 one-band fills every cell with the seed" {
 	try testing.expectEqual(@as(usize, 256), matrices.matrix(.dct16x16, 0).len);
 	for (0..3) |c| {
 		for (matrices.matrix(.dct16x16, c)) |w| {
+			try testing.expectEqual(expected, w);
+		}
+	}
+}
+
+test "ensureComputed dct32 library table inverts the DC weights" {
+	const allocator = testing.allocator;
+	var data = [_]u8{0x01};
+	var br = BitReader.init(&data);
+	var matrices = DequantMatrices{};
+	defer matrices.deinit(allocator);
+	try matrices.decode(&br);
+	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.dct32x32));
+	const x = matrices.matrix(.dct32x32, 0);
+	try testing.expectEqual(@as(usize, 1024), x.len);
+	try testing.expectEqual(sf.div(kOne, sf.parse("15718.40830982518931456").?), x[0]);
+	const y = matrices.matrix(.dct32x32, 1);
+	try testing.expectEqual(sf.div(kOne, sf.parse("7305.7636810695983104").?), y[0]);
+	const b = matrices.matrix(.dct32x32, 2);
+	try testing.expectEqual(sf.div(kOne, sf.parse("3803.53173721215041536").?), b[0]);
+}
+
+test "ensureComputed dct32 one-band fills every cell with the seed" {
+	const allocator = testing.allocator;
+	var matrices = DequantMatrices{};
+	defer matrices.deinit(allocator);
+	const seed = sf.fromInt(100);
+	var params = DctQuantWeightParams{ .num_distance_bands = 1 };
+	params.distance_bands[0][0] = seed;
+	params.distance_bands[1][0] = seed;
+	params.distance_bands[2][0] = seed;
+	matrices.encodings[5] = .{ .mode = .dct, .dct_params = params };
+	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.dct32x32));
+	const expected = sf.div(kOne, seed);
+	try testing.expectEqual(@as(usize, 1024), matrices.matrix(.dct32x32, 0).len);
+	for (0..3) |c| {
+		for (matrices.matrix(.dct32x32, c)) |w| {
 			try testing.expectEqual(expected, w);
 		}
 	}

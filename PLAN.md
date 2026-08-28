@@ -19,6 +19,8 @@
 - [x] `dca55020` (DCT8 GetQuantWeights + `./bm` dequant harness)
   **success** on Mechatron: started 23:32:49Z, finished 23:40:09Z, 440s —
   2026-08-27 7:40 PM EDT
+- [x] `42bff2c8` (EnsureComputed DCT16) **success** on Mechatron: started
+  23:58:36Z, finished 00:06:05Z, 449s — 2026-08-27 8:06 PM EDT
 
 ## Peter's ruling: support ALL JPEG XL features (2026-08-27)
 
@@ -137,8 +139,13 @@ done first because it is cheap and it makes B's progress measurable per file.
     DCT4 (unimplemented) and DCT16 so mask bit 4 maps to table 4.
     Stack buffer covers 3×256 Fixeds; DCT32+ still unsupported. —
     2026-08-27 7:44 PM EDT
-  - [ ] `EnsureComputed` DCT32 library table (table 5, 32×32). Curiosity
-    poke: 3×1024 Fixeds is 48KB of stack; heap is the safer default.
+  - [x] `EnsureComputed` DCT32 library table (table 5, 32×32, 1024
+    cells). Weight scratch moved to the heap (Peter's default). Library
+    DC inverts the C++ seed bands; one-band fills all 1024 cells. DCT64+
+    still unsupported. — 2026-08-27 8:09 PM EDT
+  - [ ] `EnsureComputed` remaining DCT library sizes (8×16, 8×32, 16×32,
+    64, 128, 256) plus DCT4/DCT4x8/AFV compute. Curiosity poke: 256×256
+    is 196608 cells and the C++ comment already calls it slow.
 - [x] Add a `jxlz validate` subcommand (verdict, finding, feature name, offsets,
   frames, `--json`). `jxlz validate` / `jxlz v` dogfoods `JxlValidate` through
   the published header. Exit 0 only for VALID; other verdicts exit 1 with the

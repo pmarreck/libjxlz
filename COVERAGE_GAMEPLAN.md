@@ -154,10 +154,10 @@ Absent:
   for any frame whose encoding is not modular. This is the mode `cjxl`
   produces by default for any lossy encode. `DequantMatrices.decode` now
   reads every encoding except raw; `EnsureComputed` materializes identity,
-  DCT2, DCT8, and DCT16 library tables (distance-band `GetQuantWeights` in
-  randomz Fixed). Still missing: DCT32+, DCT4/DCT4x8/AFV/raw
+  DCT2, DCT8, DCT16, and DCT32 library tables (distance-band `GetQuantWeights` in
+  randomz Fixed). Still missing: DCT64+, rectangular DCT, DCT4/DCT4x8/AFV/raw
   table compute, the quantizer and adaptive quant field, coefficient
-  order tables, AC strategy (DCT32 through DCT256 plus Hornuss and AFV),
+  order tables, AC strategy (DCT64 through DCT256 plus Hornuss and AFV),
   chroma-from-luma, and the inverse DCT.
 - **Patches and noise.** `dec_frame.zig:545` rejects both frame flags.
 - **The render pipeline.** No Gaborish, no edge-preserving filter, no
@@ -292,7 +292,7 @@ machine id.
 This is the bulk of the remaining format. Ordered so each slice is testable
 against upstream rather than against itself:
 
-1. [ ] `DequantMatrices` in full (`decode` all modes except raw; `EnsureComputed` identity/DCT2/DCT8/DCT16; DCT32+ and DCT4/AFV/raw compute still open).
+1. [ ] `DequantMatrices` in full (`decode` all modes except raw; `EnsureComputed` identity/DCT2/DCT8/DCT16/DCT32; DCT64+ / rectangular / DCT4/AFV/raw compute still open).
 2. [ ] Quantizer and the adaptive quantization field.
 3. [ ] Coefficient order / natural order tables.
 4. [ ] AC strategy: DCT2x2 through DCT256x256, plus Hornuss and AFV.
