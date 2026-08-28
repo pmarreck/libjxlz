@@ -516,6 +516,26 @@ fn libraryDct32x64() QuantEncoding {
 	return .{ .mode = .dct, .dct_params = params };
 }
 
+fn libraryAfv() QuantEncoding {
+	const d4 = libraryDct4();
+	const d48 = libraryDct4x8();
+	var afv_weights: [3][9]sf.Fixed = @splat(@splat(sf.Fixed.zero));
+	const rows = [_][9][]const u8{
+		.{ "3072", "3072", "256", "256", "256", "414", "0", "0", "0" },
+		.{ "1024", "1024", "50", "50", "50", "58", "0", "0", "0" },
+		.{ "384", "384", "12", "12", "12", "22", "-0.25", "-0.25", "-0.25" },
+	};
+	for (rows, 0..) |row, c| {
+		for (row, 0..) |s, j| afv_weights[c][j] = libraryFixed(s);
+	}
+	return .{
+		.mode = .afv,
+		.afv_weights = afv_weights,
+		.dct_params = d48.dct_params,
+		.dct_params_afv_4x4 = d4.dct_params,
+	};
+}
+
 fn libraryDct4() QuantEncoding {
 	return .{
 		.mode = .dct4,
@@ -779,9 +799,9 @@ pub const DequantMatrices = struct {
 	}
 
 	/// Materialize dequant tables for the AC strategies in `acs_mask`.
-	/// C++ DequantMatrices::EnsureComputed. Identity, DCT2, DCT4, DCT4x8,
+	/// C++ DequantMatrices::EnsureComputed. Identity, DCT2, DCT4, DCT4x8, AFV,
 	/// and DCT 8–64 (square and rectangular through 32×64) library tables
-	/// are live; DCT128+ and AFV/raw encodings stay unsupported.
+	/// are live; DCT128+ and raw encodings stay unsupported.
 	pub fn ensureComputed(self: *DequantMatrices, allocator: std.mem.Allocator, acs_mask: u32) JxlError!void {
 		if (self.storage.len == 0) {
 			const storage = try allocator.alloc(sf.Fixed, 2 * kTotalTableSize);
@@ -821,6 +841,7 @@ pub const DequantMatrices = struct {
 				.dct2 => try computeDct2Table(self, table_idx, quant_enc),
 				.dct4 => try computeDct4Table(self, table_idx, quant_enc),
 				.dct4x8 => try computeDct4x8Table(self, table_idx, quant_enc),
+				.afv => try computeAfvTable(self, table_idx, quant_enc),
 				.dct => try computeDctTable(self, allocator, table_idx, quant_enc),
 				else => return unsupported_mod.unsupported(.vardct_frame),
 			}
@@ -841,6 +862,7 @@ fn libraryEncoding(table_idx: usize) ?QuantEncoding {
 		7 => libraryDct8x32(),
 		8 => libraryDct16x32(),
 		9 => libraryDct4x8(),
+		10 => libraryAfv(),
 		11 => libraryDct64(),
 		12 => libraryDct32x64(),
 		else => null,
@@ -862,6 +884,11 @@ fn interpolateBands(pos: sf.Fixed, bands: []const sf.Fixed) JxlError!sf.Fixed {
 	const a = bands[idx];
 	const b = bands[idx + 1];
 	return sf.mul(a, sf.pow(sf.div(b, a), frac_part));
+}
+
+fn interpolateRange(pos: sf.Fixed, maxv: sf.Fixed, bands: []const sf.Fixed) JxlError!sf.Fixed {
+	const scaled = sf.div(sf.mul(pos, sf.fromInt(@intCast(bands.len - 1))), maxv);
+	return interpolateBands(scaled, bands);
 }
 
 /// Fills `out` with 3·rows·cols distance-band quant weights.
@@ -959,6 +986,75 @@ fn computeDct4x8Table(self: *DequantMatrices, table_idx: usize, quant_encoding: 
 			}
 		}
 		weights[start + 8] = sf.div(weights[start + 8], quant_encoding.dct4x8multipliers[c]);
+	}
+	try invertAndStore(self, table_idx, &weights);
+}
+
+fn computeAfvTable(self: *DequantMatrices, table_idx: usize, quant_encoding: QuantEncoding) JxlError!void {
+	const num = requiredSize(table_idx) * kDctBlockSize;
+	if (num != kDctBlockSize) return error.GenericError;
+	var w48: [3 * 32]sf.Fixed = undefined;
+	try getQuantWeights(4, 8, quant_encoding.dct_params, &w48);
+	var w44: [3 * 16]sf.Fixed = undefined;
+	try getQuantWeights(4, 4, quant_encoding.dct_params_afv_4x4, &w44);
+
+	const kFreqs = [_]sf.Fixed{
+		sf.Fixed.zero,
+		sf.Fixed.zero,
+		libraryFixed("0.8517778890324296"),
+		libraryFixed("5.37778436506804"),
+		sf.Fixed.zero,
+		sf.Fixed.zero,
+		libraryFixed("4.734747904497923"),
+		libraryFixed("5.449245381693219"),
+		libraryFixed("1.6598270267479331"),
+		sf.fromInt(4),
+		libraryFixed("7.275749096817861"),
+		libraryFixed("10.423227632456525"),
+		libraryFixed("2.662932286148962"),
+		libraryFixed("7.630657783650829"),
+		libraryFixed("8.962388608184032"),
+		libraryFixed("12.97166202570235"),
+	};
+	const lo = kFreqs[2];
+	const hi = sf.add(sf.sub(kFreqs[15], lo), sf.div(kOne, sf.fromInt(1_000_000)));
+
+	var weights: [3 * kDctBlockSize]sf.Fixed = undefined;
+	for (0..3) |c| {
+		var bands: [4]sf.Fixed = undefined;
+		bands[0] = quant_encoding.afv_weights[c][5];
+		if (tooSmall(bands[0])) return error.GenericError;
+		var i: usize = 1;
+		while (i < 4) : (i += 1) {
+			bands[i] = sf.mul(bands[i - 1], bandMult(quant_encoding.afv_weights[c][i + 5]));
+			if (tooSmall(bands[i])) return error.GenericError;
+		}
+		const start = c * kDctBlockSize;
+		weights[start] = kOne;
+		weights[start + 8] = quant_encoding.afv_weights[c][0];
+		weights[start + 1] = quant_encoding.afv_weights[c][1];
+		weights[start + 16] = quant_encoding.afv_weights[c][2];
+		weights[start + 2] = quant_encoding.afv_weights[c][3];
+		weights[start + 18] = quant_encoding.afv_weights[c][4];
+		for (0..4) |y| {
+			for (0..4) |x| {
+				if (x < 2 and y < 2) continue;
+				const val = try interpolateRange(sf.sub(kFreqs[y * 4 + x], lo), hi, bands[0..]);
+				weights[start + (2 * y) * 8 + (2 * x)] = val;
+			}
+		}
+		for (0..4) |y| {
+			for (0..8) |x| {
+				if (x == 0 and y == 0) continue;
+				weights[start + (2 * y + 1) * 8 + x] = w48[c * 32 + y * 8 + x];
+			}
+		}
+		for (0..4) |y| {
+			for (0..4) |x| {
+				if (x == 0 and y == 0) continue;
+				weights[start + (2 * y) * 8 + (2 * x + 1)] = w44[c * 16 + y * 4 + x];
+			}
+		}
 	}
 	try invertAndStore(self, table_idx, &weights);
 }
@@ -2201,6 +2297,55 @@ test "ensureComputed dct4x8 library table inverts the DC weights" {
 	const x = matrices.matrix(.dct4x8, 0);
 	try testing.expectEqual(@as(usize, 64), x.len);
 	try testing.expectEqual(sf.div(kOne, sf.parse("2198.050556016380522").?), x[0]);
+}
+
+test "ensureComputed afv library table inverts the special-position weights" {
+	const allocator = testing.allocator;
+	var data = [_]u8{0x01};
+	var br = BitReader.init(&data);
+	var matrices = DequantMatrices{};
+	defer matrices.deinit(allocator);
+	try matrices.decode(&br);
+	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.afv0));
+	const x = matrices.matrix(.afv0, 0);
+	try testing.expectEqual(@as(usize, 64), x.len);
+	try testing.expectEqual(kOne, x[0]);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(3072)), x[1]);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(3072)), x[8]);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(256)), x[2]);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(256)), x[16]);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(256)), x[18]);
+}
+
+test "ensureComputed afv places 4x8 weights on odd rows and 4x4 on even-odd" {
+	const allocator = testing.allocator;
+	var matrices = DequantMatrices{};
+	defer matrices.deinit(allocator);
+	var params48 = DctQuantWeightParams{ .num_distance_bands = 1 };
+	var params44 = DctQuantWeightParams{ .num_distance_bands = 1 };
+	var afv_weights: [3][9]sf.Fixed = @splat(@splat(sf.Fixed.zero));
+	for (0..3) |c| {
+		params48.distance_bands[c][0] = sf.fromInt(200);
+		params44.distance_bands[c][0] = sf.fromInt(400);
+		afv_weights[c][0] = sf.fromInt(10);
+		afv_weights[c][1] = sf.fromInt(20);
+		afv_weights[c][2] = sf.fromInt(30);
+		afv_weights[c][3] = sf.fromInt(30);
+		afv_weights[c][4] = sf.fromInt(30);
+		afv_weights[c][5] = sf.fromInt(100);
+	}
+	matrices.encodings[10] = .{
+		.mode = .afv,
+		.afv_weights = afv_weights,
+		.dct_params = params48,
+		.dct_params_afv_4x4 = params44,
+	};
+	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.afv0));
+	const x = matrices.matrix(.afv0, 0);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(20)), x[1]);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(10)), x[8]);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(200)), x[24]);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(400)), x[3]);
 }
 
 test "processDCGlobal rejects unsupported frame features" {

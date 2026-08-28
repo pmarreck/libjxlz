@@ -39,6 +39,11 @@
   a9b3f51a8dcc862d06cf8beecd2bd7f00547bc37b8a101a265de987f8034400b)
   and sourced that. Proven with `HOME` pointing at an empty tree. —
   2026-08-27 10:34 PM EDT
+- [x] GitHub Actions **success** on `2c6423e1` (all three jobs:
+  macos-aarch64, linux-aarch64, linux-x86_64 full `./test`). linux-x86_64
+  had been hanging on `zig fetch` of the 1.3G worktree; the smoke now
+  fetches a staged copy of `build.zig.zon` `.paths` (~800K). —
+  2026-08-28 12:21 AM EDT
 - [ ] Promote `capture.bash` to a standalone library (Peter 2026-08-27).
   In-tree copy unblocks Actions; a sibling repo is the durable home.
   Curiosity poke: `capture`'s FD-juggle stalled `zig fetch` on GitHub
@@ -181,7 +186,13 @@ done first because it is cheap and it makes B's progress measurable per file.
     (0,1)/(1,0) by mul[0] and (1,1) by mul[1]; a custom 2/4 multiplier
     case proves that. DCT4x8 expands 4×8 by `(y/2,x)` and divides
     (1,0). DCT128/256 still deferred. — 2026-08-27 9:42 PM EDT
-  - [ ] `EnsureComputed` AFV, then DCT128/256.
+  - [x] `EnsureComputed` AFV library table. Special positions (0,1)/(1,0)
+    and the 3-pixel corner come from `afv_weights`; remaining even-even
+    cells interpolate `kFreqs`; odd rows take 4×8 weights; even-odd
+    take 4×4. Custom one-band 4×8/4×4 layout test proves the scatter.
+    Raw tables and DCT128+ still open. — 2026-08-27 10:30 PM EDT
+  - [ ] DCT128/256 library tables (deferred so they do not dominate
+    `./test`) and raw quant-table decode.
 - [x] Add a `jxlz validate` subcommand (verdict, finding, feature name, offsets,
   frames, `--json`). `jxlz validate` / `jxlz v` dogfoods `JxlValidate` through
   the published header. Exit 0 only for VALID; other verdicts exit 1 with the
