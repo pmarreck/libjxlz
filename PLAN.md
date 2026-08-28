@@ -26,6 +26,8 @@
 - [x] `b8bf4438` (rectangular DCT 8×16/8×32/16×32) **success** on
   Mechatron: started 00:48:50Z, finished 00:56:18Z, 448s —
   2026-08-27 8:56 PM EDT
+- [x] `9544d060` (DCT64×64 and 32×64) **success** on Mechatron: started
+  01:31:01Z, finished 01:38:24Z, 443s — 2026-08-27 9:39 PM EDT
 
 ## Peter's ruling: support ALL JPEG XL features (2026-08-27)
 
@@ -157,9 +159,12 @@ done first because it is cheap and it makes B's progress measurable per file.
     Band 0 is `0.9`/`0.65` times the C++ base, multiplied in Fixed.
     64×64 is 4096 cells; the `./test` filter run went 36s → 55s.
     DCT128+ still unsupported. — 2026-08-27 9:01 PM EDT
-  - [ ] `EnsureComputed` DCT128/256 library sizes plus DCT4/DCT4x8/AFV
-    compute. Curiosity poke: 256×256 is 196608 cells and the C++
-    comment already calls it slow.
+  - [x] `EnsureComputed` DCT4 and DCT4x8 library tables. DCT4 expands
+    4×4 distance-band weights onto 8×8 by `(y/2,x/2)`, then divides
+    (0,1)/(1,0) by mul[0] and (1,1) by mul[1]; a custom 2/4 multiplier
+    case proves that. DCT4x8 expands 4×8 by `(y/2,x)` and divides
+    (1,0). DCT128/256 still deferred. — 2026-08-27 9:42 PM EDT
+  - [ ] `EnsureComputed` AFV, then DCT128/256.
 - [x] Add a `jxlz validate` subcommand (verdict, finding, feature name, offsets,
   frames, `--json`). `jxlz validate` / `jxlz v` dogfoods `JxlValidate` through
   the published header. Exit 0 only for VALID; other verdicts exit 1 with the

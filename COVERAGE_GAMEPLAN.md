@@ -154,11 +154,11 @@ Absent:
   for any frame whose encoding is not modular. This is the mode `cjxl`
   produces by default for any lossy encode. `DequantMatrices.decode` now
   reads every encoding except raw; `EnsureComputed` materializes identity,
-  DCT2, DCT 8–64 square, and rectangular 8×16/8×32/16×32/32×64 library tables
-  (distance-band `GetQuantWeights` in randomz Fixed). Still missing: DCT128+,
-  DCT4/DCT4x8/AFV/raw table compute, the quantizer and adaptive quant field,
-  coefficient order tables, AC strategy (DCT128 through DCT256 plus Hornuss
-  and AFV), chroma-from-luma, and the inverse DCT.
+  DCT2, DCT4, DCT4x8, DCT 8–64 square, and rectangular 8×16/8×32/16×32/32×64
+  library tables (distance-band `GetQuantWeights` in randomz Fixed). Still
+  missing: DCT128+, AFV/raw table compute, the quantizer and adaptive quant
+  field, coefficient order tables, AC strategy (DCT128 through DCT256 plus
+  Hornuss and AFV), chroma-from-luma, and the inverse DCT.
 - **Patches and noise.** `dec_frame.zig:545` rejects both frame flags.
 - **The render pipeline.** No Gaborish, no edge-preserving filter, no
   upsampling, no frame blending, no noise synthesis. XYB lifting exists only
@@ -292,7 +292,7 @@ machine id.
 This is the bulk of the remaining format. Ordered so each slice is testable
 against upstream rather than against itself:
 
-1. [ ] `DequantMatrices` in full (`decode` all modes except raw; `EnsureComputed` identity/DCT2/DCT 8–64 square+rectangular through 32×64; DCT128+ / DCT4/AFV/raw compute still open).
+1. [ ] `DequantMatrices` in full (`decode` all modes except raw; `EnsureComputed` identity/DCT2/DCT4/DCT4x8/DCT 8–64 square+rectangular through 32×64; DCT128+ / AFV/raw compute still open).
 2. [ ] Quantizer and the adaptive quantization field.
 3. [ ] Coefficient order / natural order tables.
 4. [ ] AC strategy: DCT2x2 through DCT256x256, plus Hornuss and AFV.
