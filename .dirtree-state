@@ -259,6 +259,7 @@ annotate=[
 	tests/corpus/labeled = Vendored byte-identical copy of Peter's independently labeled JXL ground truth from validate_gui/ground_truth_examples (8 good, 5 corrupt)
 	tests/corpus/labeled_verdict_manifest.tsv = Independent fixture labels with observed decoder expectations and clean-base pairings for corrupt cases.
 	tests/fuzz/repro = Minimized crash inputs found by ./fuzz; currently a 137-byte mutant triggering a glibc-detected double free in the decode path
+	tests/lib/capture.bash = In-tree copy of capture.bash so CLI smokes work without ~/dotfiles (GitHub Actions)
 	tests/lib/decode_ground_truth_corpus.bash = Shared oracle resolver and corpus runners; pins the expected djxl version (v0.12.0) and asserts known-diff cases stay within +/-1
 	tests/lib/labeled_corpus_matrix.bash = Labeled valid/corrupt JXL corpus runner: confusion matrix with denominators plus the specificity control that only counts a corrupt rejection as discriminating when the clean base fixture is accepted
 	tests/lib/mutation_detection.bash = Mutation-detection gate over vendored lossless-modular bases libjxlz accepts; uses the pinned djxl oracle to split must-detect from may-ignore mutants and hard-fails on any false accept

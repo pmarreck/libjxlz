@@ -7,7 +7,7 @@ ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 TEST_TMPDIR="$(mktemp -d "${TMPDIR}/libjxlz-package-fetch.XXXXXX")" || exit 1
 GLOBAL_CACHE_DIR="${TEST_TMPDIR}/zig-cache"
 
-source "${HOME}/dotfiles/bin/src/capture.bash"
+source "${ROOT_DIR}/tests/lib/capture.bash"
 
 out=''
 err=''

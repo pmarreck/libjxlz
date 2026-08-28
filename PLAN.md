@@ -28,6 +28,19 @@
   2026-08-27 8:56 PM EDT
 - [x] `9544d060` (DCT64×64 and 32×64) **success** on Mechatron: started
   01:31:01Z, finished 01:38:24Z, 443s — 2026-08-27 9:39 PM EDT
+- [x] `947a7962` (DCT4 and DCT4x8) **success** on Mechatron: started
+  02:18:41Z, finished 02:26:01Z, 440s — 2026-08-27 10:26 PM EDT
+
+## GitHub Actions (2026-08-27)
+
+- [x] GitHub Actions `./test` failed on `zig_package_headers_smoke.sh`
+  because it sourced `~/dotfiles/bin/src/capture.bash` (absent on
+  `runner`). Copied `capture.bash` into `tests/lib/` (sha256
+  a9b3f51a8dcc862d06cf8beecd2bd7f00547bc37b8a101a265de987f8034400b)
+  and sourced that. Proven with `HOME` pointing at an empty tree. —
+  2026-08-27 10:34 PM EDT
+- [ ] Promote `capture.bash` to a standalone library (Peter 2026-08-27).
+  In-tree copy unblocks Actions; a sibling repo is the durable home.
 
 ## Peter's ruling: support ALL JPEG XL features (2026-08-27)
 
