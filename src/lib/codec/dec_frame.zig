@@ -171,6 +171,12 @@ pub const AcStrategyType = enum(u32) {
 	dct4x4 = 3,
 	dct16x16 = 4,
 	dct32x32 = 5,
+	dct16x8 = 6,
+	dct8x16 = 7,
+	dct32x8 = 8,
+	dct8x32 = 9,
+	dct32x16 = 10,
+	dct16x32 = 11,
 };
 
 pub const QuantMode = enum(u8) {
@@ -209,7 +215,7 @@ const kSumRequiredXy: usize = 2056;
 const kTotalTableSize: usize = kSumRequiredXy * kDctBlockSize * 3;
 const kRequiredSizeX = [_]u8{ 1, 1, 1, 1, 2, 4, 1, 1, 2, 1, 1, 8, 4, 16, 8, 32, 16 };
 const kRequiredSizeY = [_]u8{ 1, 1, 1, 1, 2, 4, 2, 4, 4, 1, 1, 8, 8, 16, 16, 32, 32 };
-const kAcStrategyToQuantTable = [_]u8{ 0, 1, 2, 3, 4, 5 }; // DCT .. DCT32X32
+const kAcStrategyToQuantTable = [_]u8{ 0, 1, 2, 3, 4, 5, 6, 6, 7, 7, 8, 8 };
 const kLibraryIdentity = QuantEncoding{
 	.mode = .identity,
 	.idweights = .{
@@ -256,77 +262,176 @@ fn libraryFixed(s: []const u8) sf.Fixed {
 	return sf.parse(s) orelse unreachable;
 }
 
-fn libraryDct16() QuantEncoding {
-	var params = DctQuantWeightParams{ .num_distance_bands = 7 };
-	const x = [_][]const u8{
-		"8996.8725711814115328",
-		"-1.3000777393353804",
-		"-0.49424529824571225",
-		"-0.439093774457103443",
-		"-0.6350101832695744",
-		"-0.90177264050827612",
-		"-1.6162099239887414",
-	};
-	const y = [_][]const u8{
-		"3191.48366296844234752",
-		"-0.67424582104194355",
-		"-0.80745813428471001",
-		"-0.44925837484843441",
-		"-0.35865440981033403",
-		"-0.31322389111877305",
-		"-0.37615025315725483",
-	};
-	const b = [_][]const u8{
-		"1157.50408145487200256",
-		"-2.0531423165804414",
-		"-1.4",
-		"-0.50687130033378396",
-		"-0.42708730624733904",
-		"-1.4856834539296244",
-		"-4.9209142884401604",
-	};
+fn libraryDctParams(num_bands: u8, x: []const []const u8, y: []const []const u8, b: []const []const u8) DctQuantWeightParams {
+	var params = DctQuantWeightParams{ .num_distance_bands = num_bands };
 	for (x, 0..) |s, i| params.distance_bands[0][i] = libraryFixed(s);
 	for (y, 0..) |s, i| params.distance_bands[1][i] = libraryFixed(s);
 	for (b, 0..) |s, i| params.distance_bands[2][i] = libraryFixed(s);
-	return .{ .mode = .dct, .dct_params = params };
+	return params;
+}
+
+fn libraryDct16() QuantEncoding {
+	return .{
+		.mode = .dct,
+		.dct_params = libraryDctParams(7, &.{
+			"8996.8725711814115328",
+			"-1.3000777393353804",
+			"-0.49424529824571225",
+			"-0.439093774457103443",
+			"-0.6350101832695744",
+			"-0.90177264050827612",
+			"-1.6162099239887414",
+		}, &.{
+			"3191.48366296844234752",
+			"-0.67424582104194355",
+			"-0.80745813428471001",
+			"-0.44925837484843441",
+			"-0.35865440981033403",
+			"-0.31322389111877305",
+			"-0.37615025315725483",
+		}, &.{
+			"1157.50408145487200256",
+			"-2.0531423165804414",
+			"-1.4",
+			"-0.50687130033378396",
+			"-0.42708730624733904",
+			"-1.4856834539296244",
+			"-4.9209142884401604",
+		}),
+	};
 }
 
 fn libraryDct32() QuantEncoding {
-	var params = DctQuantWeightParams{ .num_distance_bands = 8 };
-	const x = [_][]const u8{
-		"15718.40830982518931456",
-		"-1.025",
-		"-0.98",
-		"-0.9012",
-		"-0.4",
-		"-0.48819395464",
-		"-0.421064",
-		"-0.27",
+	return .{
+		.mode = .dct,
+		.dct_params = libraryDctParams(8, &.{
+			"15718.40830982518931456",
+			"-1.025",
+			"-0.98",
+			"-0.9012",
+			"-0.4",
+			"-0.48819395464",
+			"-0.421064",
+			"-0.27",
+		}, &.{
+			"7305.7636810695983104",
+			"-0.8041958212306401",
+			"-0.7633036457487539",
+			"-0.55660379990111464",
+			"-0.49785304658857626",
+			"-0.43699592683512467",
+			"-0.40180866526242109",
+			"-0.27321683125358037",
+		}, &.{
+			"3803.53173721215041536",
+			"-3.060733579805728",
+			"-2.0413270132490346",
+			"-2.0235650159727417",
+			"-0.5495389509954993",
+			"-0.4",
+			"-0.4",
+			"-0.3",
+		}),
 	};
-	const y = [_][]const u8{
-		"7305.7636810695983104",
-		"-0.8041958212306401",
-		"-0.7633036457487539",
-		"-0.55660379990111464",
-		"-0.49785304658857626",
-		"-0.43699592683512467",
-		"-0.40180866526242109",
-		"-0.27321683125358037",
+}
+
+fn libraryDct8x16() QuantEncoding {
+	return .{
+		.mode = .dct,
+		.dct_params = libraryDctParams(7, &.{
+			"7240.7734393502",
+			"-0.7",
+			"-0.7",
+			"-0.2",
+			"-0.2",
+			"-0.2",
+			"-0.5",
+		}, &.{
+			"1448.15468787004",
+			"-0.5",
+			"-0.5",
+			"-0.5",
+			"-0.2",
+			"-0.2",
+			"-0.2",
+		}, &.{
+			"506.854140754517",
+			"-1.4",
+			"-0.2",
+			"-0.5",
+			"-0.5",
+			"-1.5",
+			"-3.6",
+		}),
 	};
-	const b = [_][]const u8{
-		"3803.53173721215041536",
-		"-3.060733579805728",
-		"-2.0413270132490346",
-		"-2.0235650159727417",
-		"-0.5495389509954993",
-		"-0.4",
-		"-0.4",
-		"-0.3",
+}
+
+fn libraryDct8x32() QuantEncoding {
+	return .{
+		.mode = .dct,
+		.dct_params = libraryDctParams(8, &.{
+			"16283.2494710648897",
+			"-1.7812845336559429",
+			"-1.6309059012653515",
+			"-1.0382179034313539",
+			"-0.85",
+			"-0.7",
+			"-0.9",
+			"-1.2360638576849587",
+		}, &.{
+			"5089.15750884921511936",
+			"-0.320049391452786891",
+			"-0.35362849922161446",
+			"-0.30340000000000003",
+			"-0.61",
+			"-0.5",
+			"-0.5",
+			"-0.6",
+		}, &.{
+			"3397.77603275308720128",
+			"-0.321327362693153371",
+			"-0.34507619223117997",
+			"-0.70340000000000003",
+			"-0.9",
+			"-1.0",
+			"-1.0",
+			"-1.1754605576265209",
+		}),
 	};
-	for (x, 0..) |s, i| params.distance_bands[0][i] = libraryFixed(s);
-	for (y, 0..) |s, i| params.distance_bands[1][i] = libraryFixed(s);
-	for (b, 0..) |s, i| params.distance_bands[2][i] = libraryFixed(s);
-	return .{ .mode = .dct, .dct_params = params };
+}
+
+fn libraryDct16x32() QuantEncoding {
+	return .{
+		.mode = .dct,
+		.dct_params = libraryDctParams(8, &.{
+			"13844.97076442300573",
+			"-0.97113799999999995",
+			"-0.658",
+			"-0.42026",
+			"-0.22712",
+			"-0.2206",
+			"-0.226",
+			"-0.6",
+		}, &.{
+			"4798.964084220744293",
+			"-0.61125308982767057",
+			"-0.83770786552491361",
+			"-0.79014862079498627",
+			"-0.2692727459704829",
+			"-0.38272769465388551",
+			"-0.22924222653091453",
+			"-0.20719098826199578",
+		}, &.{
+			"1807.236946760964614",
+			"-1.2",
+			"-1.2",
+			"-0.7",
+			"-0.7",
+			"-0.7",
+			"-0.4",
+			"-0.5",
+		}),
+	};
 }
 const kOne = sf.fromInt(1);
 const kSixtyFour = sf.fromInt(64);
@@ -542,8 +647,9 @@ pub const DequantMatrices = struct {
 	}
 
 	/// Materialize dequant tables for the AC strategies in `acs_mask`.
-	/// C++ DequantMatrices::EnsureComputed. Identity, DCT2, DCT8, DCT16, and
-	/// DCT32 library tables are live; larger DCT sizes and other encodings stay unsupported.
+	/// C++ DequantMatrices::EnsureComputed. Identity, DCT2, and DCT 8/16/32
+	/// (square and rectangular) library tables are live; DCT64+ and DCT4/AFV/raw
+	/// encodings stay unsupported.
 	pub fn ensureComputed(self: *DequantMatrices, allocator: std.mem.Allocator, acs_mask: u32) JxlError!void {
 		if (self.storage.len == 0) {
 			const storage = try allocator.alloc(sf.Fixed, 2 * kTotalTableSize);
@@ -596,6 +702,9 @@ fn libraryEncoding(table_idx: usize) ?QuantEncoding {
 		2 => kLibraryDct2,
 		4 => libraryDct16(),
 		5 => libraryDct32(),
+		6 => libraryDct8x16(),
+		7 => libraryDct8x32(),
+		8 => libraryDct16x32(),
 		else => null,
 	};
 }
@@ -1744,6 +1853,68 @@ test "ensureComputed dct32 one-band fills every cell with the seed" {
 			try testing.expectEqual(expected, w);
 		}
 	}
+}
+
+test "ensureComputed dct8x16 library table inverts the DC weights" {
+	const allocator = testing.allocator;
+	var data = [_]u8{0x01};
+	var br = BitReader.init(&data);
+	var matrices = DequantMatrices{};
+	defer matrices.deinit(allocator);
+	try matrices.decode(&br);
+	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.dct8x16));
+	const x = matrices.matrix(.dct8x16, 0);
+	try testing.expectEqual(@as(usize, 128), x.len);
+	try testing.expectEqual(sf.div(kOne, sf.parse("7240.7734393502").?), x[0]);
+	const y = matrices.matrix(.dct8x16, 1);
+	try testing.expectEqual(sf.div(kOne, sf.parse("1448.15468787004").?), y[0]);
+	const b = matrices.matrix(.dct8x16, 2);
+	try testing.expectEqual(sf.div(kOne, sf.parse("506.854140754517").?), b[0]);
+}
+
+test "ensureComputed dct8x32 library table inverts the DC weights" {
+	const allocator = testing.allocator;
+	var data = [_]u8{0x01};
+	var br = BitReader.init(&data);
+	var matrices = DequantMatrices{};
+	defer matrices.deinit(allocator);
+	try matrices.decode(&br);
+	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.dct8x32));
+	const x = matrices.matrix(.dct8x32, 0);
+	try testing.expectEqual(@as(usize, 256), x.len);
+	try testing.expectEqual(sf.div(kOne, sf.parse("16283.2494710648897").?), x[0]);
+}
+
+test "ensureComputed dct16x32 library table inverts the DC weights" {
+	const allocator = testing.allocator;
+	var data = [_]u8{0x01};
+	var br = BitReader.init(&data);
+	var matrices = DequantMatrices{};
+	defer matrices.deinit(allocator);
+	try matrices.decode(&br);
+	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.dct16x32));
+	const x = matrices.matrix(.dct16x32, 0);
+	try testing.expectEqual(@as(usize, 512), x.len);
+	try testing.expectEqual(sf.div(kOne, sf.parse("13844.97076442300573").?), x[0]);
+}
+
+test "ensureComputed dct8x16 two-band is anisotropic" {
+	const allocator = testing.allocator;
+	var matrices = DequantMatrices{};
+	defer matrices.deinit(allocator);
+	var params = DctQuantWeightParams{ .num_distance_bands = 2 };
+	for (0..3) |c| {
+		params.distance_bands[c][0] = sf.fromInt(100);
+		params.distance_bands[c][1] = sf.fromInt(1);
+	}
+	matrices.encodings[6] = .{ .mode = .dct, .dct_params = params };
+	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.dct8x16));
+	const x = matrices.matrix(.dct8x16, 0);
+	try testing.expectEqual(@as(usize, 128), x.len);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(100)), x[0]);
+	// 8 rows × 16 cols: (1,0) and (0,1) have different radial steps, so
+	// a swapped rows/cols GetQuantWeights would invert this comparison.
+	try testing.expect(sf.cmp(x[16], x[1]) < 0);
 }
 
 test "processDCGlobal rejects unsupported frame features" {

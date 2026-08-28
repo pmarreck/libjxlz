@@ -21,6 +21,8 @@
   2026-08-27 7:40 PM EDT
 - [x] `42bff2c8` (EnsureComputed DCT16) **success** on Mechatron: started
   23:58:36Z, finished 00:06:05Z, 449s — 2026-08-27 8:06 PM EDT
+- [x] `3b594f2c` (EnsureComputed DCT32) **success** on Mechatron: started
+  00:22:24Z, finished 00:29:46Z, 442s — 2026-08-27 8:30 PM EDT
 
 ## Peter's ruling: support ALL JPEG XL features (2026-08-27)
 
@@ -143,9 +145,14 @@ done first because it is cheap and it makes B's progress measurable per file.
     cells). Weight scratch moved to the heap (Peter's default). Library
     DC inverts the C++ seed bands; one-band fills all 1024 cells. DCT64+
     still unsupported. — 2026-08-27 8:09 PM EDT
-  - [ ] `EnsureComputed` remaining DCT library sizes (8×16, 8×32, 16×32,
-    64, 128, 256) plus DCT4/DCT4x8/AFV compute. Curiosity poke: 256×256
-    is 196608 cells and the C++ comment already calls it slow.
+  - [x] `EnsureComputed` rectangular DCT library tables: 8×16, 8×32,
+    16×32 (tables 6–8). Two-band 8×16 is anisotropic: (0,1) is finer
+    than (1,0), so a swapped rows/cols GetQuantWeights would fail.
+    Aliased AC strategies (dct16x8/dct8x16 etc.) share a table. —
+    2026-08-27 8:34 PM EDT
+  - [ ] `EnsureComputed` DCT64+ library sizes plus DCT4/DCT4x8/AFV
+    compute. Curiosity poke: 256×256 is 196608 cells and the C++
+    comment already calls it slow.
 - [x] Add a `jxlz validate` subcommand (verdict, finding, feature name, offsets,
   frames, `--json`). `jxlz validate` / `jxlz v` dogfoods `JxlValidate` through
   the published header. Exit 0 only for VALID; other verdicts exit 1 with the
