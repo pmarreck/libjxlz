@@ -23,6 +23,9 @@
   23:58:36Z, finished 00:06:05Z, 449s — 2026-08-27 8:06 PM EDT
 - [x] `3b594f2c` (EnsureComputed DCT32) **success** on Mechatron: started
   00:22:24Z, finished 00:29:46Z, 442s — 2026-08-27 8:30 PM EDT
+- [x] `b8bf4438` (rectangular DCT 8×16/8×32/16×32) **success** on
+  Mechatron: started 00:48:50Z, finished 00:56:18Z, 448s —
+  2026-08-27 8:56 PM EDT
 
 ## Peter's ruling: support ALL JPEG XL features (2026-08-27)
 
@@ -150,7 +153,11 @@ done first because it is cheap and it makes B's progress measurable per file.
     than (1,0), so a swapped rows/cols GetQuantWeights would fail.
     Aliased AC strategies (dct16x8/dct8x16 etc.) share a table. —
     2026-08-27 8:34 PM EDT
-  - [ ] `EnsureComputed` DCT64+ library sizes plus DCT4/DCT4x8/AFV
+  - [x] `EnsureComputed` DCT64×64 and 32×64 library tables (11–12).
+    Band 0 is `0.9`/`0.65` times the C++ base, multiplied in Fixed.
+    64×64 is 4096 cells; the `./test` filter run went 36s → 55s.
+    DCT128+ still unsupported. — 2026-08-27 9:01 PM EDT
+  - [ ] `EnsureComputed` DCT128/256 library sizes plus DCT4/DCT4x8/AFV
     compute. Curiosity poke: 256×256 is 196608 cells and the C++
     comment already calls it slow.
 - [x] Add a `jxlz validate` subcommand (verdict, finding, feature name, offsets,
