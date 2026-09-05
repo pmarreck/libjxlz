@@ -4,6 +4,7 @@ const jxl = @import("../root.zig");
 const sf = jxl.base.soft_float;
 const BitReader = jxl.base.bit_reader.BitReader;
 const ac_global = jxl.codec.ac_global;
+const filter = jxl.codec.vardct_filters;
 
 fn section(readers: []BitReader, id: usize) *BitReader {
 	// One-group, one-pass frames share a single reader for every section.
@@ -38,7 +39,6 @@ pub fn decode(dec: *jxl.codec.dec_frame.FrameDecoder, data: []const u8, offset: 
 	const unsupported = @import("../base/unsupported.zig").unsupported;
 	if (fh.encoding != .var_dct) return error.GenericError;
 	if (!fh.chroma_subsampling.is444()) return unsupported(.chroma_subsampling);
-	if (fh.loop_filter.gab or fh.loop_filter.epf_iters != 0) return unsupported(.vardct_frame);
 	if (dec.metadata.m.num_extra_channels != 0) return unsupported(.extra_channel_type);
 	if (fh.flags & jxl.codec.frame_header.FrameFlags.use_dc_frame != 0) return unsupported(.progressive_dc_frame);
 	if (fh.upsampling != 1) return unsupported(.upsampling);
@@ -94,8 +94,12 @@ pub fn decode(dec: *jxl.codec.dec_frame.FrameDecoder, data: []const u8, offset: 
 	const ac_global_id = 1 + dec.frame_dim.num_dc_groups;
 	var acg = try ac_global.Global.decode(dec.allocator, section(readers, ac_global_id), &dec.dequant_matrices, used_acs, dec.frame_dim.num_groups, fh.passes.num_passes, &global.block_context);
 	defer acg.deinit();
-	var output = try jxl.codec.render.FloatImage.init(dec.allocator, dec.frame_dim.xsize, dec.frame_dim.ysize, 3);
-	errdefer output.deinit();
+	var output = filter.Image{
+		.width = dec.frame_dim.xsize,
+		.height = dec.frame_dim.ysize,
+		.data = try dec.allocator.alloc(sf.Fixed, 3 * dec.frame_dim.xsize * dec.frame_dim.ysize),
+	};
+	defer dec.allocator.free(output.data);
 	for (0..dec.frame_dim.num_groups) |id| {
 		const rect = dec.frame_dim.blockGroupRect(id);
 		const dc_id = (rect.y0() / 256) * dec.frame_dim.xsize_dc_groups + rect.x0() / 256;
@@ -118,10 +122,36 @@ pub fn decode(dec: *jxl.codec.dec_frame.FrameDecoder, data: []const u8, offset: 
 		try br.close();
 	}
 	try dec.modular_decoder.finalizeDecoding();
-	dec.rendered_image = output;
+	const params = try filter.Params.fromHeader(fh.loop_filter);
+	if (fh.loop_filter.gab) try filter.gaborish(dec.allocator, output, params);
+	if (fh.loop_filter.epf_iters != 0) {
+		const sigma = try dec.allocator.alloc(sf.Fixed, full_dc.width * full_dc.height);
+		defer dec.allocator.free(sigma);
+		for (dc_sections, 0..) |*dc_section, id| {
+			const rect = dec.frame_dim.dcGroupRect(id);
+			const map = &dc_section.*.?.meta.block_map;
+			for (map.blocks, 0..) |block, index| {
+				if (!block.is_first) continue;
+				const bx = index % map.width;
+				const by = index / map.width;
+				const extent = try jxl.codec.ac_strategy.strategyExtent(block.strategy);
+				for (0..extent.y) |dy| for (0..extent.x) |dx| {
+					const sharp = map.blocks[(by + dy) * map.width + bx + dx].sharpness;
+					sigma[(rect.y0() + by + dy) * full_dc.width + rect.x0() + bx + dx] = try filter.inverseSigma(global.quantizer.scale(), block.quant, params.sharp_lut[sharp], params.quant_mul);
+				};
+			}
+		}
+		if (fh.loop_filter.epf_iters == 3) try filter.epf(dec.allocator, output, params, sigma, 0);
+		try filter.epf(dec.allocator, output, params, sigma, 1);
+		if (fh.loop_filter.epf_iters >= 2) try filter.epf(dec.allocator, output, params, sigma, 2);
+	}
+	const rendered = try jxl.codec.render.FloatImage.init(dec.allocator, output.width, output.height, 3);
+	// Keep reconstruction and filtering in Fixed until the XYB display boundary.
+	for (output.data, rendered.data) |value, *dest| dest.* = std.math.ldexp(@as(f32, @floatFromInt(value.m)), value.e - 62);
+	dec.rendered_image = rendered;
 }
 
-fn renderGroup(dec: *jxl.codec.dec_frame.FrameDecoder, meta: *const jxl.codec.ac_metadata.AcMetadata, dc: *const jxl.codec.dc_group.DcGroup, group: *const jxl.codec.ac_group.Group, rect: jxl.base.rect.Rect, output: *jxl.codec.render.FloatImage) !void {
+fn renderGroup(dec: *jxl.codec.dec_frame.FrameDecoder, meta: *const jxl.codec.ac_metadata.AcMetadata, dc: *const jxl.codec.dc_group.DcGroup, group: *const jxl.codec.ac_group.Group, rect: jxl.base.rect.Rect, output: *filter.Image) !void {
 	const fh = &dec.frame_header;
 	const global = &dec.vardct_global.?;
 	var packed_offset: usize = 0;
@@ -156,12 +186,10 @@ fn renderGroup(dec: *jxl.codec.dec_frame.FrameDecoder, meta: *const jxl.codec.ac
 			const coeff = coefficients[c * area ..][0..area];
 			try jxl.codec.inverse_transform.lowestFrequencies(dec.allocator, block.strategy, dc.planes[c].samples[by * dc.width + bx ..], dc.width, coeff);
 			try jxl.codec.inverse_transform.transform(dec.allocator, block.strategy, coeff, pixels, width);
-			const copy_width = @min(width, output.xsize - bx * 8);
-			const copy_height = @min(height, output.ysize - by * 8);
+			const copy_width = @min(width, output.width - bx * 8);
+			const copy_height = @min(height, output.height - by * 8);
 			for (0..copy_height) |y| for (0..copy_width) |x| {
-				// Convert to IEEE-754 only at the XYB display boundary.
-				const value = pixels[y * width + x];
-				output.row(by * 8 + y, c)[bx * 8 + x] = std.math.ldexp(@as(f32, @floatFromInt(value.m)), value.e - 62);
+				output.data[(c * output.height + by * 8 + y) * output.width + bx * 8 + x] = pixels[y * width + x];
 			};
 		}
 		packed_offset += area;

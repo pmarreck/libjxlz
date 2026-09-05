@@ -78,6 +78,22 @@ below; pause for decisions only when they prevent safe implementation.
   finishing 02:47:26 EDT; origin independently matched the pushed commit.
 - [ ] Extend VarDCT rendering to Gaborish/EPF, subsampling, extra channels,
   custom opsin parameters and the other existing gated features below.
+- [x] Implement Gaborish and all three EPF stages in Fixed. Four independent
+  upstream stage fixtures check every pixel, mirrored borders, custom weights
+  and skipped blocks. Ten complete frames now match upstream RGB, including
+  every filter configuration. Filtered-frame allocation sweeps pass — 03:13 EDT.
+- [x] Enable all six DCT128/DCT256 strategies in dequantization by reusing the
+  existing distance-band algorithm. All channels match 64 upstream samples per
+  strategy; invalid mask bits still fail before allocation — 03:13 EDT.
+- [x] Run full suite/build for the filtered VarDCT path and large matrices.
+  First full run passed unit checks, production build and all 264 required
+  mutation detections. Three CLI characterizations became stale: the extended
+  container now matches upstream PAM bytes exactly, and grayscale reaches the
+  ICC gate. Updated the classifications and retained exact pixel coverage.
+  Full rerun passed the Nix unit check and all 94 CLI suites; production build
+  passed — 03:41 EDT.
+- [x] Mechatron passed complete VarDCT frames (`ad399b1b`) in 561 seconds,
+  finishing 03:18:00 EDT; origin independently matched the pushed commit.
 - [ ] Extend that working path to progressive/reference semantics and remaining
   dequant forms, then patches and remaining render stages. Each subfeature
   needs a known-good upstream fixture and malformed/truncated counterparts.

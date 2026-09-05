@@ -3,8 +3,8 @@ const jxl = @import("../root.zig");
 const BitReader = jxl.base.bit_reader.BitReader;
 const fixture = @import("vardct_frame_fixture.zig");
 const sf = jxl.base.soft_float;
-fn check(allocator: std.mem.Allocator, comptime count: usize) !void {
-	inline for (0..count) |id| {
+fn check(allocator: std.mem.Allocator, comptime first: usize, comptime end: usize) !void {
+	inline for (first..end) |id| {
 		const data = @field(fixture, "bytes_" ++ std.fmt.comptimePrint("{d}", .{id}));
 		const rgb = @field(fixture, "rgb_" ++ std.fmt.comptimePrint("{d}", .{id}));
 		var br = BitReader.init(data[2..]);
@@ -17,6 +17,10 @@ fn check(allocator: std.mem.Allocator, comptime count: usize) !void {
 		var decoder = jxl.codec.dec_frame.FrameDecoder.init(allocator, &metadata);
 		defer decoder.deinit();
 		try decoder.decodeFrame(framedata);
+		if (id >= 6) {
+			try std.testing.expectEqual(id != 7, decoder.frame_header.loop_filter.gab);
+			try std.testing.expectEqual(id - 6, decoder.frame_header.loop_filter.epf_iters);
+		}
 		const image = &decoder.rendered_image.?;
 		try std.testing.expectEqual(rgb.len, image.data.len);
 		const params = jxl.codec.xyb.opsinParams(&metadata.m, &metadata.transform_data);
@@ -35,11 +39,17 @@ fn check(allocator: std.mem.Allocator, comptime count: usize) !void {
 	}
 }
 test "VarDCT complete frames match upstream RGB output" {
-	try check(std.testing.allocator, 6);
+	try check(std.testing.allocator, 0, 10);
 }
 
 fn checkOne(allocator: std.mem.Allocator) !void {
-	try check(allocator, 1);
+	try check(allocator, 0, 1);
+}
+fn checkFiltered(allocator: std.mem.Allocator) !void {
+	try check(allocator, 9, 10);
+}
+test "VarDCT filtered frame allocation failures release partial state" {
+	try std.testing.checkAllAllocationFailures(std.testing.allocator, checkFiltered, .{});
 }
 test "VarDCT complete frame allocation failures release partial state" {
 	try std.testing.checkAllAllocationFailures(std.testing.allocator, checkOne, .{});

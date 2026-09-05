@@ -72,14 +72,14 @@ run_validate tests/corpus/labeled/good/grayscale.jxl
 status=$?
 [ "${status}" -eq 1 ] || fail "grayscale should exit 1 (unsupported), got ${status}"
 grep -Eq '^verdict[[:space:]]+unsupported$' "${OUT}" || fail "grayscale should report unsupported, got: $(cat "${OUT}")"
-grep -Eq '^feature[[:space:]]+vardct_frame$' "${OUT}" || fail "grayscale should name vardct_frame, got: $(cat "${OUT}")"
+grep -Eq '^feature[[:space:]]+icc_profile$' "${OUT}" || fail "grayscale should name icc_profile, got: $(cat "${OUT}")"
 
 # Classifier over the labeled-good set: every unsupported file must name a
 # real feature, and the set of names must not collapse to one answer.
 unsupported_count=0
 unknown_count=0
 saw_patches=0
-saw_vardct=0
+saw_icc=0
 while IFS= read -r fixture; do
 	run_validate "${fixture}"
 	status=$?
@@ -93,7 +93,7 @@ while IFS= read -r fixture; do
 			fail "${fixture}: unsupported with unnamed feature (${feature:-empty})"
 		fi
 		[ "${feature}" = "patches" ] && saw_patches=1
-		[ "${feature}" = "vardct_frame" ] && saw_vardct=1
+		[ "${feature}" = "icc_profile" ] && saw_icc=1
 	elif [ "${verdict}" = "valid" ]; then
 		[ "${status}" -eq 0 ] || fail "${fixture}: valid should exit 0, got ${status}"
 		[ "${feature}" = "none" ] || fail "${fixture}: valid must report feature none, got ${feature}"
@@ -103,7 +103,7 @@ done < <(find tests/corpus/labeled/good -type f -name '*.jxl' | sort)
 [ "${unsupported_count}" -ge 2 ] || fail "classifier saw ${unsupported_count} unsupported files; need at least 2"
 [ "${unknown_count}" -eq 0 ] || fail "classifier saw ${unknown_count} unknown features; want 0"
 [ "${saw_patches}" -eq 1 ] || fail "classifier never saw feature=patches over labeled-good"
-[ "${saw_vardct}" -eq 1 ] || fail "classifier never saw feature=vardct_frame over labeled-good"
+[ "${saw_icc}" -eq 1 ] || fail "classifier never saw feature=icc_profile over labeled-good"
 
 # --json for tooling. Later --json must still win if it follows the path.
 run_validate tests/corpus/labeled/good/patches_lossless.jxl --json

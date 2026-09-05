@@ -5472,7 +5472,7 @@ test "JxlDecoderRewind requests a fresh output buffer before replaying frames" {
 test "VarDCT public validation and decoder match upstream complete frames" {
 	const testing = std.testing;
 	const fixture = @import("lib/codec/vardct_frame_fixture.zig");
-	inline for (0..6) |id| {
+	inline for (0..10) |id| {
 		const data = @field(fixture, "bytes_" ++ std.fmt.comptimePrint("{d}", .{id}));
 		const expected = @field(fixture, "rgb_" ++ std.fmt.comptimePrint("{d}", .{id}));
 		var result: JxlValidationResult = undefined;

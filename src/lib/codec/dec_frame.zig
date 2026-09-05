@@ -199,6 +199,12 @@ pub const AcStrategyType = enum(u32) {
 	dct64x64 = 18,
 	dct64x32 = 19,
 	dct32x64 = 20,
+	dct128x128 = 21,
+	dct128x64 = 22,
+	dct64x128 = 23,
+	dct256x256 = 24,
+	dct256x128 = 25,
+	dct128x256 = 26,
 };
 
 pub const QuantMode = enum(u8) {
@@ -237,7 +243,7 @@ const kSumRequiredXy: usize = 2056;
 const kTotalTableSize: usize = kSumRequiredXy * kDctBlockSize * 3;
 const kRequiredSizeX = [_]u8{ 1, 1, 1, 1, 2, 4, 1, 1, 2, 1, 1, 8, 4, 16, 8, 32, 16 };
 const kRequiredSizeY = [_]u8{ 1, 1, 1, 1, 2, 4, 2, 4, 4, 1, 1, 8, 8, 16, 16, 32, 32 };
-const kAcStrategyToQuantTable = [_]u8{ 0, 1, 2, 3, 4, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 10, 10, 11, 12, 12 };
+const kAcStrategyToQuantTable = [_]u8{ 0, 1, 2, 3, 4, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 10, 10, 11, 12, 12, 13, 14, 14, 15, 16, 16 };
 const kLibraryIdentity = QuantEncoding{
 	.mode = .identity,
 	.idweights = .{
@@ -800,14 +806,11 @@ pub const DequantMatrices = struct {
 	}
 
 	/// Materialize dequant tables for the AC strategies in `acs_mask`.
-	/// C++ DequantMatrices::EnsureComputed. Identity, DCT2, DCT4, DCT4x8, AFV,
-	/// and DCT 8–64 (square and rectangular through 32×64) library tables
-	/// are live; DCT128+ and raw encodings stay unsupported.
+	/// C++ DequantMatrices::EnsureComputed. All 27 strategies are supported;
+	/// raw matrix payload decoding remains separate.
 	pub fn ensureComputed(self: *DequantMatrices, allocator: std.mem.Allocator, acs_mask: u32) JxlError!void {
 		const valid_mask = (@as(u32, 1) << @import("ac_strategy.zig").kNumValidStrategies) - 1;
-		const implemented_mask = (@as(u32, 1) << kAcStrategyToQuantTable.len) - 1;
 		if ((acs_mask & ~valid_mask) != 0) return error.GenericError;
-		if ((acs_mask & ~implemented_mask) != 0) return unsupported_mod.unsupported(.vardct_frame);
 		if (self.storage.len == 0) {
 			const storage = try allocator.alloc(sf.Fixed, 2 * kTotalTableSize);
 			@memset(storage, sf.Fixed.zero);
@@ -870,8 +873,18 @@ fn libraryEncoding(table_idx: usize) ?QuantEncoding {
 		10 => libraryAfv(),
 		11 => libraryDct64(),
 		12 => libraryDct32x64(),
+		13 => scaledLibraryDct(libraryDct64(), 2),
+		14 => scaledLibraryDct(libraryDct32x64(), 2),
+		15 => scaledLibraryDct(libraryDct64(), 4),
+		16 => scaledLibraryDct(libraryDct32x64(), 4),
 		else => null,
 	};
+}
+
+fn scaledLibraryDct(base: QuantEncoding, factor: u32) QuantEncoding {
+	var result = base;
+	for (&result.dct_params.distance_bands) |*bands| bands[0] = sf.mul(bands[0], sf.fromInt(factor));
+	return result;
 }
 
 fn bandMult(v: sf.Fixed) sf.Fixed {
@@ -948,9 +961,6 @@ fn computeDctTable(
 	const rows: usize = 8 * @as(usize, kRequiredSizeX[table_idx]);
 	const cols: usize = 8 * @as(usize, kRequiredSizeY[table_idx]);
 	const num = rows * cols;
-	// Live sizes through 64×64. DCT128+ stays unsupported.
-	const kMaxLiveCells: usize = 64 * 64;
-	if (num > kMaxLiveCells) return unsupported_mod.unsupported(.vardct_frame);
 	const weights = try allocator.alloc(sf.Fixed, 3 * num);
 	defer allocator.free(weights);
 	try getQuantWeights(rows, cols, quant_encoding.dct_params, weights);
@@ -2200,13 +2210,12 @@ test "ensureComputed identity library table inverts the known weights" {
 	try testing.expectEqual(sf.div(kOne, sf.fromInt(18)), b[0]);
 }
 
-test "ensureComputed rejects unimplemented and invalid strategy mask bits" {
-	for (21..32) |bit| {
+test "ensureComputed rejects invalid strategy mask bits" {
+	for (27..32) |bit| {
 		var matrices = DequantMatrices{};
 		defer matrices.deinit(testing.allocator);
 		const mask = (@as(u32, 1) << @intCast(bit)) | 1;
-		const expected = if (bit < 27) error.Unsupported else error.GenericError;
-		try testing.expectError(expected, matrices.ensureComputed(testing.allocator, mask));
+		try testing.expectError(error.GenericError, matrices.ensureComputed(testing.allocator, mask));
 		try testing.expectEqual(@as(u32, 0), matrices.computed_mask);
 		try testing.expectEqual(@as(usize, 0), matrices.storage.len);
 	}

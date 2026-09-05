@@ -177,11 +177,13 @@ on 2026-09-04; component presence does not establish full-format coverage):
   upstream, with sampled comparisons for blocks larger than 8x8. AC coefficient
   passes now match 31 upstream streams, including all strategies, mixed blocks,
   subsampling and verified ANS/Huffman/LZ77 modes. AC-global parsing and frame
-  orchestration now connect these components. Six complete upstream images
+  orchestration now connect these components. Ten complete upstream images
   cover partial edges, multiple AC/DC groups and progressive AC passes; public
   decoding matches within one RGB8 level per channel. Strict validation accepts
   these files. Whole-image DC smoothing runs before AC reconstruction.
-  DCT128+ dequant tables, raw table compute, loop filters, chroma subsampling,
+  Gaborish and all three EPF stages run in Fixed and match independent upstream
+  stage fixtures and full frames. Dequantization covers all 27 strategies.
+  Raw table compute, chroma subsampling,
   extra-channel integration, custom opsin parameters and reference/render
   features remain gated in the full-frame path.
   `splines.zig` already has color-correlation ratios and a continuous spline
@@ -190,8 +192,8 @@ on 2026-09-04; component presence does not establish full-format coverage):
   both flags before their payloads. Splines are already decoded and rendered.
 - **Remaining image-render stages.** `loop_filter.zig` already parses
   Gaborish/EPF parameters, and `image_metadata.zig` reads custom upsampling
-  weights. The corresponding pixel filters, frame upsampling, reference
-  blending and noise synthesis were not found in the Zig implementation.
+  weights. Gaborish/EPF pixel filters are now implemented; frame upsampling,
+  reference blending and noise synthesis remain unfinished.
   Reuse the existing `render.zig` image/spline path, `xyb.zig`
   `xybToLinearRgb`, and `capi/output_buffer.zig` output conversion. Describing
   all rendering or color conversion as absent is incorrect.
@@ -335,14 +337,14 @@ machine id.
 This is the bulk of the remaining format. Ordered so each slice is testable
 against upstream rather than against itself:
 
-1. [ ] `DequantMatrices` in full (`decode` all modes except raw; `EnsureComputed` identity/DCT2/DCT4/DCT4x8/AFV/DCT 8–64 square+rectangular through 32×64; DCT128+ / raw compute still open).
-2. [ ] Quantizer and the adaptive quantization field.
-3. [ ] Coefficient order / natural order tables.
-4. [ ] AC strategy: DCT2x2 through DCT256x256, plus Hornuss and AFV.
-5. [ ] Chroma-from-luma.
-6. [ ] Inverse DCT for every block variant.
-7. [ ] DC group decoding for VarDCT frames (modular-coded DC).
-8. [ ] Coefficient reconstruction and dequantization.
+1. [ ] `DequantMatrices` in full (all 27 strategies compute; raw payloads remain).
+2. [x] Quantizer and the adaptive quantization field.
+3. [x] Coefficient order / natural order tables.
+4. [x] AC strategy: DCT2x2 through DCT256x256, plus Hornuss and AFV.
+5. [x] Chroma-from-luma.
+6. [x] Inverse DCT for every block variant.
+7. [x] DC group decoding for VarDCT frames (modular-coded DC).
+8. [x] Coefficient reconstruction and dequantization (raw matrices excepted).
 
 **Control for every slice:** differential against upstream libjxl 0.12.0 on the
 same input. We already run a pinned oracle; extend it to per-stage
@@ -354,10 +356,9 @@ provided error detection is equal or better.
 
 ### Phase 4 — Render pipeline
 
-- [ ] XYB to linear to display, as a general path rather than the spline-only
-      lift.
+- [x] XYB to linear to sRGB display for complete VarDCT images.
 - [ ] Upsampling (2x, 4x, 8x) with the custom kernels.
-- [ ] Gaborish and the edge-preserving filter.
+- [x] Gaborish and the edge-preserving filter.
 - [ ] Patches and noise synthesis (removes the `dec_frame.zig:545` rejection).
 - [ ] Frame blending and reference frames (unblocks animation).
 

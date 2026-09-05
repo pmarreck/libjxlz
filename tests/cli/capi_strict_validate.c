@@ -116,8 +116,8 @@ int main(int argc, char** argv) {
 	 * a single hardcoded answer would pass one of these and fail the other. */
 	ok &= expect_feature("patches names itself", unsupported, unsupported_size, &options,
 		JXL_VALIDATION_FEATURE_PATCHES);
-	ok &= expect_feature("vardct names itself", vardct, vardct_size, &options,
-		JXL_VALIDATION_FEATURE_VARDCT_FRAME);
+	ok &= expect_feature("VarDCT ICC gate names itself", vardct, vardct_size, &options,
+		JXL_VALIDATION_FEATURE_ICC_PROFILE);
 
 	/* Specificity: an accepted file must not carry a stale feature from a prior call. */
 	if (JxlValidate(accepted, accepted_size, &options, &result) != JXL_VALIDATION_VALID ||
