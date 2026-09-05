@@ -89,7 +89,7 @@ pub const U32Coder = struct {
         if (d.isDirect()) {
             return d.direct();
         }
-        return @as(u32, @intCast(reader.readBits(d.extraBits()))) + d.offset();
+        return @as(u32, @intCast(reader.readBits(d.extraBits()))) +% d.offset();
     }
 
     /// Chooses the shortest valid selector form for a field-coded integer and
@@ -139,6 +139,19 @@ pub const U32Coder = struct {
         }
     }
 };
+
+test "U32Coder full-width offset uses unsigned wire arithmetic" {
+	var writer = BitWriter.init(std.testing.allocator);
+	defer writer.deinit();
+	try writer.write(2, 3);
+	try writer.write(32, 0xffffffff);
+	try writer.zeroPadToByte();
+	var reader = BitReader.init(writer.bytes());
+	const distribution = U32Enc.init(bits(4), bitsOffset(8, 16), bitsOffset(16, 272), bitsOffset(32, 65808));
+	// Upstream U32Coder::Read returns uint32_t, including modulo-2^32 addition.
+	try std.testing.expectEqual(@as(u32, 65807), U32Coder.read(distribution, &reader));
+	try reader.close();
+}
 
 // ── U64Coder ──
 

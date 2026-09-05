@@ -34,6 +34,17 @@ const transform_mod = @import("../modular/transform.zig");
 const sf = @import("../base/soft_float.zig");
 pub const Quantizer = @import("quantizer.zig").Quantizer;
 const ac_metadata = @import("ac_metadata.zig");
+const vardct = @import("vardct_global.zig");
+
+const VarDctGlobal = struct {
+	quantizer: Quantizer,
+	block_context: vardct.BlockContextMap,
+	color_correlation: vardct.ColorCorrelation,
+
+	fn deinit(self: *VarDctGlobal) void {
+		self.block_context.deinit();
+	}
+};
 
 const SectionLayout = struct {
     offsets: []u64,
@@ -617,24 +628,7 @@ fn tooLarge(value: sf.Fixed) bool {
 	return value.m != 0 and absFixed(value).e > kMaxWeightExp;
 }
 
-/// Reconstruct bitstream F16 as a randomz soft-float without IEEE-754 arithmetic.
-fn fromF16Bits(bits: u16) JxlError!sf.Fixed {
-	const sign = (bits >> 15) != 0;
-	const exp: i32 = @intCast((bits >> 10) & 0x1F);
-	const frac: i64 = bits & 0x3FF;
-	if (exp == 31) return error.GenericError;
-	var value: sf.Fixed = undefined;
-	if (exp == 0) {
-		if (frac == 0) return sf.Fixed.zero;
-		value = sf.div(sf.fromInt(frac), sf.fromInt(@as(i64, 1) << 24));
-	} else {
-		value = sf.div(sf.fromInt(1024 + frac), sf.fromInt(1024));
-		const new_e: i64 = @as(i64, value.e) + (exp - 15);
-		if (new_e < std.math.minInt(i32) or new_e > std.math.maxInt(i32)) return error.GenericError;
-		value.e = @intCast(new_e);
-	}
-	return if (sign) sf.neg(value) else value;
-}
+const fromF16Bits = @import("../base/float.zig").loadFloat16Fixed;
 
 fn readF16(br: *BitReader) JxlError!sf.Fixed {
 	const bits: u16 = @intCast(br.readBits(16));
@@ -1474,6 +1468,7 @@ pub const FrameDecoder = struct {
     modular_decoder: ModularFrameDecoder,
     splines: splines_mod.Splines,
     dequant_matrices: DequantMatrices = .{},
+    vardct_global: ?VarDctGlobal = null,
     rendered_image: ?render_mod.FloatImage = null,
     metadata: *const CodecMetadata,
     decoded_dc_global: bool = false,
@@ -1490,6 +1485,7 @@ pub const FrameDecoder = struct {
 
     pub fn deinit(self: *FrameDecoder) void {
         self.clearRenderedImage();
+        self.clearVarDctGlobal();
         self.dequant_matrices.deinit(self.allocator);
         self.modular_decoder.deinit();
         self.splines.deinit();
@@ -1505,6 +1501,9 @@ pub const FrameDecoder = struct {
         self.frame_dim = self.frame_header.toFrameDimensions(self.metadata, false);
         self.modular_decoder.initFrame(self.frame_dim);
         self.splines.clear();
+        self.clearVarDctGlobal();
+        self.decoded_dc_global = false;
+        self.dequant_matrices.deinit(self.allocator);
         self.dequant_matrices = .{};
         self.clearRenderedImage();
 
@@ -1520,6 +1519,11 @@ pub const FrameDecoder = struct {
         return br.totalBitsConsumed() / 8;
     }
 
+    fn clearVarDctGlobal(self: *FrameDecoder) void {
+        if (self.vardct_global) |*global| global.deinit();
+        self.vardct_global = null;
+    }
+
     /// Process DC Global section (section ID 0).
     /// Matches C++ FrameDecoder::ProcessDCGlobal: patches/splines/noise (conditional),
     /// then DecodeDC (unconditional), then DecodeGlobalInfo.
@@ -1528,6 +1532,9 @@ pub const FrameDecoder = struct {
         comptime reader_strategy: ReaderStrategy,
         br: *BitReader,
     ) JxlError!void {
+        self.decoded_dc_global = false;
+        self.clearVarDctGlobal();
+        errdefer self.clearVarDctGlobal();
         const unsupported_flags = frame_header_mod.FrameFlags.noise |
             frame_header_mod.FrameFlags.patches;
         if ((self.frame_header.flags & unsupported_flags) != 0) {
@@ -1541,13 +1548,24 @@ pub const FrameDecoder = struct {
         }
 
         // DequantMatrices::DecodeDC — always called, even for modular frames
+        self.dequant_matrices.deinit(self.allocator);
         self.dequant_matrices = .{};
         try self.dequant_matrices.decodeDC(br);
 
-        // For modular frames: decode global modular info
-        if (self.frame_header.encoding == .modular) {
-            try self.modular_decoder.decodeGlobalInfoWithReaderStrategy(reader_strategy, br, &self.frame_header, self.metadata);
+        if (self.frame_header.encoding == .var_dct) {
+            const quantizer = try Quantizer.decode(br);
+            var block_context = try vardct.BlockContextMap.decode(self.allocator, br);
+            errdefer block_context.deinit();
+            const color_correlation = try vardct.ColorCorrelation.decode(br, self.metadata.m.xyb_encoded);
+            self.vardct_global = .{
+                .quantizer = quantizer,
+                .block_context = block_context,
+                .color_correlation = color_correlation,
+            };
         }
+        // VarDCT also carries the global modular tree and extra channels.
+        try self.modular_decoder.decodeGlobalInfoWithReaderStrategy(reader_strategy, br, &self.frame_header, self.metadata);
+        if (!br.allReadsWithinBounds()) return error.NotEnoughBytes;
         self.decoded_dc_global = true;
     }
 
@@ -2804,4 +2822,51 @@ test "applyExtraChannelDimShift shrinks extra channels" {
 	try testing.expectEqual(@as(usize, 1), image.channels.items[3].h);
 	try testing.expectEqual(@as(i32, 1), image.channels.items[3].hshift);
 	try testing.expectEqual(@as(i32, 1), image.channels.items[3].vshift);
+}
+
+fn checkVarDctDCGlobal(allocator: std.mem.Allocator) !void {
+	const BitWriter = @import("../base/bit_writer.zig").BitWriter;
+	const fixture = @import("vardct_global_fixture.zig");
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writer.write(1, 1); // Default DC dequant weights.
+	try writer.write(2, 0); // Global scale 2048, first selector endpoint.
+	try writer.write(11, 2047);
+	try writer.write(2, 0); // Quant DC 16.
+	var source = BitReader.init(&fixture.block_context);
+	for (0..fixture.block_context_bits) |_| try writer.write(1, source.readBits(1));
+	try source.close();
+	try writer.write(1, 1); // Default CfL.
+	try writer.write(1, 0); // No modular global tree, no extra channels.
+	const bits = writer.bitsWritten();
+	try writer.write(8, 0xa5); // Next section's sentinel.
+	try writer.zeroPadToByte();
+	var metadata = CodecMetadata{};
+	var dec = FrameDecoder.init(allocator, &metadata);
+	defer dec.deinit();
+	dec.frame_header.encoding = .var_dct;
+	dec.frame_dim.set(8, 8, 1, 0, 0, false, 1);
+	dec.modular_decoder.initFrame(dec.frame_dim);
+	var br = BitReader.init(writer.bytes());
+	try dec.processDCGlobal(&br);
+	try testing.expectEqual(bits, br.totalBitsConsumed());
+	try testing.expect(dec.decoded_dc_global);
+	try testing.expectEqual(@as(u32, 2048), dec.vardct_global.?.quantizer.global_scale);
+	try testing.expectEqual(@as(usize, 4), dec.vardct_global.?.block_context.num_ctxs);
+	try testing.expectEqual(@as(usize, 0), dec.modular_decoder.full_image.channels.items.len);
+	try testing.expectEqual(@as(u64, 0xa5), br.readBits(8));
+	try br.close();
+	// A truncated retry must clear the previous success flag and owned state.
+	var empty = BitReader.init(&.{});
+	try testing.expectError(error.NotEnoughBytes, dec.processDCGlobal(&empty));
+	try testing.expect(!dec.decoded_dc_global);
+	try testing.expect(dec.vardct_global == null);
+}
+
+test "VarDCT DC-global frame adapter consumes quantizer contexts CfL and modular info" {
+	try checkVarDctDCGlobal(testing.allocator);
+}
+
+test "VarDCT DC-global frame adapter allocation cleanup" {
+	try testing.checkAllAllocationFailures(testing.allocator, checkVarDctDCGlobal, .{});
 }

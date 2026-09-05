@@ -1,9 +1,89 @@
 # libjxlz Plan
 
+## Overnight implementation sequence (2026-09-05)
+
+Peter explicitly authorized overnight work at 01:02 EDT. Reuse the inventory
+below; pause for decisions only when they prevent safe implementation.
+
+- [x] Extract a shared-reader permutation path from `toc.zig` without changing
+  TOC decoding. Prove shared ANS state, skipped LLF coefficients, discarded
+  unused orders, malformed ranks, truncation and allocation cleanup.
+  Targeted tests pass, including TOC physical/logical mapping — 01:14 EDT.
+- [x] Decode all 13 coefficient-order classes for the 27 strategies, reusing
+  natural orders. Check actual encoded streams against retained upstream C++.
+  All 39 channel digests and exact 433 bits match; every unused-class mask,
+  truncated byte prefix and injected allocation failure passes — 01:14 EDT.
+- [x] Decode the remaining VarDCT DC-global context model and CfL parameters;
+  wire completed quantizer and modular global metadata in stream order.
+  Upstream context/CfL fixtures, selector endpoints, limits, truncated inputs,
+  allocator failures and frame adapter sentinel pass — 01:26 EDT.
+  Regression tests also exposed/fixed U32 offset overflow and swallowed OOM
+  in the shared context-map decoder.
+- [x] Run the full suite and production build for the order/DC-global slice.
+  `./test` passed all 94 CLI suites and the Nix unit check; `./build`,
+  ReleaseFast unit checks and Windows cross checks passed — 01:37 EDT.
+- [ ] Correct chroma sampling shifts before subsampled DC groups. An external
+  test of all 64 upstream wire combinations fails; a separate upstream 4:2:0
+  DC fixture also fails because the current geometry reverses sampling ratios.
+  Then integrate the DC prototype and its eight upstream fixtures, covering
+  4:4:4/4:2:0 and all four precision values. Full-resolution cases already pass
+  in the isolated prototype; no production DC-group code is committed yet.
+- [ ] Implement VarDCT DC/AC coefficient-group processing and block inverse
+  transforms, reusing modular and entropy machinery and existing XYB output.
+  First end-to-end gate: a public upstream-produced VarDCT image matches libjxl.
+- [ ] Extend that working path to progressive/reference semantics and remaining
+  dequant forms, then patches and remaining render stages. Each subfeature
+  needs a known-good upstream fixture and malformed/truncated counterparts.
+- [ ] Complete remaining container/reconstruction semantics and conformance
+  corpus coverage before claiming full JPEG XL parsing/decode support.
+  A fully rejected category is still unfinished, even if rejection is typed.
+- [ ] For each passing code slice: run `./test` and `./build`, commit/push,
+  verify exact-commit CI, and refresh coverage evidence before proceeding.
+
 ## Active parsing work (2026-09-04)
 
 Full JPEG XL parsing and decode coverage remain the completion target.
 Preserve typed rejection of unsupported features until their payloads are checked.
+
+- [x] Reconcile the remaining-coverage list with current indexed code before
+  sequencing more implementation: distinguish absent code, partial helpers,
+  disconnected paths and proven end-to-end coverage (Peter, 2026-09-04).
+  Codescan reported zero pending paths; inspected the returned source and
+  frame/output call sites. Corrected `COVERAGE_GAMEPLAN.md` section 1.4 and
+  removed duplicate AC-strategy work below. Existing permutation decoding,
+  modular pass routing, animation, XYB output and loop-filter header parsing
+  must be reused. The remaining broad categories already existed at
+  `3bbf1a3e`; this check adds no requirements — 2026-09-04 22:44 EDT.
+
+- [x] Finish the Einstein handoff, then summarize the recent libjxlz work,
+  validation and remaining full-JPEG-XL coverage for Peter (2026-09-04).
+  Einstein acknowledged at 22:34 EDT and checkpointed the Nix migration and
+  updater in `~/Code/PLAN.md`; `/etc/nixos/PLAN.md` holds detailed criteria.
+
+- [x] Move Collie to private HTTPS port 8446 using its existing user service;
+  restore Mechatron's public port 443 and verify Collie restart preserves it.
+  Save recoverable configuration copies first (Peter, 2026-09-04).
+  Completed at approximately 22:32 EDT: private HTTPS returns 200, both public
+  Funnel relay IPs return 200 for the badge, and Collie restart leaves the
+  complete Tailscale configuration byte-identical. Service is enabled and
+  user lingering is enabled. Backups: `~/.config/collie/backups/20260904-routing/`.
+  GitHub's webhook redelivery succeeded with HTTP 200 at 22:31:05 EDT.
+- [ ] Put Collie's package, service and private ingress under the host's
+  declarative Nix configuration (Peter, 2026-09-04). Finish live routing
+  verification first; preserve Mechatron's public ingress throughout.
+  Implementation/update acceptance criteria are checkpointed in `/etc/nixos/PLAN.md`.
+- [ ] Add a Nix-compatible Collie update workflow: detect a newer upstream
+  release, update the version/checksum pin, build and verify before activation,
+  and retain rollback (Peter, 2026-09-04 follow-up).
+
+- [x] Identify the public-ingress regression: history records installation
+  from `https://colliepwa.dev/install.sh`, followed by `collie start`.
+  Collie 1.5.1's `~/.config/collie/serve.out`, timestamped 20:34:37 EDT,
+  explicitly records `Removing Funnel` for the host's HTTPS port 443.
+  Its managed-handler record assigns that listener's root to localhost:8787.
+  Mechatron's paths survived, but public ingress was disabled. No service or
+  routing changes made during this investigation — 2026-09-04 22:28 EDT.
+  Remote CI remains blocked; JPEG XL implementation remains the project goal.
 
 - [x] Read the handoff and implement quantizer parsing and coefficient scales
   in randomz Fixed. Witnessed missing-implementation failures, then passed
@@ -33,21 +113,41 @@ Preserve typed rejection of unsupported features until their payloads are checke
   at `dec_ma.decodeTreeInner` because color channels were zeroed before the
   limit calculation. Moving that assignment after the tree, matching C++,
   passed the regression — 2026-09-04 20:50 EDT.
-- [ ] Decode custom coefficient permutations with a shared entropy reader;
-  then DC-global block contexts and CfL parameters, DC groups and AC groups.
+- [x] Adapt `toc.zig`'s existing permutation decoder to a shared entropy reader
+  for custom coefficient orders; reuse `ac_strategy.zig`'s natural orders;
+  then DC-global block contexts and CfL parameters — 2026-09-05 01:37 EDT.
+  DC groups and AC groups remain in the overnight sequence above.
   Curiosity poke: `lib/jxl/coeff_order.cc` consumes encoded permutations even
   for unused strategies and checks the ANS final state once after all orders.
   Cover zero custom orders, preserved LLF prefixes, unused-order consumption,
   invalid Lehmer ranks, truncation and allocation failure before integration.
-- [ ] Continue coefficient orders, AC strategy, CfL, inverse transforms, and
-  VarDCT group decoding, then integrate and compare real files with libjxl.
+- [ ] Connect the completed quantizer, strategy/block map, dequant tables and
+  CfL maps to the remaining VarDCT coefficient/group path and block inverse
+  transforms, then compare real files with libjxl. Reuse existing XYB output.
   Curiosity poke: progressive passes and large transforms must remain visible.
 - [x] Final `./test` passed the Nix unit check and all 94 CLI suites;
   `./build` passed. Coverage notes updated for this metadata/order slice
   — 2026-09-04 21:05 EDT.
-- [ ] Commit and verify the metadata/order slice on exact-commit Mechatron CI.
+- [x] Commit and verify the metadata/order slice on exact-commit Mechatron CI.
   Keep patches, rendering, progressive structure, and the other existing
   coverage items in scope after VarDCT.
+  Code is committed and pushed as `b5655a287f1d835cc52b83c77c818da2aed877d4`.
+  Mechatron succeeded at 22:31:10 EDT after the routing repair, taking 6s
+  with the exact-commit Nix targets already available locally. The historical
+  failure and repair investigation below are retained for attribution.
+  All four manifest targets passed locally against that exact Git revision
+  (including ReleaseFast and Windows cross-link) — 2026-09-04 21:13 EDT.
+  Mechatron's original webhook delivery and retry returned EOF; the receiver
+  is running, but `tailscale funnel status` marks HTTPS as tailnet-only.
+  Follow-up at 22:21 EDT: tailscaled's journal shows a Serve configuration
+  POST at 20:34:37 EDT, a proxy handler for localhost:8787, and the explicit
+  message `Hostinfo.IngressEnabled changed to false`. GitHub's preceding
+  delivery succeeded at 20:25:42 EDT. The caller of that configuration update
+  was subsequently identified as Collie's start-time Serve setup; its own
+  `serve.out` explicitly records removal of Funnel at that timestamp.
+  No public routing was changed. GitHub Actions run `33935122064` is still
+  in progress. This CI note is intentionally uncommitted so the next code
+  slice can carry it without restarting the running Actions jobs.
 
 ## Mechatron CI (2026-08-27)
 

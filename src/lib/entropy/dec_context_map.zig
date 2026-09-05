@@ -62,15 +62,15 @@ pub fn decodeContextMapAlloc(
         var code = ANSCode.init(allocator);
         defer code.deinit();
 
-        const sink_ctx_map = dec_ans.decodeHistograms(
+        const sink_ctx_map = try dec_ans.decodeHistograms(
             allocator,
             br,
             1,
             &code,
-        ) catch return error.GenericError;
+        );
         defer allocator.free(sink_ctx_map);
 
-        var reader = ANSSymbolReader.create(&code, br, 0, allocator) catch return error.GenericError;
+        var reader = try ANSSymbolReader.create(&code, br, 0, allocator);
         defer reader.deinit();
 
         for (context_map) |*entry| {

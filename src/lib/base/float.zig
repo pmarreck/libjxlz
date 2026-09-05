@@ -71,3 +71,25 @@ test "float16 two (0x4000)" {
 test "float16 half (0x3800)" {
 	try std.testing.expectEqual(@as(f32, 0.5), loadFloat16(0x3800));
 }
+
+const sf = @import("soft_float.zig");
+const JxlError = @import("status.zig").JxlError;
+
+/// Reconstruct bitstream F16 as a randomz soft-float without IEEE-754 arithmetic.
+pub fn loadFloat16Fixed(bits: u16) JxlError!sf.Fixed {
+	const sign = (bits >> 15) != 0;
+	const exp: i32 = @intCast((bits >> 10) & 0x1F);
+	const frac: i64 = bits & 0x3FF;
+	if (exp == 31) return error.GenericError;
+	var value: sf.Fixed = undefined;
+	if (exp == 0) {
+		if (frac == 0) return sf.Fixed.zero;
+		value = sf.div(sf.fromInt(frac), sf.fromInt(@as(i64, 1) << 24));
+	} else {
+		value = sf.div(sf.fromInt(1024 + frac), sf.fromInt(1024));
+		const new_e: i64 = @as(i64, value.e) + (exp - 15);
+		if (new_e < std.math.minInt(i32) or new_e > std.math.maxInt(i32)) return error.GenericError;
+		value.e = @intCast(new_e);
+	}
+	return if (sign) sf.neg(value) else value;
+}

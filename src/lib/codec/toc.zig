@@ -13,7 +13,8 @@ const ANSSymbolReader = dec_ans.ANSSymbolReader;
 // kTocDist: U32(Bits(10), BitsOffset(14,1024), BitsOffset(22,17408), BitsOffset(30,4211712))
 const kTocDist = fc.U32Enc.init(fc.bits(10), fc.bitsOffset(14, 1024), fc.bitsOffset(22, 17408), fc.bitsOffset(30, 4211712));
 
-const kPermutationContexts: usize = 8;
+pub const kPermutationContexts: usize = 8;
+pub const kMaxPermutationSize: usize = 65536;
 
 test "coefficient permutation contexts follow hybrid token bands" {
 	// lib/jxl/coeff_order.cc uses the token from HybridUintConfig(0,0,0),
@@ -100,46 +101,53 @@ fn decodeLehmerCode(code: []const u32, temp: []u32, n: usize, permutation: []u32
     }
 }
 
-/// Decode a permutation from the bitstream using ANS-coded Lehmer codes.
+/// Read one permutation from a borrowed entropy stream. A null destination
+/// consumes and validates an unused order. The stream owner checks final ANS
+/// state after its last permutation. Complexity: O(size log size), or O(size)
+/// with no allocation when discarding.
+pub fn readPermutation(allocator: std.mem.Allocator, skip: usize, size: usize,
+	output: ?[]u32, br: *BitReader, reader: *ANSSymbolReader,
+	context_map: []const u8) JxlError!void
+{
+	if (size == 0 or size > kMaxPermutationSize or skip > size or
+		context_map.len != kPermutationContexts) return error.GenericError;
+	if (output) |dest| if (dest.len != size) return error.GenericError;
+	const count = reader.readHybridUint(coeffOrderContext(@intCast(size)), br, context_map);
+	if (!br.allReadsWithinBounds()) return error.NotEnoughBytes;
+	if (count > size - skip) return error.GenericError;
+	const lehmer: []u32 = if (output != null) try allocator.alloc(u32, size) else &.{};
+	defer allocator.free(lehmer);
+	@memset(lehmer, 0);
+	var last: u32 = 0;
+	for (skip..skip + count) |i| {
+		const rank = reader.readHybridUint(coeffOrderContext(last), br, context_map);
+		if (!br.allReadsWithinBounds()) return error.NotEnoughBytes;
+		if (rank >= size - i) return error.GenericError;
+		last = @intCast(rank);
+		if (output != null) lehmer[i] = last;
+	}
+	if (output) |dest| {
+		const padded_n = @as(usize, 1) << @intCast(bits.ceilLog2Nonzero(size));
+		const temp = try allocator.alloc(u32, padded_n);
+		defer allocator.free(temp);
+		try decodeLehmerCode(lehmer, temp, size, dest);
+	}
+}
+
+/// Decode a standalone ANS permutation, as used by the TOC.
 pub fn decodePermutation(allocator: std.mem.Allocator, skip: usize, size: usize, br: *BitReader) JxlError![]u32 {
-    // Read ANS histograms for permutation contexts
-    var code = ANSCode.init(allocator);
-    defer code.deinit();
-    const ctx_map = dec_ans.decodeHistograms(allocator, br, kPermutationContexts, &code) catch return error.GenericError;
-    defer allocator.free(ctx_map);
-
-    var reader = ANSSymbolReader.create(&code, br, 0, allocator) catch return error.GenericError;
-    defer reader.deinit();
-
-    // Read Lehmer codes
-    const lehmer = allocator.alloc(u32, size) catch return error.GenericError;
-    defer allocator.free(lehmer);
-    @memset(lehmer, 0);
-
-    const end_val: u32 = @intCast(reader.readHybridUint(coeffOrderContext(@intCast(size)), br, ctx_map));
-    const end = @as(usize, end_val) + skip;
-    if (end > size) return error.GenericError;
-
-    var last: u32 = 0;
-    for (skip..end) |i| {
-        lehmer[i] = @intCast(reader.readHybridUint(coeffOrderContext(last), br, ctx_map));
-        last = lehmer[i];
-        if (lehmer[i] >= size - i) return error.GenericError;
-    }
-
-    if (!reader.checkANSFinalState()) return error.GenericError;
-
-    // Decode Lehmer code into permutation
-    const padded_n: usize = @as(usize, 1) << @intCast(bits.ceilLog2Nonzero(size));
-    const temp = allocator.alloc(u32, padded_n) catch return error.GenericError;
-    defer allocator.free(temp);
-
-    const permutation = allocator.alloc(u32, size) catch return error.GenericError;
-    errdefer allocator.free(permutation);
-
-    decodeLehmerCode(lehmer, temp, size, permutation) catch return error.GenericError;
-
-    return permutation;
+	if (size == 0 or size > kMaxPermutationSize or skip > size) return error.GenericError;
+	var code = ANSCode.init(allocator);
+	defer code.deinit();
+	const contexts = try dec_ans.decodeHistograms(allocator, br, kPermutationContexts, &code);
+	defer allocator.free(contexts);
+	var reader = try ANSSymbolReader.create(&code, br, 0, allocator);
+	defer reader.deinit();
+	const permutation = try allocator.alloc(u32, size);
+	errdefer allocator.free(permutation);
+	try readPermutation(allocator, skip, size, permutation, br, &reader, contexts);
+	if (!reader.checkANSFinalState()) return error.GenericError;
+	return permutation;
 }
 
 /// Read TOC (Table of Contents) from bitstream.
