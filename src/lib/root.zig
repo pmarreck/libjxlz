@@ -188,5 +188,6 @@ test {
 	_ = @import("modular/modular_image.zig");
 	_ = @import("modular/enc_encoding.zig");
 	_ = @import("modular/encoding.zig");
+	_ = @import("codec/float_filter_test.zig");
 
 }

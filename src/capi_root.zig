@@ -6419,3 +6419,23 @@ test "invalid primary profiles fail public decoding and strict validation" {
 		try @call(.never_inline, checkInvalidPrimary, .{ data, true, id });
 	}
 }
+
+test "wide floating Modular samples preserve upstream bits on decode and rewind" {
+	const fixture = @import("lib/codec/float_filter_fixture.zig");
+	const dec = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlDecoderDestroy(dec);
+	try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSubscribeEvents(dec, @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)));
+	const output = try std.testing.allocator.alloc(u8, fixture.float_0.len * 4);
+	defer std.testing.allocator.free(output);
+	const format = JxlPixelFormat{ .num_channels = 3, .data_type = .JXL_TYPE_FLOAT, .endianness = .JXL_LITTLE_ENDIAN, .@"align" = 0 };
+	for (0..2) |_| {
+		try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(dec, &fixture.bytes_0, fixture.bytes_0.len));
+		JxlDecoderCloseInput(dec);
+		try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_NEED_IMAGE_OUT_BUFFER, JxlDecoderProcessInput(dec));
+		try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(dec, &format, output.ptr, output.len));
+		try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_FULL_IMAGE, JxlDecoderProcessInput(dec));
+		for (fixture.float_0, 0..) |bits, i| try std.testing.expectEqual(bits, std.mem.readInt(u32, output[i * 4 ..][0..4], .little));
+		try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderProcessInput(dec));
+		JxlDecoderRewind(dec);
+	}
+}

@@ -82,7 +82,8 @@ inline fn makePixel(v: u32, multiplier: pixel_type, offset: pixel_type_w) pixel_
 }
 
 inline fn absPixel(v: pixel_type_w) pixel_type {
-    return @intCast(if (v >= 0) v else -v);
+    // Properties retain the low 32 bits, including abs(INT32_MIN).
+    return @truncate(if (v >= 0) v else -v);
 }
 
 const kMaskProp9: u8 = 1 << 0;
@@ -281,7 +282,7 @@ fn precomputeReferences(
                 );
                 const vdiff: pixel_type_w = v - vpredicted;
                 if (use_abs_diff) rp[offset + 2] = absPixel(vdiff);
-                if (use_diff) rp[offset + 3] = @intCast(vdiff);
+                if (use_diff) rp[offset + 3] = @truncate(vdiff);
             }
         }
 
@@ -295,6 +296,26 @@ pub const ReaderStrategy = enum {
 };
 
 const default_reader_strategy: ReaderStrategy = .specialized;
+
+const kGradientLookupRange: i32 = 512 << 4;
+
+// Upstream's gradient-only lookup clamps the wide sum before narrowing.
+// TreeToLookupTable permits precisely these split bounds and plain leaves.
+fn gradientLookupCompatible(tree: []const context_predict.FlatDecisionNode) bool {
+    for (tree) |node| {
+        if (node.property0 < 0) {
+            if (node.predictor != .gradient or node.predictor_offset != 0 or node.multiplier != 1) return false;
+        } else {
+            if (node.property0 != context_predict.kGradientProp) return false;
+            if (node.splitval0 < -kGradientLookupRange - 1 or node.splitval0 >= kGradientLookupRange - 1) return false;
+            for (node.properties, node.splitvals) |property, split| {
+                if (property < options.kNumStaticProperties) continue;
+                if (property != context_predict.kGradientProp or split < -kGradientLookupRange - 1 or split >= kGradientLookupRange - 1) return false;
+            }
+        }
+    }
+    return true;
+}
 
 inline fn readHybridUintClusteredReference(reader: *ANSSymbolReader, ctx: usize, br: *BitReader) usize {
     return reader.readHybridUintClustered(ctx, br, true);
@@ -373,12 +394,12 @@ fn decodeModularChannelNoRefsMaskLoop(
 
             if (use_prop_9) {
                 local_gradient = left + top - topleft;
-                properties[slot_prop9] = @intCast(local_gradient);
+                properties[slot_prop9] = @truncate(local_gradient);
             }
-            if (use_prop_10) properties[slot_prop10] = @intCast(left - topleft);
-            if (use_prop_11) properties[slot_prop11] = @intCast(topleft - top);
-            if (use_prop_12) properties[slot_prop12] = @intCast(top - topright);
-            if (use_prop_13) properties[slot_prop13] = @intCast(top - toptop);
+            if (use_prop_10) properties[slot_prop10] = @truncate(left - topleft);
+            if (use_prop_11) properties[slot_prop11] = @truncate(topleft - top);
+            if (use_prop_12) properties[slot_prop12] = @truncate(top - topright);
+            if (use_prop_13) properties[slot_prop13] = @truncate(top - toptop);
 
             var wp_pred: pixel_type_w = 0;
             if (wp_state) |*ws| {
@@ -564,6 +585,7 @@ fn decodeModularChannelImpl(
 
     // General case: full tree traversal with properties
     const tree_lookup = context_predict.MATreeLookup.init(flat_tree.items);
+    const clamp_gradient = gradient_only and gradientLookupCompatible(flat_tree.items);
     var properties = try allocator.alloc(pixel_type, num_props);
     defer allocator.free(properties);
     @memset(properties, 0);
@@ -633,17 +655,22 @@ fn decodeModularChannelImpl(
             if (use_prop_top) properties[6] = @intCast(top);
             if (use_prop_left) properties[7] = @intCast(left);
             if (use_local_gradient_history) {
+                // Keeping the wide gradient is equivalent after low-32-bit
+                // subtraction, even when upstream's stored gradient wrapped.
                 const prev_gradient = local_gradient;
                 const next_gradient = left + top - topleft;
-                if (use_prop_left_minus_gradient) properties[8] = @intCast(left - prev_gradient);
+                if (use_prop_left_minus_gradient) properties[8] = @truncate(left - prev_gradient);
                 local_gradient = next_gradient;
-                if (use_prop_gradient) properties[9] = @intCast(next_gradient);
+                if (use_prop_gradient) properties[9] = if (clamp_gradient)
+                    @intCast(std.math.clamp(next_gradient, -kGradientLookupRange, kGradientLookupRange - 1))
+                else
+                    @truncate(next_gradient);
             }
-            if (use_prop_left_minus_topleft) properties[10] = @intCast(left - topleft);
-            if (use_prop_topleft_minus_top) properties[11] = @intCast(topleft - top);
-            if (use_prop_top_minus_topright) properties[12] = @intCast(top - topright);
-            if (use_prop_top_minus_toptop) properties[13] = @intCast(top - toptop);
-            if (use_prop_left_minus_leftleft) properties[14] = @intCast(left - leftleft);
+            if (use_prop_left_minus_topleft) properties[10] = @truncate(left - topleft);
+            if (use_prop_topleft_minus_top) properties[11] = @truncate(topleft - top);
+            if (use_prop_top_minus_topright) properties[12] = @truncate(top - topright);
+            if (use_prop_top_minus_toptop) properties[13] = @truncate(top - toptop);
+            if (use_prop_left_minus_leftleft) properties[14] = @truncate(left - leftleft);
 
             var wp_pred: pixel_type_w = 0;
             if (wp_state) |*ws| {
@@ -1177,4 +1204,94 @@ test "compactNoRefTree returns null when inline storage is too small" {
 
     var compact_storage: [2]CompactNoRefNode = undefined;
     try testing.expectEqual(@as(?[]const CompactNoRefNode, null), compactNoRefTree(&remapped, &compact_storage));
+}
+
+fn checkWideProperty(property: u8, threshold: i32, comptime specialized: bool) !void {
+	const fixture = @import("wide_property_fixture.zig");
+	const allocator = testing.allocator;
+	var image = try Image.create(allocator, 7, 4, 32, 2);
+	defer image.deinit();
+	@memcpy(image.channels.items[0].data, &fixture.samples_0);
+	var writer = @import("../base/bit_writer.zig").BitWriter.init(allocator);
+	defer writer.deinit();
+	for (fixture.properties, fixture.samples_1) |props, sample| {
+		try writer.write(32, @intFromBool(props[property] <= threshold));
+		try writer.write(32, pack_signed.packSigned(sample));
+	}
+	var br = BitReader.init(writer.bytes());
+	// The injected symbol source reads precomputed context labels and residuals.
+	// It never touches entropy state; a wrong tree decision changes the sample.
+	var reader: ANSSymbolReader = undefined;
+	const Source = struct {
+		fn read(_: *ANSSymbolReader, context: usize, bits: *BitReader) u32 {
+			const expected = bits.readBits(32);
+			const residual: u32 = @intCast(bits.readBits(32));
+			return residual ^ @as(u32, @intFromBool(context != expected));
+		}
+	};
+	var tree = [_]dec_ma.PropertyDecisionNode{
+		dec_ma.PropertyDecisionNode.split(property, threshold, 1, 2),
+		dec_ma.PropertyDecisionNode.leaf(.zero, 0, 1),
+		dec_ma.PropertyDecisionNode.leaf(.zero, 0, 1),
+	};
+	tree[2].lchild = 1;
+	if (comptime specialized) {
+		var count: usize = 0;
+		var wp = false;
+		var wp_only = false;
+		var gradient = false;
+		var use = context_predict.PropertyUsePlan{};
+		var flat = try context_predict.filterTree(allocator, &tree, .{ 1, 0 }, &count, &wp, &wp_only, &gradient, &use);
+		defer flat.deinit(allocator);
+		const mask = kMaskProp9 | kMaskProp10 | kMaskProp11 | kMaskProp12 | kMaskProp13 | kMaskProp15;
+		try decodeModularChannelNoRefsMask(Source.read, mask, &br, &reader, flat.items, &.{}, &image.channels.items[1], allocator, false);
+	} else {
+		try decodeModularChannelImpl(Source.read, &br, &reader, &.{ 0, 1 }, &tree, &.{}, 1, 0, &image, allocator);
+	}
+	try testing.expectEqualSlices(i32, &fixture.samples_1, image.channels.items[1].data);
+	try br.close();
+}
+
+test "wide Modular properties match upstream tree classifications" {
+	const fixture = @import("wide_property_fixture.zig");
+	// Both sides of every observed boundary identify each property exactly.
+	for (4..20) |property| {
+		if (property == 15) continue;
+		for (fixture.properties) |props| {
+			const threshold = props[property];
+			try checkWideProperty(@intCast(property), threshold, false);
+			if (threshold > std.math.minInt(i32)) try checkWideProperty(@intCast(property), threshold - 1, false);
+		}
+	}
+}
+
+test "wide Modular compact properties match upstream tree classifications" {
+	const fixture = @import("wide_property_fixture.zig");
+	for (9..14) |property| for (fixture.properties) |props| {
+		const threshold = props[property];
+		try checkWideProperty(@intCast(property), threshold, true);
+		if (threshold > std.math.minInt(i32)) try checkWideProperty(@intCast(property), threshold - 1, true);
+	};
+}
+
+test "gradient lookup admission matches upstream over split and leaf sets" {
+	const fixture = @import("gradient_lookup_fixture.zig");
+	for (fixture.cases) |case| {
+		const leaf = dec_ma.PropertyDecisionNode.leaf(@enumFromInt(case[4]), case[5], @intCast(case[6]));
+		const tree = [_]dec_ma.PropertyDecisionNode{
+			dec_ma.PropertyDecisionNode.split(@intCast(case[0]), @intCast(case[1]), 1, 2),
+			dec_ma.PropertyDecisionNode.split(@intCast(case[2]), @intCast(case[3]), 3, 4),
+			leaf,
+			leaf,
+			leaf,
+		};
+		var count: usize = 0;
+		var wp = false;
+		var wp_only = false;
+		var gradient = false;
+		var use = context_predict.PropertyUsePlan{};
+		var flat = try context_predict.filterTree(testing.allocator, &tree, .{ 1, 0 }, &count, &wp, &wp_only, &gradient, &use);
+		defer flat.deinit(testing.allocator);
+		try testing.expectEqual(case[7] != 0, gradientLookupCompatible(flat.items));
+	}
 }

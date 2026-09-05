@@ -76,7 +76,12 @@ below; pause for decisions only when they prevent safe implementation.
   Re-run the cross-build check and full suite before committing — 15:35 EDT.
   Full Nix unit checks, all 97 CLI suites, all 264 required mutation detections,
   the Windows cross-build check and production build pass — 15:52 EDT.
-- [ ] Fix Modular property narrowing for wide signed sample values. Eight valid
+  Primaries commit `7cf78505` is pushed and its exact-commit Mechatron checks
+  have passed, verified at 16:28 EDT.
+- [ ] Identify the OpenAI blocking message Peter reported at 16:28 EDT. Exact
+  notification text is pending; local work is preserved. Continue the decoder
+  fix while the notification is clarified.
+- [x] Fix Modular property narrowing for wide signed sample values. Eight valid
   upstream floating-sample/filter files exposed an integer-cast panic in the
   unfiltered case. Match upstream's signed 32-bit property storage, including
   absolute values, neighbor differences and previous-gradient history; retain
@@ -84,6 +89,26 @@ below; pause for decisions only when they prevent safe implementation.
   An isolated integer IEEE binary32 reference-compositing prototype passes ten
   complete upstream files, 4,352 blending components and allocation-failure
   checks. Integration still needs replay, mixed-reference and platform checks.
+  Generic and compact upstream property controls pass after low-bit narrowing.
+  The complete image now returns a decode error after the former panic; isolate
+  that second failure before claiming the image regression is fixed.
+  The second failure is upstream's different wide-gradient handling in its
+  gradient-only lookup path. Matching its admission conditions and clamping
+  makes the complete frame, public FLOAT output and rewind pass. All generic
+  property controls and 600 upstream lookup-admission cases pass as well.
+  Run the full suite and build before committing — 16:36 EDT.
+  Full Nix unit checks, all 97 CLI suites, all 264 required mutation detections,
+  Windows cross-compilation and the production build pass — 16:54 EDT.
+- [ ] Integrate integer binary32 reference storage, blending and floating filters
+  from the isolated prototype after retaining its controls and checking symbols.
+  Ten upstream files pass coalesced output and both layers without coalescing,
+  including rewind in both modes. All eight nonfinite Gaborish/EPF files pass;
+  absolute differences must clear NaN signs before computing filter weights.
+  Existing finite filter controls pass. Arithmetic passes 801,600 native IEEE
+  comparisons, with NaN class/quietness checked and all other bits exact.
+  The arithmetic ABI probe builds as a static library for all five platforms;
+  these cross-builds do not establish execution on those platforms. Mixed
+  references, allocation cleanup and whole-image performance still need checks.
 - [ ] Fix redirected benchmark diagnostics overwriting earlier log records.
   `bench_dequant_ensure_computed` uses positional stdout/stderr writers; the
   scaling diagnostic overwrote the start of the combined `./bm` log. Retained
