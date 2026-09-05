@@ -61,6 +61,8 @@ annotate=[
 	src/lib/base/soft_float.zig = Integer-only normalized soft-float (m·2^(e−62)), copied from random/src/fixed.zig at 8fdd4a5 for dequant/IDCT without IEEE-754
 	src/lib/base/status.zig = StatusCode enum, JxlError error set, Status struct for FFI bridging
 	src/lib/base/unsupported.zig = Names the specific JPEG XL feature behind error.Unsupported via a thread-local slot, so strict validation reports which feature tripped instead of a bare verdict
+	src/lib/codec/ac_metadata.zig = Decode VarDCT modular AC metadata, transform tiling, adaptive quantization and CfL maps
+	src/lib/codec/ac_strategy.zig = All 27 VarDCT geometries and C++-verified natural coefficient orders through DCT256
 	src/lib/codec/codestream_test.zig = Integration test: parses real JXL codestream (SizeHeader + ImageMetadata + FrameHeader)
 	src/lib/codec/color_encoding.zig = ColorSpace, WhitePoint, Primaries, TransferFunction, RenderingIntent, Customxy, CustomTransferFunction, ColorEncoding with full readFromBitStream plus the current non-ICC write-side helpers (writeCustomxy, writeCustomTransferFunction,...
 	src/lib/codec/container.zig = minimal pure Zig BMFF helper for the current container slice: wrapCodestream(...) emits signature + ftyp + jxlc, wrapCodestreamWithBoxes(...) prepends already-owned metadata boxes ahead of that codestream box, and...
@@ -266,4 +268,5 @@ annotate=[
 	tests/lib/mutation_detection.bash = Mutation-detection gate over vendored lossless-modular bases libjxlz accepts; uses the pinned djxl oracle to split must-detect from may-ignore mutants and hard-fails on any false accept
 	tests/lib/test_runner.bash = fake-nix smoke plus shared Bash helper for the top-level shell-test runner
 	tests/lib/zig_runner.bash = fake-nix smoke plus shared Bash helper for the remaining direct-Zig script edges
+	tests/unit/coeff_order_oracle.cc = Regenerate natural coefficient-order digests by compiling the retained upstream C++
 ]

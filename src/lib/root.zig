@@ -46,6 +46,9 @@ pub const codec = struct {
 	pub const enc_codestream = @import("codec/enc_codestream.zig");
 	pub const enc_api = @import("codec/enc_api.zig");
 	pub const dec_frame = @import("codec/dec_frame.zig");
+	pub const ac_metadata = @import("codec/ac_metadata.zig");
+	pub const ac_strategy = @import("codec/ac_strategy.zig");
+	pub const quantizer = @import("codec/quantizer.zig");
 	pub const codestream_test = @import("codec/codestream_test.zig");
 	pub const decode_test = @import("codec/decode_test.zig");
 };
@@ -114,6 +117,9 @@ test {
 	_ = @import("codec/enc_codestream.zig");
 	_ = @import("codec/enc_api.zig");
 	_ = @import("codec/dec_frame.zig");
+	_ = @import("codec/ac_metadata.zig");
+	_ = @import("codec/ac_strategy.zig");
+	_ = @import("codec/quantizer.zig");
 	_ = @import("codec/codestream_test.zig");
 	_ = @import("codec/decode_test.zig");
 

@@ -31,9 +31,9 @@ const Image = modular_image.Image;
 const options_mod = @import("../modular/options.zig");
 const ModularOptions = options_mod.ModularOptions;
 const transform_mod = @import("../modular/transform.zig");
-const float_utils = @import("../base/float.zig");
 const sf = @import("../base/soft_float.zig");
 pub const Quantizer = @import("quantizer.zig").Quantizer;
+const ac_metadata = @import("ac_metadata.zig");
 
 const SectionLayout = struct {
     offsets: []u64,
@@ -667,7 +667,10 @@ fn decodeDctParams(br: *BitReader) JxlError!DctQuantWeightParams {
 }
 
 pub const DequantMatrices = struct {
-	dc_quant: [3]f32 = .{ 1.0 / 4096.0, 1.0 / 512.0, 1.0 / 256.0 }, // defaults from C++
+	const default_dc_quant: [3]sf.Fixed = .{
+		sf.div(kOne, sf.fromInt(4096)), sf.div(kOne, sf.fromInt(512)), sf.div(kOne, sf.fromInt(256)),
+	};
+	dc_quant: [3]sf.Fixed = default_dc_quant,
 	encodings: [kNumQuantTables]QuantEncoding = [_]QuantEncoding{.{}} ** kNumQuantTables,
 	storage: []sf.Fixed = &.{},
 	table: []sf.Fixed = &.{},
@@ -679,16 +682,18 @@ pub const DequantMatrices = struct {
 	/// Must be called before DecodeGlobalInfo, matching C++ ProcessDCGlobal flow.
 	pub fn decodeDC(self: *DequantMatrices, br: *BitReader) JxlError!void {
 		const all_default = br.readBits(1);
+		if (!br.allReadsWithinBounds()) return error.NotEnoughBytes;
+		var dc_quant = default_dc_quant;
 		if (all_default == 0) {
 			for (0..3) |c| {
 				const bits16: u16 = @intCast(br.readBits(16));
-				const biased_exp = (bits16 >> 10) & 0x1F;
-				if (biased_exp == 31) return error.GenericError; // infinity/NaN not allowed
-				const val = float_utils.loadFloat16(bits16);
-				self.dc_quant[c] = val * (1.0 / 128.0);
-				if (self.dc_quant[c] < 1.0e-8) return error.GenericError;
+				if (!br.allReadsWithinBounds()) return error.NotEnoughBytes;
+				dc_quant[c] = sf.div(try fromF16Bits(bits16), sf.fromInt(128));
+				// Preserve DecodeDC's existing 1e-8 bound using integer arithmetic.
+				if (sf.cmp(dc_quant[c], comptime sf.parse("0.00000001").?) < 0) return error.GenericError;
 			}
 		}
+		self.dc_quant = dc_quant;
 	}
 
 	/// Read the 17 AC dequant table encodings from the AC-global section.
@@ -804,6 +809,10 @@ pub const DequantMatrices = struct {
 	/// and DCT 8–64 (square and rectangular through 32×64) library tables
 	/// are live; DCT128+ and raw encodings stay unsupported.
 	pub fn ensureComputed(self: *DequantMatrices, allocator: std.mem.Allocator, acs_mask: u32) JxlError!void {
+		const valid_mask = (@as(u32, 1) << @import("ac_strategy.zig").kNumValidStrategies) - 1;
+		const implemented_mask = (@as(u32, 1) << kAcStrategyToQuantTable.len) - 1;
+		if ((acs_mask & ~valid_mask) != 0) return error.GenericError;
+		if ((acs_mask & ~implemented_mask) != 0) return unsupported_mod.unsupported(.vardct_frame);
 		if (self.storage.len == 0) {
 			const storage = try allocator.alloc(sf.Fixed, 2 * kTotalTableSize);
 			@memset(storage, sf.Fixed.zero);
@@ -1241,7 +1250,6 @@ pub const ModularFrameDecoder = struct {
         }
         self.do_color = decode_color;
         const nb_extra = metadata.m.num_extra_channels;
-        if (!decode_color) nb_chans = 0;
 
         // Read optional global tree
         const has_tree_bit = br.readBits(1);
@@ -1261,6 +1269,9 @@ pub const ModularFrameDecoder = struct {
             );
             self.has_tree = true;
         }
+		// VarDCT's global tree can serve its color metadata even though its
+		// full modular image contains only extra channels.
+		if (!decode_color) nb_chans = 0;
 
         // Create full-image modular representation
         self.full_image.deinit();
@@ -1338,6 +1349,23 @@ pub const ModularFrameDecoder = struct {
     ) JxlError!void {
         return self.decodeGlobalInfoWithReaderStrategy(.specialized, br, frame_header, metadata);
     }
+
+	/// Decode the adaptive quantization, strategy, CfL and sharpness maps for
+	/// one VarDCT DC group, reusing the frame's borrowed modular entropy tables.
+	pub fn decodeAcMetadata(self: *ModularFrameDecoder, br: *BitReader,
+		group_id: usize, header: *const FrameHeader) JxlError!ac_metadata.AcMetadata
+	{
+		if (header.encoding != .var_dct or group_id >= self.frame_dim.num_dc_groups)
+			return error.GenericError;
+		const rect = self.frame_dim.dcGroupRect(group_id);
+		const stream_id = (ModularStreamId{ .kind = .ac_metadata, .group_id = group_id }).id(self.frame_dim);
+		return ac_metadata.AcMetadata.decode(self.allocator, br, rect.xsize(), rect.ysize(),
+			header.chroma_subsampling.is444(), self.full_image.bitdepth, stream_id, .{
+				.tree = if (self.has_tree) self.tree.items else null,
+				.code = if (self.has_tree) &self.code else null,
+				.context_map = if (self.has_tree) self.context_map else null,
+			});
+	}
 
     /// Decode a modular group (DC or AC) from the bitstream.
     pub fn decodeGroup(
@@ -1754,6 +1782,37 @@ test "ModularFrameDecoder init/deinit" {
     try testing.expect(!dec.has_tree);
 }
 
+test "VarDCT global tree limit includes color dimensions before omitting modular color planes" {
+	const enc = @import("../modular/enc_encoding.zig");
+	const BitWriter = @import("../base/bit_writer.zig").BitWriter;
+	const HybridUintConfig = @import("../entropy/hybrid_uint.zig").HybridUintConfig;
+	const a = testing.allocator;
+	const nodes = try a.alloc(dec_ma.PropertyDecisionNode, 2047);
+	defer a.free(nodes);
+	for (nodes, 0..) |*node, i| {
+		node.* = if (i < 1023)
+			dec_ma.PropertyDecisionNode.split(0, 0, @intCast(2 * i + 1), @intCast(2 * i + 2))
+		else dec_ma.PropertyDecisionNode.leaf(.zero, 0, 1);
+	}
+	var writer = BitWriter.init(a);
+	defer writer.deinit();
+	try enc.writeGlobalTreeDcSection(a, nodes, 16, HybridUintConfig.initDefault(), 5, &writer);
+	try writer.zeroPadToByte();
+	var metadata = CodecMetadata{};
+	var header = FrameHeader{};
+	header.encoding = .var_dct;
+	var dimensions = FrameDimensions{};
+	dimensions.set(128, 128, 1, 0, 0, false, 1);
+	var decoder = ModularFrameDecoder.init(a);
+	defer decoder.deinit();
+	decoder.initFrame(dimensions);
+	var br = BitReader.init(writer.bytes());
+	try decoder.decodeGlobalInfo(&br, &header, &metadata);
+	try testing.expectEqual(@as(usize, 2047), decoder.tree.items.len);
+	try testing.expectEqual(@as(usize, 0), decoder.full_image.channels.items.len);
+	try br.close();
+}
+
 test "FrameDecoder init/deinit" {
     const allocator = testing.allocator;
     var metadata = CodecMetadata{};
@@ -1795,6 +1854,41 @@ test "fromF16Bits reconstructs 1, 2, and 1/2 as randomz soft-floats" {
 	try testing.expectEqual(sf.div(kOne, sf.fromInt(2)), try fromF16Bits(0x3800));
 	try testing.expectEqual(sf.Fixed.zero, try fromF16Bits(0x0000));
 	try testing.expectError(error.GenericError, fromF16Bits(0x7C00));
+}
+
+test "DC quant rejects truncated fields and preserves prior values" {
+	const BitWriter = @import("../base/bit_writer.zig").BitWriter;
+	var writer = BitWriter.init(testing.allocator);
+	defer writer.deinit();
+	try writer.write(1, 0);
+	for (0..3) |_| try writer.write(16, 0x3C00);
+	try writer.zeroPadToByte();
+	for (0..writer.bytes().len) |len| {
+		var matrices = DequantMatrices{};
+		const original = matrices.dc_quant;
+		var br = BitReader.init(writer.bytes()[0..len]);
+		try testing.expectError(error.NotEnoughBytes, matrices.decodeDC(&br));
+		try testing.expectEqualDeep(original, matrices.dc_quant);
+	}
+}
+
+test "DC quant default flag resets a previously customized matrix" {
+	const BitWriter = @import("../base/bit_writer.zig").BitWriter;
+	var writer = BitWriter.init(testing.allocator);
+	defer writer.deinit();
+	try writer.write(1, 0);
+	for (0..3) |_| try writer.write(16, 0x3C00);
+	try writer.write(1, 1);
+	try writer.zeroPadToByte();
+	var br = BitReader.init(writer.bytes());
+	var matrices = DequantMatrices{};
+	try matrices.decodeDC(&br);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(128)), matrices.dc_quant[0]);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(128)), matrices.dc_quant[1]);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(128)), matrices.dc_quant[2]);
+	try matrices.decodeDC(&br);
+	try testing.expectEqualDeep((DequantMatrices{}).dc_quant, matrices.dc_quant);
+	try testing.expectEqual(@as(usize, 50), br.totalBitsConsumed());
 }
 
 test "weight bounds use the binary exponent, not a decimal 1e-8 fence" {
@@ -2060,6 +2154,18 @@ test "ensureComputed identity library table inverts the known weights" {
 	try testing.expectEqual(sf.div(kOne, sf.fromInt(60)), y[0]);
 	const b = matrices.matrix(.identity, 2);
 	try testing.expectEqual(sf.div(kOne, sf.fromInt(18)), b[0]);
+}
+
+test "ensureComputed rejects unimplemented and invalid strategy mask bits" {
+	for (21..32) |bit| {
+		var matrices = DequantMatrices{};
+		defer matrices.deinit(testing.allocator);
+		const mask = (@as(u32, 1) << @intCast(bit)) | 1;
+		const expected = if (bit < 27) error.Unsupported else error.GenericError;
+		try testing.expectError(expected, matrices.ensureComputed(testing.allocator, mask));
+		try testing.expectEqual(@as(u32, 0), matrices.computed_mask);
+		try testing.expectEqual(@as(usize, 0), matrices.storage.len);
+	}
 }
 
 test "ensureComputed dct2 library table inverts the known weights" {
@@ -2508,7 +2614,7 @@ test "processDCGlobal decodes spline state before continuing to DC data" {
 	defer allocator.free(payload);
 	var br = BitReader.init(payload);
 
-	try testing.expectError(error.GenericError, dec.processDCGlobalWithReaderStrategy(.specialized, &br));
+	try testing.expectError(error.NotEnoughBytes, dec.processDCGlobalWithReaderStrategy(.specialized, &br));
 	try testing.expect(dec.splines.hasAny());
 	try testing.expectEqual(@as(i32, -3), dec.splines.quantization_adjustment);
 	try testing.expectEqual(@as(usize, 1), dec.splines.splines.len);
@@ -2567,7 +2673,7 @@ test "renderSplineOverlays lifts XYB modular planes with decoded DC quants" {
 	defer dec.deinit();
 	dec.frame_header.color_transform = .xyb;
 	dec.frame_dim.set(64, 64, 1, 0, 0, true, 1);
-	dec.dequant_matrices.dc_quant = .{ 0.25, 0.5, 2.0 };
+	dec.dequant_matrices.dc_quant = .{ sf.div(kOne, sf.fromInt(4)), sf.div(kOne, sf.fromInt(2)), sf.fromInt(2) };
 	dec.modular_decoder.full_image.deinit();
 	dec.modular_decoder.full_image = try Image.create(allocator, 64, 64, 8, 3);
 	dec.modular_decoder.full_image.channels.items[0].row(0)[0] = 10;

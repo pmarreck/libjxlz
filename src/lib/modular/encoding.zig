@@ -481,7 +481,7 @@ fn decodeModularChannelImpl(
     var wp_only: bool = false;
     var gradient_only: bool = false;
     var property_use = context_predict.PropertyUsePlan{};
-    var flat_tree = context_predict.filterTree(
+    var flat_tree = try context_predict.filterTree(
         allocator,
         global_tree,
         static_props,
@@ -490,7 +490,7 @@ fn decodeModularChannelImpl(
         &wp_only,
         &gradient_only,
         &property_use,
-    ) catch return error.GenericError;
+    );
     defer flat_tree.deinit(allocator);
 
     // Map leaf childIDs through context_map for direct clustered reads

@@ -1,6 +1,7 @@
 const std = @import("std");
 const modular_image = @import("../modular/modular_image.zig");
 const splines_mod = @import("splines.zig");
+const sf = @import("../base/soft_float.zig");
 
 fn bitDepthMax(bits: i32) f32 {
 	if (bits <= 0) return 1.0;
@@ -60,7 +61,7 @@ pub const FloatImage = struct {
 
 	/// Lifts decoded modular XYB planes into upstream render-pipeline float rows.
 	/// JPEG XL stores modular XYB as Y, X, and B-Y, scaled by decoded DC quants.
-	pub fn fromXYBModularImage(allocator: std.mem.Allocator, image: *const modular_image.Image, dc_quant: [3]f32) !FloatImage {
+	pub fn fromXYBModularImage(allocator: std.mem.Allocator, image: *const modular_image.Image, dc_quant: [3]sf.Fixed) !FloatImage {
 		if (image.channels.items.len < 3) return error.GenericError;
 		var result = try FloatImage.init(allocator, image.w, image.h, 3);
 		errdefer result.deinit();
@@ -71,6 +72,11 @@ pub const FloatImage = struct {
 		if (ch_y.w != image.w or ch_y.h != image.h) return error.GenericError;
 		if (ch_x.w != image.w or ch_x.h != image.h) return error.GenericError;
 		if (ch_b_minus_y.w != image.w or ch_b_minus_y.h != image.h) return error.GenericError;
+		// IEEE-754 conversion belongs at this XYB display boundary.
+		var display_quant: [3]f32 = undefined;
+		for (dc_quant, &display_quant) |weight, *display| {
+			display.* = std.math.ldexp(@as(f32, @floatFromInt(weight.m)), weight.e - 62);
+		}
 
 		for (0..image.h) |y| {
 			const row_y_in = ch_y.rowConst(y);
@@ -80,9 +86,9 @@ pub const FloatImage = struct {
 			const row_y_out = result.row(y, 1);
 			const row_b_out = result.row(y, 2);
 			for (0..image.w) |x| {
-				row_x_out[x] = @as(f32, @floatFromInt(row_x_in[x])) * dc_quant[0];
-				row_y_out[x] = @as(f32, @floatFromInt(row_y_in[x])) * dc_quant[1];
-				row_b_out[x] = @as(f32, @floatFromInt(row_b_minus_y_in[x] + row_y_in[x])) * dc_quant[2];
+				row_x_out[x] = @as(f32, @floatFromInt(row_x_in[x])) * display_quant[0];
+				row_y_out[x] = @as(f32, @floatFromInt(row_y_in[x])) * display_quant[1];
+				row_b_out[x] = @as(f32, @floatFromInt(row_b_minus_y_in[x] + row_y_in[x])) * display_quant[2];
 			}
 		}
 
@@ -146,7 +152,9 @@ test "FloatImage fromXYBModularImage applies upstream YX(B-Y) DC quant lift" {
 	image.channels.items[2].row(0)[0] = 50;
 	image.channels.items[2].row(0)[1] = 60;
 
-	var rendered = try FloatImage.fromXYBModularImage(allocator, &image, .{ 0.25, 0.5, 2.0 });
+	var rendered = try FloatImage.fromXYBModularImage(allocator, &image, .{
+		sf.div(sf.fromInt(1), sf.fromInt(4)), sf.div(sf.fromInt(1), sf.fromInt(2)), sf.fromInt(2),
+	});
 	defer rendered.deinit();
 
 	try testing.expectApproxEqAbs(@as(f32, 30.0 * 0.25), rendered.rowConst(0, 0)[0], 1.0e-6);

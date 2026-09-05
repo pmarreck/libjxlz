@@ -10,21 +10,49 @@ Preserve typed rejection of unsupported features until their payloads are checke
   56 selector-endpoint combinations, all 36 truncated bit prefixes, scale
   arithmetic and constructor bounds. `./test` (94 CLI suites) and `./build`
   passed. Wire reference: `lib/jxl/quantizer.cc` — 2026-09-04 20:25 EDT.
-- [ ] Decode the adaptive quant field. Curiosity poke: signed modular values,
-  per-block bounds, partial edge blocks, and ownership on failure.
-- [ ] Preserve allocation errors in the modular entropy path. The new
-  AC-metadata allocation sweep reproduced `OutOfMemory` being collapsed to
-  `GenericError` by `dec_ma.decodeTree`.
-- [ ] Correct permutation entropy contexts before sharing that code with
-  coefficient-order decoding; compare all strategy orders against compiled C++.
+- [x] Decode modular AC metadata into adaptive quantization, all 27 strategy
+  geometries, EPF sharpness and clamped CfL maps. The frame adapter derives
+  partial edge-block geometry. Tests cover every truncated byte prefix,
+  overlap, AC-group boundaries, subsampling and allocation failures.
+  Frame-level VarDCT dispatch is still gated — 2026-09-04 20:33 EDT.
+- [x] Preserve allocation errors at the three modular entropy sites reached
+  by the new AC-metadata allocation sweep; all injected failures now return
+  `OutOfMemory` and release partial state — 2026-09-04 20:33 EDT.
+- [x] Correct permutation entropy contexts, with a witnessed rank-3 failure
+  and exhaustive ranks through 65536. Compute natural coefficient orders for
+  all 27 strategies; digests match compiled upstream C++ (regenerator in
+  `tests/unit/coeff_order_oracle.cc`) — 2026-09-04 20:33 EDT.
+- [x] Convert DC quant storage/parsing to Fixed; keep IEEE-754 conversion at
+  XYB display. Fix witnessed truncation and stale-default failures. Preserve
+  DC's existing exact 1e-8 acceptance bound in integer arithmetic; the earlier
+  AC weight exponent fences remain unchanged — 2026-09-04 20:33 EDT.
+- [x] Reject unimplemented strategy-mask bits before table allocation. A
+  witnessed test showed DCT128+ bits being silently marked computed; invalid
+  raw strategies also reject explicitly — 2026-09-04 20:33 EDT.
+- [x] Fix the global-tree limit: the 2047-node VarDCT reproducer failed
+  at `dec_ma.decodeTreeInner` because color channels were zeroed before the
+  limit calculation. Moving that assignment after the tree, matching C++,
+  passed the regression — 2026-09-04 20:50 EDT.
+- [ ] Decode custom coefficient permutations with a shared entropy reader;
+  then DC-global block contexts and CfL parameters, DC groups and AC groups.
+  Curiosity poke: `lib/jxl/coeff_order.cc` consumes encoded permutations even
+  for unused strategies and checks the ANS final state once after all orders.
+  Cover zero custom orders, preserved LLF prefixes, unused-order consumption,
+  invalid Lehmer ranks, truncation and allocation failure before integration.
 - [ ] Continue coefficient orders, AC strategy, CfL, inverse transforms, and
   VarDCT group decoding, then integrate and compare real files with libjxl.
   Curiosity poke: progressive passes and large transforms must remain visible.
-- [ ] Run `./test` and `./build`, update coverage notes, and commit each passing
-  unit of work. Keep patches, rendering, progressive structure, and the other
-  existing coverage items in scope after VarDCT.
+- [x] Final `./test` passed the Nix unit check and all 94 CLI suites;
+  `./build` passed. Coverage notes updated for this metadata/order slice
+  — 2026-09-04 21:05 EDT.
+- [ ] Commit and verify the metadata/order slice on exact-commit Mechatron CI.
+  Keep patches, rendering, progressive structure, and the other existing
+  coverage items in scope after VarDCT.
 
 ## Mechatron CI (2026-08-27)
+
+- [x] `6d64442f` quantizer passed Mechatron's four targets in 451s, finishing
+  2026-09-04 20:33 EDT. GitHub Actions also passed all three jobs.
 
 - [x] `4cb13298` (feature naming) **success** on Mechatron: started 20:43:26Z,
   finished 20:51:11Z, 465s. `mechatron-ci log --project libjxlz --commit 4cb13298 --json`

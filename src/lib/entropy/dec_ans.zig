@@ -755,7 +755,7 @@ pub fn decodeHistograms(
 
         for (0..num_histograms) |c| {
             br.refill();
-            var counts = readHistogram(allocator, params.ans_log_tab_size, br) catch return error.GenericError;
+            var counts = try readHistogram(allocator, params.ans_log_tab_size, br);
             defer allocator.free(counts);
 
             if (counts.len > max_alphabet_size) return error.GenericError;

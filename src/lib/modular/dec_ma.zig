@@ -159,12 +159,12 @@ pub fn decodeTree(
     var tree_code = ANSCode.init(allocator);
     defer tree_code.deinit();
 
-    const tree_context_map = dec_ans.decodeHistograms(
+    const tree_context_map = try dec_ans.decodeHistograms(
         allocator,
         br,
         ma_common.kNumTreeContexts,
         &tree_code,
-    ) catch return error.GenericError;
+    );
     defer allocator.free(tree_context_map);
 
     // Check for infinite tree: if the property context has a single degenerate

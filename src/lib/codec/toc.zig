@@ -15,6 +15,26 @@ const kTocDist = fc.U32Enc.init(fc.bits(10), fc.bitsOffset(14, 1024), fc.bitsOff
 
 const kPermutationContexts: usize = 8;
 
+test "coefficient permutation contexts follow hybrid token bands" {
+	// lib/jxl/coeff_order.cc uses the token from HybridUintConfig(0,0,0),
+	// capped at context 7. Exhaust all coefficient ranks through DCT256.
+	const bands = [_]struct { start: u32, end: u32, context: usize }{
+		.{ .start = 0, .end = 1, .context = 0 },
+		.{ .start = 1, .end = 2, .context = 1 },
+		.{ .start = 2, .end = 4, .context = 2 },
+		.{ .start = 4, .end = 8, .context = 3 },
+		.{ .start = 8, .end = 16, .context = 4 },
+		.{ .start = 16, .end = 32, .context = 5 },
+		.{ .start = 32, .end = 64, .context = 6 },
+		.{ .start = 64, .end = 65537, .context = 7 },
+	};
+	for (bands) |band| {
+		for (band.start..band.end) |value|
+			try std.testing.expectEqual(band.context, coeffOrderContext(@intCast(value)));
+	}
+	try std.testing.expectEqual(@as(usize, 7), coeffOrderContext(std.math.maxInt(u32)));
+}
+
 pub const TocEntry = struct {
     size: u32 = 0,
     id: usize = 0, // logical section ID
@@ -33,9 +53,8 @@ pub fn numTocEntries(num_groups: usize, num_dc_groups: usize, num_passes: usize)
 
 /// Compute permutation context from value (matches CoeffOrderContext in C++).
 fn coeffOrderContext(val: u32) usize {
-    // HybridUintConfig(0,0,0).Encode gives token = val for small values
-    // Then min(token, kPermutationContexts - 1)
-    return @min(@as(usize, val), kPermutationContexts - 1);
+    const HybridUintConfig = @import("../entropy/hybrid_uint.zig").HybridUintConfig;
+    return @min(HybridUintConfig.initZero().encode(val).token, kPermutationContexts - 1);
 }
 
 /// Decode Lehmer code into permutation.
@@ -221,7 +240,7 @@ test "decodeLehmerCode reverse" {
 
 test "coeffOrderContext" {
     try testing.expectEqual(@as(usize, 0), coeffOrderContext(0));
-    try testing.expectEqual(@as(usize, 5), coeffOrderContext(5));
-    try testing.expectEqual(@as(usize, 7), coeffOrderContext(7));
+    try testing.expectEqual(@as(usize, 3), coeffOrderContext(5));
+    try testing.expectEqual(@as(usize, 3), coeffOrderContext(7));
     try testing.expectEqual(@as(usize, 7), coeffOrderContext(100)); // clamped
 }
