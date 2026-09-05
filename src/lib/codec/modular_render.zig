@@ -17,7 +17,7 @@ pub fn render(dec: *jxl.codec.dec_frame.FrameDecoder) !void {
 	const colors = image.channels.items.len - metadata.num_extra_channels;
 	if (colors != 3 and (colors != 1 or xyb)) return @import("../base/unsupported.zig").unsupported(.color_channel_count);
 	if (has_float and !effects and !xyb) return renderDirect(dec, colors, 3 + metadata.num_extra_channels);
-	const binary32_effects = !dec.noise.hasAny() and !dec.splines.hasAny() and (fh.color_transform == .none or fh.color_transform == .ycbcr);
+	const binary32_effects = !dec.splines.hasAny() and (fh.color_transform == .none or fh.color_transform == .ycbcr);
 	if (has_float and !xyb and binary32_effects) {
 		try renderDirect(dec, colors, 3);
 		try @import("float_render.zig").apply(dec);

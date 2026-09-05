@@ -64,7 +64,15 @@ use the C calling convention without naming libc as their provider. The probe
 builds without `-lc` on all five targets; the standalone Windows core check
 first caught the unnecessary libc dependency in the original declarations.
 
-Remaining nonfinite coverage includes noise, splines and VarDCT/XYB extra
+Noise now uses the same integer random generator and convolution for finite
+and binary32 images. Twenty upstream files cover floating and integer non-XYB
+color, cropped layers, blend modes, references and rewind. These controls also
+caught the old default blue color-correlation coefficient: the upstream decoder
+initializes it to one, including for non-XYB frames. Allocation-failure tests
+cover the noise image and reference sequence. The retained generator is
+`tests/unit/float_noise_oracle.cc`.
+
+Remaining nonfinite coverage includes splines and VarDCT/XYB extra
 channels. JPEG reconstruction is a separate
 unfinished feature. These tests do not establish full JPEG XL conformance.
 

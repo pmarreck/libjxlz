@@ -167,12 +167,26 @@ below; pause for decisions only when they prevent safe implementation.
   files, 18 unequal color/extra sampling files and 12 YCbCr files, with crop,
   filters and rewind. The NaN clamp regression requires upstream's reduction
   order. Commit, verify the remote revision and measure performance.
-- [ ] Integrate floating noise and the non-XYB default color-correlation fix.
+  Pushed `67f0a0db` and verified the remote SHA. `./bm` passes all guards:
+  VarDCT 5.767 ms/decode versus upstream 0.357 ms, large Modular 26.807 ms
+  versus 23.706 ms. The prior values were 5.666 ms and 26.626 ms; retain the
+  CPU/wall histories with the noise integration — 19:03 EDT.
+- [x] Integrate floating noise and the non-XYB default color-correlation fix.
   The isolated 20-file oracle covers floating and integer color, blends,
   cropped layers, reference reuse and rewind. Both old paths selected B=0
   instead of the decoder's default B=1; retained tests fail on blue samples
   before the fix. All 17 selected tests, including allocation-failure cleanup,
   pass. Snapshot: `/tmp/libjxlz-noise-integration-20260905` — 18:57 EDT.
+  Applied the snapshot after the resampling benchmark. Reproduce the retained
+  generator, run integrated comparisons, then the full suite/build — 19:03 EDT.
+  All 139 integrated selected tests pass, and the retained generator reproduces
+  its fixture byte for byte. Corrected a temporary whitespace helper that
+  removed XOR operators; the integrated compile caught it before full checks.
+  Run the full suite and build with the source tree frozen — 19:07 EDT.
+  Full Nix unit checks, all 99 CLI suites, 264 required mutation detections,
+  Windows cross-compilation and the production build pass — 19:25 EDT.
+  Resampling commit `67f0a0db` passed Mechatron at 19:11:47 EDT. Commit
+  noise with the recorded resampling baseline, then measure this revision.
 - [ ] Replace native spline arithmetic before enabling nonfinite spline frames.
   Current integer-image comparisons pass; floating spline images are rejected.
   An isolated exact integer FMA passes 208,000 native comparisons, geometry
@@ -181,6 +195,13 @@ below; pause for decisions only when they prevent safe implementation.
   spline fixture; measure ReleaseFast costs before retaining it. Geometry/cache
   conversion and whole-image parity remain. Source prototype:
   `/tmp/libjxlz-spline-integer-src` — 18:57 EDT.
+  The first paired ReleaseFast 2048x2048 frame measured 8.03 s native drawing
+  versus 126.78 s integer drawing, with identical output checksums. Its profile
+  attributes 59% of sampled cycles to integer FMA, 14% to multiplication and
+  5% to division. Successive FMA implementations pass the native and exact
+  wide-sum controls; the 64-bit version is being measured. Curve, DCT and
+  dequantization conversions pass existing image controls; the final cache
+  conversion is under test. Keep this performance issue explicit — 19:25 EDT.
 - [x] Fix redirected benchmark diagnostics overwriting earlier log records.
   `bench_dequant_ensure_computed` uses positional stdout/stderr writers; the
   scaling diagnostic overwrote the start of the combined `./bm` log. Retained

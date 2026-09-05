@@ -1,4 +1,4 @@
-//! Deterministic JPEG XL noise synthesis in Fixed.
+//! Deterministic JPEG XL noise synthesis with integer sample arithmetic.
 const std = @import("std");
 const sf = @import("../base/soft_float.zig");
 const Error = @import("../base/status.zig").JxlError;
@@ -77,44 +77,91 @@ fn convolve(raw: []const u32, width: usize, height: usize, c: usize, x: usize, y
 	// The omitted constant 1 cancels because the kernel sums to zero.
 	return sf.div(sf.fromInt(sum - 24 * center), sf.fromInt(25 * (@as(i64, 1) << 21)));
 }
-pub fn apply(allocator: std.mem.Allocator, image: Image, params: Params, seed: Seed, cfl: [2]sf.Fixed) Error!void {
-	try image.validate();
-	if (seed.group_dim == 0) return error.GenericError;
-	if (!params.hasAny()) return;
-	const width = image.width;
-	const height = image.height;
-	const raw = try allocator.alloc(u32, image.data.len);
-	defer allocator.free(raw);
-	var gy: usize = 0;
-	while (gy < height) : (gy += seed.group_dim) {
-		var gx: usize = 0;
-		while (gx < width) : (gx += seed.group_dim) {
-			var rng = Rng.init(seed, @intCast(gx), @intCast(gy));
-			const w = @min(seed.group_dim, width - gx);
-			const h = @min(seed.group_dim, height - gy);
-			for (0..3) |c| for (0..h) |y| {
-				var x: usize = 0;
-				while (x < w) : (x += 16) {
-					const batch = rng.fill();
-					const count = @min(16, w - x);
-					@memcpy(raw[(c * height + gy + y) * width + gx + x ..][0..count], batch[0..count]);
+const Finite = struct {
+	pub const Fixed = sf.Fixed;
+	pub const Image = @import("vardct_filters.zig").Image;
+	pub const add = sf.add;
+	pub const sub = sf.sub;
+	pub const mul = sf.mul;
+	pub const div = sf.div;
+	pub const parse = sf.parse;
+	pub const fromInt = sf.fromInt;
+	pub const convolution = convolve;
+	pub const strength = Params.strength;
+};
+const Float = struct {
+	const bits = @import("../base/binary32.zig");
+	const display = @import("../base/fixed_display.zig");
+	pub const Fixed = u32;
+	pub const Image = @import("vardct_filters.zig").Binary32.PixelImage;
+	pub const add = bits.add;
+	pub const sub = bits.sub;
+	pub const mul = bits.mul;
+	pub const div = bits.div;
+	pub const parse = bits.parse;
+	pub const fromInt = bits.fromInt;
+	pub fn convolution(raw: []const u32, width: usize, height: usize, c: usize, x: usize, y: usize) u32 {
+		return display.bits(convolve(raw, width, height, c, x, y));
+	}
+	fn integer(value: i64) u32 {
+		return display.bits(sf.fromInt(value));
+	}
+	pub fn strength(params: Params, x: u32) u32 {
+		const scaled = bits.mul(x, comptime bits.fromInt(6));
+		// The upstream LUT's final Min(value, 1) maps NaN interpolation to one.
+		if (bits.isNan(scaled)) return comptime bits.fromInt(1);
+		const denominator = comptime bits.fromInt(1024);
+		if (bits.cmp(scaled, 0) <= 0) return bits.div(integer(params.lut[0]), denominator);
+		if (bits.cmp(scaled, comptime bits.fromInt(7)) >= 0) return bits.div(integer(params.lut[7]), denominator);
+		const index: usize = @intCast(sf.toIntTrunc(@import("../base/float.zig").loadFloat32Fixed(@bitCast(scaled)) catch unreachable));
+		const fraction = bits.sub(scaled, integer(@intCast(index)));
+		return bits.div(bits.add(integer(params.lut[index]), bits.mul(integer(@as(i32, params.lut[index + 1]) - params.lut[index]), fraction)), denominator);
+	}
+};
+pub const apply = Application(Finite).run;
+pub const applyBinary32 = Application(Float).run;
+fn Application(comptime Math: type) type {
+	return struct {
+		pub fn run(allocator: std.mem.Allocator, image: Math.Image, params: Params, seed: Seed, cfl: [2]Math.Fixed) Error!void {
+			try image.validate();
+			if (seed.group_dim == 0) return error.GenericError;
+			if (!params.hasAny()) return;
+			const width = image.width;
+			const height = image.height;
+			const raw = try allocator.alloc(u32, image.data.len);
+			defer allocator.free(raw);
+			var gy: usize = 0;
+			while (gy < height) : (gy += seed.group_dim) {
+				var gx: usize = 0;
+				while (gx < width) : (gx += seed.group_dim) {
+					var rng = Rng.init(seed, @intCast(gx), @intCast(gy));
+					const w = @min(seed.group_dim, width - gx);
+					const h = @min(seed.group_dim, height - gy);
+					for (0..3) |c| for (0..h) |y| {
+						var x: usize = 0;
+						while (x < w) : (x += 16) {
+							const batch = rng.fill();
+							const count = @min(16, w - x);
+							@memcpy(raw[(c * height + gy + y) * width + gx + x ..][0..count], batch[0..count]);
+						}
+					};
 				}
+			}
+			const area = width * height;
+			for (0..height) |y| for (0..width) |x| {
+				const p = y * width + x;
+				const original_x = image.data[p];
+				const original_y = image.data[area + p];
+				var noise: [3]Math.Fixed = undefined;
+				for (&noise, 0..) |*value, c| value.* = Math.mul(Math.convolution(raw, width, height, c, x, y), Math.parse("0.22").?);
+				const red = Math.mul(Math.strength(params, Math.div(Math.add(original_y, original_x), Math.fromInt(2))), Math.div(Math.add(noise[0], Math.mul(Math.fromInt(127), noise[2])), Math.fromInt(128)));
+				const green = Math.mul(Math.strength(params, Math.div(Math.sub(original_y, original_x), Math.fromInt(2))), Math.div(Math.add(noise[1], Math.mul(Math.fromInt(127), noise[2])), Math.fromInt(128)));
+				const sum = Math.add(red, green);
+				image.data[p] = Math.add(original_x, Math.add(Math.sub(red, green), Math.mul(cfl[0], sum)));
+				image.data[area + p] = Math.add(original_y, sum);
+				image.data[2 * area + p] = Math.add(image.data[2 * area + p], Math.mul(cfl[1], sum));
 			};
 		}
-	}
-	const area = width * height;
-	for (0..height) |y| for (0..width) |x| {
-		const p = y * width + x;
-		const original_x = image.data[p];
-		const original_y = image.data[area + p];
-		var noise: [3]sf.Fixed = undefined;
-		for (&noise, 0..) |*value, c| value.* = sf.mul(convolve(raw, width, height, c, x, y), sf.parse("0.22").?);
-		const red = sf.mul(params.strength(sf.div(sf.add(original_y, original_x), sf.fromInt(2))), sf.div(sf.add(noise[0], sf.mul(sf.fromInt(127), noise[2])), sf.fromInt(128)));
-		const green = sf.mul(params.strength(sf.div(sf.sub(original_y, original_x), sf.fromInt(2))), sf.div(sf.add(noise[1], sf.mul(sf.fromInt(127), noise[2])), sf.fromInt(128)));
-		const sum = sf.add(red, green);
-		image.data[p] = sf.add(original_x, sf.add(sf.sub(red, green), sf.mul(cfl[0], sum)));
-		image.data[area + p] = sf.add(original_y, sum);
-		image.data[2 * area + p] = sf.add(image.data[2 * area + p], sf.mul(cfl[1], sum));
 	};
 }
 

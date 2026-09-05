@@ -94,11 +94,14 @@ fn Implementation(comptime sf: type) type {
 				for (sampled orelse plane.data, rendered.data[c * width * height ..][0 .. width * height]) |value, *dest| dest.* = @bitCast(sf.bits(value));
 			}
 			if (noise_pixels) |pixels| {
-				if (comptime sf == Float) return error.Unsupported else {
-					const cfl = if (dec.vardct_global) |global| global.color_correlation.base else [2]sf.Fixed{ sf.Fixed.zero, sf.fromInt(@intFromBool(metadata.xyb_encoded)) };
-					try @import("noise.zig").apply(dec.allocator, .{ .width = width, .height = height, .data = pixels }, dec.noise, .{ .visible = dec.visible_frame_index, .nonvisible = dec.nonvisible_frame_index, .group_dim = dec.frame_dim.grp_dim }, cfl);
-					for (pixels, rendered.data[0..pixels.len]) |value, *dest| dest.* = @bitCast(sf.bits(value));
-				}
+				// The decoder initializes the default map with B=1 for every
+				// color transform; only a decoded VarDCT map replaces it.
+				const fixed_cfl = if (dec.vardct_global) |global| global.color_correlation.base else [2]original.Fixed{ original.Fixed.zero, original.fromInt(1) };
+				var cfl: [2]sf.Fixed = undefined;
+				for (fixed_cfl, &cfl) |value, *dest| dest.* = if (sf == Float) @import("../base/fixed_display.zig").bits(value) else value;
+				const apply_noise = if (sf == Float) @import("noise.zig").applyBinary32 else @import("noise.zig").apply;
+				try apply_noise(dec.allocator, .{ .width = width, .height = height, .data = pixels }, dec.noise, .{ .visible = dec.visible_frame_index, .nonvisible = dec.nonvisible_frame_index, .group_dim = dec.frame_dim.grp_dim }, cfl);
+				for (pixels, rendered.data[0..pixels.len]) |value, *dest| dest.* = @bitCast(sf.bits(value));
 			}
 			dec.rendered_image = rendered;
 		}
