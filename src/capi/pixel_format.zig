@@ -118,7 +118,7 @@ pub fn normalizedFloatSample(value: f32, max_value: u32) f32 {
 }
 
 pub fn clampNormalizedSample(value: f32) f32 {
-	if (!std.math.isFinite(value)) return 0.0;
+	if (std.math.isNan(value)) return 0.0;
 	return std.math.clamp(value, 0.0, 1.0);
 }
 

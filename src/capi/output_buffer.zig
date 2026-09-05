@@ -210,11 +210,11 @@ pub fn writeRenderedImageToOutput(rendered: *const render_mod.FloatImage, alpha_
 						storeU16(pixel[c * 2 .. c * 2 + 2], format.endianness, @intCast(scaled));
 					},
 					.JXL_TYPE_FLOAT => {
-						const raw: u32 = @bitCast(normalized);
+						const raw: u32 = @bitCast(value);
 						storeU32(pixel[c * 4 .. c * 4 + 4], format.endianness, raw);
 					},
 					.JXL_TYPE_FLOAT16 => {
-						const half: f16 = @floatCast(normalized);
+						const half: f16 = @floatCast(value);
 						const raw: u16 = @bitCast(half);
 						storeU16(pixel[c * 2 .. c * 2 + 2], format.endianness, raw);
 					},
@@ -279,11 +279,11 @@ pub fn writeXYBRenderedImageToOutput(rendered: *const render_mod.FloatImage, alp
 						storeU16(pixel[c * 2 .. c * 2 + 2], format.endianness, @intCast(scaled));
 					},
 					.JXL_TYPE_FLOAT => {
-						const raw: u32 = @bitCast(normalized);
+						const raw: u32 = @bitCast(value);
 						storeU32(pixel[c * 4 .. c * 4 + 4], format.endianness, raw);
 					},
 					.JXL_TYPE_FLOAT16 => {
-						const half: f16 = @floatCast(normalized);
+						const half: f16 = @floatCast(value);
 						const raw: u16 = @bitCast(half);
 						storeU16(pixel[c * 2 .. c * 2 + 2], format.endianness, raw);
 					},

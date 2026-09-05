@@ -9,29 +9,27 @@ pub fn render(dec: *jxl.codec.dec_frame.FrameDecoder) !void {
 	const xyb = metadata.xyb_encoded or fh.color_transform == .xyb;
 	var effects = fh.upsampling != 1 or fh.loop_filter.gab or fh.loop_filter.epf_iters != 0 or dec.patches != null or dec.noise.hasAny() or dec.splines.hasAny() or fh.color_transform == .ycbcr;
 	for (fh.extra_channel_upsampling[0..metadata.num_extra_channels]) |factor| effects = effects or factor != 1;
+	var has_float = metadata.bit_depth.floating_point_sample;
+	for (metadata.extra_channel_info[0..metadata.num_extra_channels]) |extra| has_float = has_float or extra.bit_depth.floating_point_sample;
 	const needs_state = fh.canBeReferenced() or fh.needsBlending(metadata.num_extra_channels);
-	if (!effects and !xyb and !(dec.force_render and needs_state)) return;
-	if (metadata.bit_depth.floating_point_sample) return @import("../base/unsupported.zig").unsupported(.bit_depth);
+	if (!effects and !xyb and !has_float and !(dec.force_render and needs_state)) return;
 	const image = &dec.modular_decoder.full_image;
 	const colors = image.channels.items.len - metadata.num_extra_channels;
 	if (colors != 3 and (colors != 1 or xyb)) return @import("../base/unsupported.zig").unsupported(.color_channel_count);
-	for (metadata.extra_channel_info[0..metadata.num_extra_channels]) |extra| {
-		if (extra.bit_depth.floating_point_sample) return @import("../base/unsupported.zig").unsupported(.bit_depth);
-	}
+	if (has_float and !effects and !xyb) return renderDirect(dec, colors);
 	const width = dec.frame_dim.xsize;
 	const height = dec.frame_dim.ysize;
 	const output = filter.Image{ .width = width, .height = height, .data = try dec.allocator.alloc(sf.Fixed, 3 * width * height) };
 	defer dec.allocator.free(output.data);
 	const bits = metadata.bit_depth.bits_per_sample;
 	if (bits == 0 or bits > 32) return error.GenericError;
-	const maximum = sf.fromInt((@as(i64, 1) << @as(u6, @intCast(bits))) - 1);
 	if (!fh.chroma_subsampling.is444()) {
 		if (colors != 3 or xyb) return error.GenericError;
 		for (image.channels.items[0..3], 0..) |channel, c| {
 			const raw = try dec.allocator.alloc(sf.Fixed, channel.w * channel.h);
 			defer dec.allocator.free(raw);
 			for (0..channel.h) |y| {
-				for (channel.rowConst(y)[0..channel.w], raw[y * channel.w ..][0..channel.w]) |value, *dest| dest.* = sf.div(sf.fromInt(value), maximum);
+				for (channel.rowConst(y)[0..channel.w], raw[y * channel.w ..][0..channel.w]) |value, *dest| dest.* = try @import("float_samples.zig").toFixed(value, metadata.bit_depth);
 			}
 			const sampled = try @import("chroma.zig").upsample(dec.allocator, .{ .width = channel.w, .height = channel.h, .data = raw }, fh.chroma_subsampling.hShift(c), fh.chroma_subsampling.vShift(c), width, height);
 			defer dec.allocator.free(sampled);
@@ -45,7 +43,7 @@ pub fn render(dec: *jxl.codec.dec_frame.FrameDecoder) !void {
 			const first = image.channels.items[0].rowConst(y)[x];
 			const second = if (colors == 1) first else image.channels.items[1].rowConst(y)[x];
 			const third = if (colors == 1) first else image.channels.items[2].rowConst(y)[x];
-			const values = if (xyb) [3]sf.Fixed{ sf.mul(sf.fromInt(second), dec.dequant_matrices.dc_quant[0]), sf.mul(sf.fromInt(first), dec.dequant_matrices.dc_quant[1]), sf.mul(sf.fromInt(@as(i64, third) + first), dec.dequant_matrices.dc_quant[2]) } else [3]sf.Fixed{ sf.div(sf.fromInt(first), maximum), sf.div(sf.fromInt(second), maximum), sf.div(sf.fromInt(third), maximum) };
+			const values = if (xyb) [3]sf.Fixed{ sf.mul(sf.fromInt(second), dec.dequant_matrices.dc_quant[0]), sf.mul(sf.fromInt(first), dec.dequant_matrices.dc_quant[1]), sf.mul(sf.fromInt(@as(i64, third) + first), dec.dequant_matrices.dc_quant[2]) } else [3]sf.Fixed{ try @import("float_samples.zig").toFixed(first, metadata.bit_depth), try @import("float_samples.zig").toFixed(second, metadata.bit_depth), try @import("float_samples.zig").toFixed(third, metadata.bit_depth) };
 			for (values, 0..) |value, c| output.data[(c * height + y) * width + x] = value;
 		};
 	}
@@ -62,4 +60,22 @@ pub fn render(dec: *jxl.codec.dec_frame.FrameDecoder) !void {
 		if (fh.loop_filter.epf_iters >= 2) try filter.epf(dec.allocator, output, params, sigma, 2);
 	}
 	try @import("frame_render.zig").finish(dec, output);
+}
+
+// Preserve signed zeros and non-finite storage when no pixel math is required.
+fn renderDirect(dec: *jxl.codec.dec_frame.FrameDecoder, colors: usize) !void {
+	const metadata = &dec.metadata.m;
+	const image = &dec.modular_decoder.full_image;
+	var output = try jxl.codec.render.FloatImage.init(dec.allocator, dec.frame_dim.xsize, dec.frame_dim.ysize, 3 + metadata.num_extra_channels);
+	errdefer output.deinit();
+	for (0..output.channels) |c| {
+		const index = if (c < 3) (if (colors == 1) 0 else c) else colors + c - 3;
+		const channel = &image.channels.items[index];
+		if (channel.w != output.xsize or channel.h != output.ysize) return error.GenericError;
+		const depth = if (c < 3) metadata.bit_depth else metadata.extra_channel_info[c - 3].bit_depth;
+		for (0..output.ysize) |y| for (channel.rowConst(y)[0..channel.w], output.row(y, c)) |raw, *value| {
+			value.* = if (depth.floating_point_sample) @bitCast(try @import("float_samples.zig").toBits(raw, depth.bits_per_sample, depth.exponent_bits_per_sample)) else @bitCast(@import("../base/fixed_display.zig").bits(try @import("float_samples.zig").toFixed(raw, depth)));
+		};
+	}
+	dec.rendered_image = output;
 }

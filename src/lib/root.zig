@@ -60,6 +60,7 @@ pub const codec = struct {
 	pub const upsampling = @import("codec/upsampling.zig");
 	pub const noise = @import("codec/noise.zig");
 	pub const chroma = @import("codec/chroma.zig");
+	pub const float_samples = @import("codec/float_samples.zig");
 	pub const dc_smoothing = @import("codec/dc_smoothing.zig");
 	pub const quantizer = @import("codec/quantizer.zig");
 	pub const codestream_test = @import("codec/codestream_test.zig");
@@ -109,6 +110,8 @@ test {
 	_ = @import("codec/postcolor_test.zig");
 	_ = @import("codec/noise_frame_test.zig");
 	_ = @import("codec/spline_frame_test.zig");
+	_ = @import("codec/float_frame_test.zig");
+	_ = @import("codec/float_samples.zig");
 	_ = @import("codec/chroma_frame_test.zig");
 	_ = @import("codec/modular_chroma_test.zig");
 	_ = @import("codec/progressive_dc_test.zig");
@@ -172,6 +175,7 @@ test {
 	_ = @import("modular/ma_common.zig");
 	_ = @import("modular/options.zig");
 	_ = @import("modular/weighted.zig");
+	_ = @import("modular/weighted_wide_test.zig");
 	_ = @import("modular/dec_ma.zig");
 	_ = @import("modular/enc_ma.zig");
 	_ = @import("modular/context_predict.zig");

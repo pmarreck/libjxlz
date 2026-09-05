@@ -40,9 +40,6 @@ pub fn decode(dec: *jxl.codec.dec_frame.FrameDecoder, data: []const u8, offset: 
 	if (fh.encoding != .var_dct) return error.GenericError;
 	if (!fh.chroma_subsampling.is444() and fh.flags & jxl.codec.frame_header.FrameFlags.skip_adaptive_dc_smoothing == 0) return error.GenericError;
 	const use_dc = fh.flags & jxl.codec.frame_header.FrameFlags.use_dc_frame != 0;
-	for (0..dec.metadata.m.num_extra_channels) |i| {
-		if (dec.metadata.m.extra_channel_info[i].bit_depth.floating_point_sample) return unsupported(.bit_depth);
-	}
 	if (!dec.force_render and (fh.frame_type == .reference_only or fh.needsBlending(dec.metadata.m.num_extra_channels))) return unsupported(.frame_blending);
 	if (dec.metadata.m.color_encoding.want_icc) return unsupported(.icc_profile);
 	const readers = try dec.allocator.alloc(BitReader, dec.toc_entries.len);

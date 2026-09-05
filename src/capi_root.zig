@@ -6042,3 +6042,97 @@ test "spline public frames match upstream after rewind reset and skip" {
 		try @call(.never_inline, checkSplinePublic, .{ &@field(fixture, "bytes_" ++ key), &expected, @as(u32, 3 + (id % 10) / 5) });
 	}
 }
+fn checkFloatPublic(data: []const u8, bytes: []const u8, expected: []const u32, channels: u32, id: usize) !void {
+	const testing = std.testing;
+	var result: JxlValidationResult = undefined;
+	try testing.expectEqual(JxlValidationVerdict.JXL_VALIDATION_VALID, JxlValidate(data.ptr, data.len, null, &result));
+	const decoder = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlDecoderDestroy(decoder);
+	const output = try testing.allocator.alloc(u8, expected.len * 4);
+	defer testing.allocator.free(output);
+	for (0..3) |attempt| {
+		if (attempt == 1) JxlDecoderRewind(decoder);
+		if (attempt == 2) JxlDecoderReset(decoder);
+		try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSubscribeEvents(decoder, @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)));
+		try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(decoder, data.ptr, data.len));
+		JxlDecoderCloseInput(decoder);
+		const format = JxlPixelFormat{ .num_channels = channels, .data_type = if (attempt == 0) .JXL_TYPE_UINT8 else .JXL_TYPE_FLOAT, .endianness = .JXL_LITTLE_ENDIAN, .@"align" = 0 };
+		const size = if (attempt == 0) bytes.len else output.len;
+		var frames: usize = 0;
+		while (true) {
+			switch (JxlDecoderProcessInput(decoder)) {
+				.JXL_DEC_NEED_IMAGE_OUT_BUFFER => try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(decoder, &format, output.ptr, size)),
+				.JXL_DEC_FULL_IMAGE => {
+					frames += 1;
+					if (attempt == 0) {
+						for (output[0..size], bytes, 0..) |actual, wanted, index| if (@abs(@as(i32, actual) - @as(i32, wanted)) > 1) {
+							std.debug.print("float public uint8 id={d} index={d} actual={d} wanted={d}\n", .{ id, index, actual, wanted });
+							return error.TestUnexpectedResult;
+						};
+					} else for (expected, 0..) |word, index| {
+						const actual: f32 = @bitCast(std.mem.readInt(u32, output[index * 4 ..][0..4], .little));
+						const wanted: f32 = @bitCast(word);
+						const tolerance: f32 = if (id >= 8 and id < 16 and index % channels < 3 and @abs(wanted) > 1) 1.0 / 255.0 else 0.0001;
+						if (!std.math.isFinite(actual) or @abs(actual - wanted) > tolerance) {
+							std.debug.print("float public id={d} index={d} actual={d} wanted={d}\n", .{ id, index, actual, wanted });
+							return error.TestUnexpectedResult;
+						}
+					}
+				},
+				.JXL_DEC_SUCCESS => break,
+				else => return error.TestUnexpectedResult,
+			}
+		}
+		try testing.expectEqual(1, frames);
+	}
+}
+test "floating public frames preserve signed and extended range RGB and alpha" {
+	@setEvalBranchQuota(50000);
+	const fixture = @import("lib/codec/float_frame_fixture.zig");
+	inline for (0..20) |id| {
+		const key = std.fmt.comptimePrint("{d}", .{id});
+		const channels: u32 = (if (id == 6 or id == 7) @as(u32, 1) else 3) + @as(u32, @intFromBool(id % 2 != 0 or id >= 16));
+		try @call(.never_inline, checkFloatPublic, .{ &@field(fixture, "bytes_" ++ key), &@field(fixture, "pixels_" ++ key), &@field(fixture, "float_bits_" ++ key), channels, id });
+	}
+}
+fn checkSpecialFloatPublic(data: []const u8, expected8: []const u8, expected32: []const u32, expected16: []const u16) !void {
+	const t = std.testing;
+	var validation: JxlValidationResult = undefined;
+	try t.expectEqual(JxlValidationVerdict.JXL_VALIDATION_VALID, JxlValidate(data.ptr, data.len, null, &validation));
+	const dec = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlDecoderDestroy(dec);
+	const output = try t.allocator.alloc(u8, expected32.len * 4);
+	defer t.allocator.free(output);
+	for (0..3) |kind| {
+		if (kind != 0) JxlDecoderRewind(dec);
+		try t.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSubscribeEvents(dec, @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)));
+		try t.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(dec, data.ptr, data.len));
+		JxlDecoderCloseInput(dec);
+		const fmt = JxlPixelFormat{ .num_channels = 4, .data_type = if (kind == 0) .JXL_TYPE_UINT8 else if (kind == 1) .JXL_TYPE_FLOAT else .JXL_TYPE_FLOAT16, .endianness = .JXL_LITTLE_ENDIAN, .@"align" = 0 };
+		var count: usize = 0;
+		while (true) {
+			switch (JxlDecoderProcessInput(dec)) {
+				.JXL_DEC_NEED_IMAGE_OUT_BUFFER => try t.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(dec, &fmt, output.ptr, if (kind == 0) expected8.len else output.len)),
+				.JXL_DEC_FULL_IMAGE => {
+					count += 1;
+					if (kind == 0) try t.expectEqualSlices(u8, expected8, output[0..expected8.len]) else if (kind == 1) {
+						for (expected32, 0..) |word, i| try t.expectEqual(word, std.mem.readInt(u32, output[i * 4 ..][0..4], .little));
+					} else {
+						for (expected16, 0..) |word, i| try t.expectEqual(word, std.mem.readInt(u16, output[i * 2 ..][0..2], .little));
+					}
+				},
+				.JXL_DEC_SUCCESS => break,
+				else => return error.TestUnexpectedResult,
+			}
+		}
+		try t.expectEqual(1, count);
+	}
+}
+test "floating special samples preserve signed zero infinity and NaN bits" {
+	@setEvalBranchQuota(20000);
+	const fixture = @import("lib/codec/float_special_fixture.zig");
+	inline for (0..4) |id| {
+		const key = std.fmt.comptimePrint("{d}", .{id});
+		try @call(.never_inline, checkSpecialFloatPublic, .{ &@field(fixture, "bytes_" ++ key), &@field(fixture, "pixels_" ++ key), &@field(fixture, "float_bits_" ++ key), &@field(fixture, "half_bits_" ++ key) });
+	}
+}

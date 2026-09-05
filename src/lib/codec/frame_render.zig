@@ -22,10 +22,9 @@ pub fn finish(dec: *jxl.codec.dec_frame.FrameDecoder, output: jxl.codec.vardct_f
 		const channel = &dec.modular_decoder.full_image.channels.items[dec.modular_decoder.full_image.channels.items.len - metadata.num_extra_channels + e];
 		const bits = metadata.extra_channel_info[e].bit_depth.bits_per_sample;
 		if (bits == 0 or bits > 32) return error.GenericError;
-		const maximum = sf.fromInt((@as(i64, 1) << @as(u6, @intCast(bits))) - 1);
 		plane.* = .{ .width = channel.w, .height = channel.h, .data = try dec.allocator.alloc(sf.Fixed, channel.w * channel.h) };
 		for (0..channel.h) |y| for (channel.rowConst(y)[0..channel.w], plane.data[y * channel.w ..][0..channel.w]) |raw, *value| {
-			value.* = sf.div(sf.fromInt(raw), maximum);
+			value.* = try @import("float_samples.zig").toFixed(raw, metadata.extra_channel_info[e].bit_depth);
 		};
 		if (!late and fh.extra_channel_upsampling[e] != 1) {
 			const sampled = try up.fromMetadata(dec.allocator, .{ .width = plane.width, .height = plane.height, .data = plane.data }, @intCast(fh.extra_channel_upsampling[e]), &dec.metadata.transform_data, width, height);

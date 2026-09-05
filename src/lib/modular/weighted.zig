@@ -165,9 +165,9 @@ pub const State = struct {
 
         var weights: [kNumPredictors]u32 = undefined;
         inline for (0..kNumPredictors) |i| {
-            const err_sum: u64 = @as(u64, self.pred_errors[i][pos_N]) +
-                @as(u64, self.pred_errors[i][pos_NE]) +
-                @as(u64, self.pred_errors[i][pos_NW]);
+            const err_sum: u32 = self.pred_errors[i][pos_N] +%
+                self.pred_errors[i][pos_NE] +%
+                self.pred_errors[i][pos_NW];
             weights[i] = self.errorWeight(err_sum, self.header.w[i]);
         }
 
@@ -273,12 +273,12 @@ pub const State = struct {
         const cur_row: usize = if (y & 1 != 0) 0 else (xsize + 2);
         const prev_row: usize = if (y & 1 != 0) (xsize + 2) else 0;
         const val = addBits(val_in);
-        self.errors[cur_row + x] = @intCast(self.pred - val);
+        self.errors[cur_row + x] = @truncate(self.pred - val);
         inline for (0..kNumPredictors) |i| {
             const abs_diff = absW(self.prediction[i] - val);
-            const err: u32 = @intCast((abs_diff + kPredictionRound) >> @as(u6, @intCast(kPredExtraBits)));
+            const err: u32 = @truncate(@as(u64, @intCast((abs_diff + kPredictionRound) >> @as(u6, @intCast(kPredExtraBits)))));
             self.pred_errors[i][cur_row + x] = err;
-            self.pred_errors[i][prev_row + x + 1] += err;
+            self.pred_errors[i][prev_row + x + 1] +%= err;
         }
     }
 

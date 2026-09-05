@@ -5,6 +5,13 @@
 Peter explicitly authorized overnight work at 01:02 EDT. Reuse the inventory
 below; pause for decisions only when they prevent safe implementation.
 
+- [ ] Track performance alongside remaining decoder coverage (Peter, 09:25 EDT).
+  Finish the floating-sample slice first, then measure ReleaseFast arithmetic
+  kernels with equivalent native floating-point controls and whole-image decode
+  separately. Record CPU and wall time, hardware, commit and checked outputs.
+  Revisit whether normalization, allocation or missing SIMD explains each cost;
+  an upstream decoder ratio alone cannot isolate the numeric representation.
+
 - [x] Extract a shared-reader permutation path from `toc.zig` without changing
   TOC decoding. Prove shared ANS state, skipped LLF coefficients, discarded
   unused orders, malformed ranks, truncation and allocation cleanup.
@@ -290,11 +297,23 @@ below; pause for decisions only when they prevent safe implementation.
   full repository suite and build before committing — 09:01 EDT.
   Nix unit checks, all 94 CLI suites and all 264 required mutation detections
   passed; production build passed — 09:18 EDT.
-- [ ] Decode floating-point color and extra-channel samples. Prototype
+- [x] Decode finite floating-point color and extra-channel samples, plus direct
+  non-finite sample output. Prototype
   `/tmp/libjxlz-float-src` has exact upstream conversion results for all 154
   exponent/mantissa layouts and 20 complete finite-sample images. A witnessed
   frame panic exposed weighted-predictor error narrowing and unsigned wrap
   semantics; a separate 64-sample upstream state oracle reproduces it.
+  Integrated sample conversion, predictor wrap fixes and unclipped FLOAT/FLOAT16
+  output. Twenty finite streams cover sampling and mixed integer/float planes;
+  four special-value streams cover exact output bits and integer packing.
+  Public reset/rewind and allocation sweeps pass. Run the full suite and build.
+  Non-finite filtering/reference arithmetic remains a separate coverage gap.
+  Full Nix unit checks, all 94 CLI suites, 264 required mutation detections and
+  production build passed — 09:50 EDT.
+- [ ] Complete non-finite filtering and reference arithmetic using legal
+  upstream streams before claiming floating-sample combinations complete.
+- [x] Mechatron passed spline commit `3c303c4a` in 801 seconds,
+  finishing 09:31:28 EDT.
 - [x] Mechatron passed Huffman correction `6a92234b` in 672 seconds,
   finishing 06:31:13 EDT.
 - [ ] Extend that working path to progressive/reference semantics and remaining
