@@ -58,6 +58,8 @@ fn checkCaseBytes(allocator: std.mem.Allocator, id: usize, bytes: []const u8) !v
 	defer allocator.free(contexts);
 	if (!br.allReadsWithinBounds()) return error.NotEnoughBytes;
 	if (f.header_bits != br.totalBitsConsumed()) return error.GenericError;
+	try testing.expectEqual(f.lz77, code.lz77.enabled);
+	try testing.expectEqual(f.huffman, code.use_prefix_code);
 	var symbols = try ans.ANSSymbolReader.create(&code, &br, 0, allocator);
 	defer symbols.deinit();
 	var reader = Reader{ .br = &br, .symbols = &symbols, .contexts = contexts };
@@ -118,7 +120,7 @@ test "AC groups release allocations on failures" {
 }
 
 test "AC groups reject every truncated entropy stream prefix" {
-	for ([_]usize{ 0, 27, 28, 29 }) |id| for (0..fixture.cases[id].bytes.len) |len| {
+	for ([_]usize{ 0, 27, 28, 29, 30 }) |id| for (0..fixture.cases[id].bytes.len) |len| {
 		if (checkCaseBytes(testing.allocator, id, fixture.cases[id].bytes[0..len]))
 			return error.TestUnexpectedResult else |_| {}
 	};

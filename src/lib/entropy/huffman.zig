@@ -274,7 +274,9 @@ pub const HuffmanDecodingData = struct {
             self.table = &.{};
             return false;
         }
-        self.table = self.allocator.realloc(self.table, table_size) catch self.table;
+        // Shrinking is optional; keep the allocation if it cannot shrink in
+        // place instead of allocating a replacement just to save tail space.
+        if (self.allocator.resize(self.table, table_size)) self.table = self.table[0..table_size];
         return true;
     }
 };

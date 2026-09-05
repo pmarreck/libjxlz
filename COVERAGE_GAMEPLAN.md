@@ -175,10 +175,15 @@ on 2026-09-04; component presence does not establish full-format coverage):
   corrected relative chroma shifts. Block inverse transforms and DC-to-LLF
   reconstruction now cover all 27 strategies in Fixed, checked against
   upstream, with sampled comparisons for blocks larger than 8x8. AC coefficient
-  passes now match 30 upstream streams, including all strategies, mixed blocks,
-  subsampling and entropy modes. Whole-image DC smoothing also matches upstream.
-  Still missing: DCT128+ dequant tables, raw table compute and AC-global/frame
-  orchestration. Full-frame VarDCT dispatch still rejects until these connect.
+  passes now match 31 upstream streams, including all strategies, mixed blocks,
+  subsampling and verified ANS/Huffman/LZ77 modes. AC-global parsing and frame
+  orchestration now connect these components. Six complete upstream images
+  cover partial edges, multiple AC/DC groups and progressive AC passes; public
+  decoding matches within one RGB8 level per channel. Strict validation accepts
+  these files. Whole-image DC smoothing runs before AC reconstruction.
+  DCT128+ dequant tables, raw table compute, loop filters, chroma subsampling,
+  extra-channel integration, custom opsin parameters and reference/render
+  features remain gated in the full-frame path.
   `splines.zig` already has color-correlation ratios and a continuous spline
   IDCT; neither is the missing VarDCT wire parser or block-transform pipeline.
 - **Patches and noise payloads.** `processDCGlobalWithReaderStrategy` rejects

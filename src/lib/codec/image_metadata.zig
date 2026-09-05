@@ -523,6 +523,7 @@ pub const CodecMetadata = struct {
 // ── OpsinInverseMatrix ──
 
 pub const OpsinInverseMatrix = struct {
+    custom: bool = false,
     inverse_matrix: [3][3]f32 = .{
         .{ 0, 0, 0 },
         .{ 0, 0, 0 },
@@ -536,7 +537,7 @@ pub const OpsinInverseMatrix = struct {
             return OpsinInverseMatrix{};
         }
 
-        var m = OpsinInverseMatrix{};
+        var m = OpsinInverseMatrix{ .custom = true };
         for (0..3) |j| {
             for (0..3) |i| {
                 m.inverse_matrix[j][i] = try fc.F16Coder.read(br);

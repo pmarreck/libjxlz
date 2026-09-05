@@ -1330,15 +1330,6 @@ pub export fn JxlValidate(
 
 	var frames_validated: u32 = 0;
 	while (!dec.decode_complete) {
-		// The normal event decoder can expose metadata and skip an unsupported
-		// frame without decoding it. Strict validation must classify that frame.
-		var kind_br = BitReader.init(dec.frame_data[dec.frame_offset..]);
-		if (frame_header_mod.peekFrameEncoding(&kind_br) != .modular) {
-			return validationFailure(result, unsupported_mod.unsupported(.vardct_frame), dec.frame_offset, host_offset, false, frames_validated);
-		}
-		kind_br.close() catch |err| {
-			return validationFailure(result, err, dec.frame_offset, host_offset, false, frames_validated);
-		};
 		if (ensureCurrentFrameParsed(dec) != .JXL_DEC_SUCCESS) {
 			return validationFailure(result, dec.last_error, dec.frame_offset, host_offset, false, frames_validated);
 		}
@@ -5476,4 +5467,29 @@ test "JxlDecoderRewind requests a fresh output buffer before replaying frames" {
 	}
 	try testing.expect(saw_need_buffer);
 	try testing.expectEqualSlices(u8, &output_a, &output_b);
+}
+
+test "VarDCT public validation and decoder match upstream complete frames" {
+	const testing = std.testing;
+	const fixture = @import("lib/codec/vardct_frame_fixture.zig");
+	inline for (0..6) |id| {
+		const data = @field(fixture, "bytes_" ++ std.fmt.comptimePrint("{d}", .{id}));
+		const expected = @field(fixture, "rgb_" ++ std.fmt.comptimePrint("{d}", .{id}));
+		var result: JxlValidationResult = undefined;
+		try testing.expectEqual(JxlValidationVerdict.JXL_VALIDATION_VALID, JxlValidate(&data, data.len, null, &result));
+		try testing.expectEqual(@as(u32, 1), result.frames_validated);
+		const decoder = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+		defer JxlDecoderDestroy(decoder);
+		try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSubscribeEvents(decoder, @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)));
+		try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(decoder, &data, data.len));
+		JxlDecoderCloseInput(decoder);
+		try testing.expectEqual(JxlDecoderStatus.JXL_DEC_NEED_IMAGE_OUT_BUFFER, JxlDecoderProcessInput(decoder));
+		const output = try testing.allocator.alloc(u8, expected.len);
+		defer testing.allocator.free(output);
+		const format = JxlPixelFormat{ .num_channels = 3, .data_type = .JXL_TYPE_UINT8, .endianness = .JXL_NATIVE_ENDIAN, .@"align" = 0 };
+		try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(decoder, &format, output.ptr, output.len));
+		try testing.expectEqual(JxlDecoderStatus.JXL_DEC_FULL_IMAGE, JxlDecoderProcessInput(decoder));
+		for (output, expected) |actual, reference| try testing.expect(@abs(@as(i32, actual) - @as(i32, reference)) <= 1);
+		try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderProcessInput(decoder));
+	}
 }

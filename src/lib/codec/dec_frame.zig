@@ -1614,7 +1614,7 @@ pub const FrameDecoder = struct {
         try header_br.close();
 
         if (self.frame_header.encoding != .modular) {
-            return unsupported_mod.unsupported(.vardct_frame);
+            return @import("vardct_frame.zig").decode(self, data, header_byte_offset);
         }
 
         const layout = try computeSectionLayout(self.allocator, header_byte_offset, data.len, self.toc_entries);

@@ -17,8 +17,8 @@ uint64_t Fold(uint64_t hash, uint32_t value) { return (hash ^ value) * 109951162
 jxl::Status GenerateCase(JxlMemoryManager* memory, size_t id) {
 	const uint32_t raw = id < 27 ? id : 0;
 	const auto first_strategy = jxl::AcStrategy::FromRawStrategy(raw);
-	const size_t width = id == 27 || id == 28 ? 4 : first_strategy.covered_blocks_x();
-	const size_t height = id == 27 ? 3 : id == 28 ? 4 : first_strategy.covered_blocks_y();
+	const size_t width = id == 27 || id == 28 || id == 30 ? 4 : first_strategy.covered_blocks_x();
+	const size_t height = id == 27 ? 3 : id == 28 || id == 30 ? 4 : first_strategy.covered_blocks_y();
 	const bool custom = id % 2 != 0;
 	jxl::YCbCrChromaSubsampling chroma;
 	const uint8_t sampling[] = {static_cast<uint8_t>(id == 28 ? 2 : 1), 1, 1};
@@ -61,11 +61,11 @@ jxl::Status GenerateCase(JxlMemoryManager* memory, size_t id) {
 				(y >> chroma.VShift(c)) << chroma.VShift(c) != y) continue;
 			const auto* order = &orders[jxl::kCoeffOrderOffset[3 * jxl::kStrategyOrder[strategy.RawStrategy()] + c] * 64];
 			int32_t* block = ac.PlaneRow(c, 0) + offsets[c];
-			const size_t end = id == 29 ? size : std::min(size, llf + 80);
-			if (c != 1 || block_id % 3 == 1 || id == 29) {
+			const size_t end = id >= 29 ? size : std::min(size, llf + 80);
+			if (c != 1 || block_id % 3 == 1 || id >= 29) {
 				for (size_t k = llf; k < end; ++k) {
-					if (id == 29 || (k - llf + c + block_id) % 7 == 0 || k + 1 == end) {
-						int32_t value = static_cast<int32_t>((k * 17 + c * 13 + block_id) % 61) - 30;
+					if (id >= 29 || (k - llf + c + block_id) % 7 == 0 || k + 1 == end) {
+						int32_t value = id == 30 ? 1 + block_id % 7 : static_cast<int32_t>((k * 17 + c * 13 + block_id) % 61) - 30;
 						if (value == 0) value = 1;
 						block[order[k]] = value;
 					}
@@ -84,7 +84,7 @@ jxl::Status GenerateCase(JxlMemoryManager* memory, size_t id) {
 	uint64_t token_hash = 14695981039346656037ull;
 	for (const auto& token : original) token_hash = Fold(Fold(token_hash, token.context), token.value);
 	jxl::HistogramParams params;
-	params.lz77_method = id == 29 ? jxl::HistogramParams::LZ77Method::kRLE : jxl::HistogramParams::LZ77Method::kNone;
+	params.lz77_method = id == 30 ? jxl::HistogramParams::LZ77Method::kRLE : jxl::HistogramParams::LZ77Method::kNone;
 	params.force_huffman = id == 28;
 	jxl::EntropyEncodingData code;
 	jxl::BitWriter writer(memory);
@@ -99,12 +99,15 @@ jxl::Status GenerateCase(JxlMemoryManager* memory, size_t id) {
 	jxl::ANSCode decoded_code;
 	std::vector<uint8_t> decoded_context;
 	JXL_RETURN_IF_ERROR(jxl::DecodeHistograms(memory, &reader, context.NumACContexts(), &decoded_code, &decoded_context));
+	if (id == 30 && !decoded_code.lz77.enabled) { fprintf(stderr,"RLE was not selected\n"); reader.Close(); return false; }
+	if (id == 28 && !decoded_code.use_prefix_code) return false;
 	JXL_ASSIGN_OR_RETURN(jxl::ANSSymbolReader symbols, jxl::ANSSymbolReader::Create(&decoded_code, &reader));
-	for (const auto& token : original) if (symbols.ReadHybridUint(token.context, &reader, decoded_context) != token.value) return false;
+	for (const auto& token : original) if (symbols.ReadHybridUint(token.context, &reader, decoded_context) != token.value) { fprintf(stderr,"token mismatch in case %zu\n",id); reader.Close(); return false; }
 	const bool final_ok = symbols.CheckANSFinalState() && reader.TotalBitsConsumed() == total_bits;
 	if (!reader.Close() || !final_ok) return false;
-	printf("\t.{ .width=%zu, .height=%zu, .custom=%s, .chroma=%u, .header_bits=%zu, .total_bits=%zu, .token_count=%zu, .token_hash=0x%016llx, .hashes=.{",
-		width, height, custom ? "true" : "false", id == 28 ? 4 : 0, header_bits, total_bits,
+	printf("\t.{ .width=%zu, .height=%zu, .custom=%s, .chroma=%u, .lz77=%s, .huffman=%s, .header_bits=%zu, .total_bits=%zu, .token_count=%zu, .token_hash=0x%016llx, .hashes=.{",
+		width, height, custom ? "true" : "false", id == 28 ? 4 : 0,
+		decoded_code.lz77.enabled ? "true" : "false", decoded_code.use_prefix_code ? "true" : "false", header_bits, total_bits,
 		original.size(), static_cast<unsigned long long>(token_hash));
 	for (size_t c = 0; c < 3; ++c) {
 		uint64_t hash = 14695981039346656037ull;
@@ -121,7 +124,7 @@ int main() {
 	JxlMemoryManager memory;
 	if (!jxl::MemoryManagerInit(&memory, nullptr)) return 1;
 	printf("// Upstream tokenization plus entropy encode/decode, tests/unit/ac_group_oracle.cc.\n");
-	printf("pub const Case = struct { width: usize, height: usize, custom: bool, chroma: u8, header_bits: usize, total_bits: usize, token_count: usize, token_hash: u64, hashes: [3]u64, bytes: []const u8 };\npub const cases = [_]Case{\n");
-	for (size_t id = 0; id < 30; ++id) if (!GenerateCase(&memory, id)) return 2;
+	printf("pub const Case = struct { width: usize, height: usize, custom: bool, chroma: u8, lz77: bool, huffman: bool, header_bits: usize, total_bits: usize, token_count: usize, token_hash: u64, hashes: [3]u64, bytes: []const u8 };\npub const cases = [_]Case{\n");
+	for (size_t id = 0; id < 31; ++id) if (!GenerateCase(&memory, id)) return 2;
 	printf("};\n");
 }

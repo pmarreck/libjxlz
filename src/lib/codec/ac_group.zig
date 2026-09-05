@@ -73,7 +73,7 @@ pub const Group = struct {
 		br: *BitReader, code: *const ans.ANSCode, contexts: []const u8, num_histograms: usize) JxlError!void
 	{
 		if (num_histograms == 0 or num_histograms > 65536 or
-			contexts.len != num_histograms * p.context.numACContexts()) return error.GenericError;
+			contexts.len != num_histograms * p.context.numACContexts() + @intFromBool(code.lz77.enabled)) return error.GenericError;
 		const histogram = br.readBits(bits.ceilLog2Nonzero(num_histograms));
 		if (!br.allReadsWithinBounds()) return error.NotEnoughBytes;
 		if (histogram >= num_histograms) return error.GenericError;

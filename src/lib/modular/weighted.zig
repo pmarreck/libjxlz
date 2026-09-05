@@ -81,6 +81,7 @@ pub const State = struct {
             .header = header,
             .allocator = allocator,
         };
+        errdefer s.deinit();
         const buf_size = (xsize + 2) * 2;
         for (0..kNumPredictors) |i| {
             s.pred_error_bufs[i] = try allocator.alloc(u32, buf_size);

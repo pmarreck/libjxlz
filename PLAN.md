@@ -44,7 +44,7 @@ below; pause for decisions only when they prevent safe implementation.
   — 02:20 EDT. AC coefficients and DC smoothing remain next.
 - [x] Push DC groups as `073f1b38`; origin independently matched HEAD.
   Mechatron passed in 460 seconds, finishing 02:05:43 EDT.
-- [ ] Implement VarDCT DC/AC coefficient-group processing and block inverse
+- [x] Implement VarDCT DC/AC coefficient-group processing and block inverse
   transforms, reusing modular and entropy machinery and existing XYB output.
   First end-to-end gate: a public upstream-produced VarDCT image matches libjxl.
 - [x] Decode AC coefficient passes using the existing entropy decoder. All 30
@@ -59,11 +59,25 @@ below; pause for decisions only when they prevent safe implementation.
   `./build` passed — 02:39 EDT.
 - [x] Mechatron passed inverse transforms (`6c57e410`) in 470 seconds,
   finishing 02:29:06 EDT; origin independently matched the pushed commit.
-- [ ] Add a fixture that proves LZ77 is actually selected. Requesting RLE in
+- [x] Add a fixture that proves LZ77 is actually selected. Requesting RLE in
   the upstream encoder was insufficient: it chose ANS without LZ77. The next
   generator asserts the emitted mode, using repeated runs across mixed values.
-- [ ] Decode AC-global pass orders/histograms and connect groups to frame
-  orchestration. Apply DC smoothing after assembling the whole DC image.
+  Its failure exposed the additional LZ77 distance context in the group reader;
+  a real multi-group image exposed the same issue in coefficient orders. Both
+  now decode their actual LZ77 streams — 02:43 EDT.
+- [x] Decode AC-global pass orders/histograms and connect groups to frame
+  orchestration. Six complete upstream images match within one RGB8 level per
+  channel, covering partial edge blocks, multiple AC/DC groups and progressive
+  AC passes. DC smoothing runs after assembly of the whole DC image. Public
+  validation and decoding pass the same oracle — 02:51 EDT.
+  Added the missing sRGB transfer step at the XYB output boundary. Allocation
+  sweeps exposed/fixed TOC error conversion, a weighted-predictor cleanup leak
+  and an unnecessary fallible Huffman shrink. `./test` passed the Nix unit
+  check and all 94 CLI suites; `./build` passed — 03:06 EDT.
+- [x] Mechatron passed AC passes/DC smoothing (`7006c0e1`) in 470 seconds,
+  finishing 02:47:26 EDT; origin independently matched the pushed commit.
+- [ ] Extend VarDCT rendering to Gaborish/EPF, subsampling, extra channels,
+  custom opsin parameters and the other existing gated features below.
 - [ ] Extend that working path to progressive/reference semantics and remaining
   dequant forms, then patches and remaining render stages. Each subfeature
   needs a known-good upstream fixture and malformed/truncated counterparts.

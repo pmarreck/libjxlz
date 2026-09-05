@@ -220,6 +220,21 @@ pub fn writeRenderedImageToOutput(rendered: *const render_mod.FloatImage, alpha_
 
 /// Converts rendered XYB float rows through the scalar inverse-opsin path and
 /// writes normalized RGB samples into the public C API's interleaved buffer.
+fn xybToOutputRgb(x: f32, y: f32, b: f32, params: *const xyb_mod.OpsinParams, metadata: *const image_metadata.ImageMetadata) JxlError![3]f32 {
+	var rgb = xyb_mod.xybToLinearRgb(x, y, b, params);
+	const tf = metadata.color_encoding.tf;
+	if (tf.have_gamma) return @import("../lib/base/unsupported.zig").unsupported(.color_encoding);
+	switch (tf.transfer_function) {
+		.linear => {},
+		.srgb => for (&rgb) |*value| {
+			value.* = if (value.* <= 0.0031308) value.* * 12.92 else
+				1.055 * std.math.pow(f32, value.*, 1.0 / 2.4) - 0.055;
+		},
+		else => return @import("../lib/base/unsupported.zig").unsupported(.color_encoding),
+	}
+	return rgb;
+}
+
 pub fn writeXYBRenderedImageToOutput(rendered: *const render_mod.FloatImage, alpha_img: ?*const Image, codec_meta: *const image_metadata.CodecMetadata, format: JxlPixelFormat, buffer: [*]u8, buffer_size: usize) JxlError!void {
 	const metadata = &codec_meta.m;
 	if (metadata.color_encoding.channels() != 3) return error.Unsupported;
@@ -240,7 +255,7 @@ pub fn writeXYBRenderedImageToOutput(rendered: *const render_mod.FloatImage, alp
 			const row_y = rendered.rowConst(y, 1);
 			const row_b = rendered.rowConst(y, 2);
 			for (0..rendered.xsize) |x| {
-				const rgb = xyb_mod.xybToLinearRgb(row_x[x], row_y[x], row_b[x], &params);
+				const rgb = try xybToOutputRgb(row_x[x], row_y[x], row_b[x], &params, metadata);
 				dst[x * 3 + 0] = scaleRenderedToU8(rgb[0], x, y, 0);
 				dst[x * 3 + 1] = scaleRenderedToU8(rgb[1], x, y, 1);
 				dst[x * 3 + 2] = scaleRenderedToU8(rgb[2], x, y, 2);
@@ -255,7 +270,7 @@ pub fn writeXYBRenderedImageToOutput(rendered: *const render_mod.FloatImage, alp
 		const row_y = rendered.rowConst(y, 1);
 		const row_b = rendered.rowConst(y, 2);
 		for (0..rendered.xsize) |x| {
-			const rgb = xyb_mod.xybToLinearRgb(row_x[x], row_y[x], row_b[x], &params);
+			const rgb = try xybToOutputRgb(row_x[x], row_y[x], row_b[x], &params, metadata);
 			const pixel = row[x * num_channels * bytes_per_channel ..];
 			for (0..num_channels) |c| {
 				const value = if (c < 3) rgb[c] else normalizedAlphaOutputValue(alpha_img, metadata, x, y);

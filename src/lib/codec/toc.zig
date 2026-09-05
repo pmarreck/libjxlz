@@ -110,7 +110,7 @@ pub fn readPermutation(allocator: std.mem.Allocator, skip: usize, size: usize,
 	context_map: []const u8) JxlError!void
 {
 	if (size == 0 or size > kMaxPermutationSize or skip > size or
-		context_map.len != kPermutationContexts) return error.GenericError;
+		context_map.len != kPermutationContexts + @intFromBool(reader.lz77_window != null)) return error.GenericError;
 	if (output) |dest| if (dest.len != size) return error.GenericError;
 	const count = reader.readHybridUint(coeffOrderContext(@intCast(size)), br, context_map);
 	if (!br.allReadsWithinBounds()) return error.NotEnoughBytes;
@@ -167,7 +167,7 @@ pub fn readToc(allocator: std.mem.Allocator, toc_entries: usize, br: *BitReader)
     try br.jumpToByteBoundary();
 
     // Read section sizes
-    const sizes = allocator.alloc(u32, toc_entries) catch return error.GenericError;
+    const sizes = try allocator.alloc(u32, toc_entries);
     defer allocator.free(sizes);
 
     for (0..toc_entries) |i| {
@@ -177,7 +177,7 @@ pub fn readToc(allocator: std.mem.Allocator, toc_entries: usize, br: *BitReader)
     try br.jumpToByteBoundary();
 
     // Build TocEntry array
-    const toc = allocator.alloc(TocEntry, toc_entries) catch return error.GenericError;
+    const toc = try allocator.alloc(TocEntry, toc_entries);
     errdefer allocator.free(toc);
 
     for (0..toc_entries) |i| {
