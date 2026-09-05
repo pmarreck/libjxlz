@@ -28,10 +28,24 @@ below; pause for decisions only when they prevent safe implementation.
   23.64 ms. CPU/wall measurements are retained in benchmark history.
   Exact-commit Mechatron passed at 10:40:14 EDT. Continue measurements as
   coverage grows; the whole-decoder ratio does not isolate arithmetic cost.
-- [ ] Finish grayscale/ICC output semantics, then audit remaining color
-  transforms, nonfinite sample effects and JPEG reconstruction. Peter requested
-  a status check at 13:46 EDT; arithmetic is shipped and CI is green, while
-  grayscale profile/pixel tests currently pass only in the isolated prototype.
+- [x] Finish grayscale/ICC default output semantics. Arithmetic measurements
+  were committed as `b5fb9964`; Mechatron passed at 14:05:24 EDT.
+  Integrated default linear output for embedded ICC XYB, grayscale luminance
+  reconstruction, gray/gray-alpha packing and distinct ORIGINAL/DATA profiles.
+  All 16 upstream files pass complete UINT8 comparisons and rewind, with
+  actual Modular/VarDCT and filter headers asserted by the retained generator.
+  The 200x200 grayscale fixture also passes complete FLOAT comparisons and
+  exact original/data ICC bytes. Packaged CLI PAM is byte-exact with upstream;
+  all eight labeled-good files are accepted. Updated two older validator tests
+  that expected the ICC gate. Full Nix unit checks, all 97 CLI suites, all 264
+  required mutation detections and `./build` pass — 2026-09-05 14:33 EDT.
+- [ ] Complete remaining output color conversion, then audit nonfinite sample
+  effects and JPEG reconstruction. The isolated transfer prototype passes 28
+  upstream RGB/gray Modular/VarDCT files, independent linear-image checks and
+  transfer-stage controls. PQ uses upstream's scalar formula as an additional
+  oracle; HLG requires the upstream power sequence for signed luminance.
+  Exact black and signed-zero tests pass. A separate primaries prototype
+  passes 40 upstream matrix/coordinate cases; complete-image coverage is next.
 
 - [x] Extract a shared-reader permutation path from `toc.zig` without changing
   TOC decoding. Prove shared ANS state, skipped LLF coefficients, discarded

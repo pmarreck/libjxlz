@@ -75,30 +75,19 @@ grep -Eq '^frames_validated[[:space:]]+48$' "${OUT}" || fail "animation_icos4d s
 
 run_validate tests/corpus/labeled/good/grayscale.jxl
 status=$?
-[ "${status}" -eq 1 ] || fail "grayscale should exit 1 (unsupported), got ${status}"
-grep -Eq '^verdict[[:space:]]+unsupported$' "${OUT}" || fail "grayscale should report unsupported, got: $(cat "${OUT}")"
-grep -Eq '^feature[[:space:]]+icc_profile$' "${OUT}" || fail "grayscale should name icc_profile, got: $(cat "${OUT}")"
+[ "${status}" -eq 0 ] || fail "grayscale should exit 0, got ${status}"
+grep -Eq '^verdict[[:space:]]+valid$' "${OUT}" || fail "grayscale should report valid, got: $(cat "${OUT}")"
+grep -Eq '^feature[[:space:]]+none$' "${OUT}" || fail "grayscale should name no feature gate, got: $(cat "${OUT}")"
+grep -Eq '^frames_validated[[:space:]]+1$' "${OUT}" || fail "grayscale should validate one frame"
 
-# Classifier over the labeled-good set: accepted files name no feature gate;
-# the remaining unsupported file must identify its ICC profile.
-unsupported_count=0
-unknown_count=0
-saw_icc=0
+# Classify every labeled-good file and require acceptance with no feature gate.
 valid_count=0
 while IFS= read -r fixture; do
 	run_validate "${fixture}"
 	status=$?
 	verdict="$(awk '$1=="verdict"{print $2}' "${OUT}")"
 	feature="$(awk '$1=="feature"{print $2}' "${OUT}")"
-	if [ "${verdict}" = "unsupported" ]; then
-		unsupported_count=$((unsupported_count + 1))
-		[ "${status}" -eq 1 ] || fail "${fixture}: unsupported should exit 1, got ${status}"
-		if [ "${feature}" = "unknown" ] || [ -z "${feature}" ]; then
-			unknown_count=$((unknown_count + 1))
-			fail "${fixture}: unsupported with unnamed feature (${feature:-empty})"
-		fi
-		[ "${feature}" = "icc_profile" ] && saw_icc=1
-	elif [ "${verdict}" = "valid" ]; then
+	if [ "${verdict}" = "valid" ]; then
 		valid_count=$((valid_count + 1))
 		[ "${status}" -eq 0 ] || fail "${fixture}: valid should exit 0, got ${status}"
 		[ "${feature}" = "none" ] || fail "${fixture}: valid must report feature none, got ${feature}"
@@ -107,10 +96,7 @@ while IFS= read -r fixture; do
 	fi
 done < <(find tests/corpus/labeled/good -type f -name '*.jxl' | sort)
 
-[ "${unsupported_count}" -eq 1 ] || fail "classifier saw ${unsupported_count} unsupported files; expected 1"
-[ "${valid_count}" -eq 7 ] || fail "classifier saw ${valid_count} valid files; expected 7"
-[ "${unknown_count}" -eq 0 ] || fail "classifier saw ${unknown_count} unknown features; want 0"
-[ "${saw_icc}" -eq 1 ] || fail "classifier never saw feature=icc_profile over labeled-good"
+[ "${valid_count}" -eq 8 ] || fail "classifier saw ${valid_count} valid files; expected 8"
 
 # --json for tooling. Later --json must still win if it follows the path.
 run_validate tests/corpus/labeled/good/patches_lossless.jxl --json

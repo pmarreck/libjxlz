@@ -7,6 +7,7 @@ pub fn originalProfile(ce: *const color_encoding.ColorEncoding) ?[]const u8 {
 	if (isBuiltinSrgb(ce)) return &srgb_builtin_profile;
 	if (isBuiltinLinearSrgb(ce)) return &linear_srgb_builtin_profile;
 	if (isBuiltinGraySrgb(ce)) return &gray_srgb_builtin_profile;
+	if (!ce.want_icc and ce.isGray() and ce.white_point == .d65 and !ce.tf.have_gamma and ce.tf.transfer_function == .linear and ce.rendering_intent == .relative) return &linear_gray_builtin_profile;
 	return null;
 }
 
@@ -202,3 +203,26 @@ test "originalProfile returns deterministic profiles for linear and gray structu
 	try testing.expectEqualSlices(u8, "GRAYXYZ ", gray_profile[16..24]);
 	try testing.expectEqualSlices(u8, "acsp", gray_profile[36..40]);
 }
+pub const linear_gray_builtin_profile = [_]u8{
+	0, 0, 1, 72, 106, 120, 108, 32, 4, 64, 0, 0, 109, 110, 116, 114,
+	71, 82, 65, 89, 88, 89, 90, 32, 7, 227, 0, 12, 0, 1, 0, 0,
+	0, 0, 0, 0, 97, 99, 115, 112, 65, 80, 80, 76, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 1, 0, 0, 246, 214, 0, 1, 0, 0, 0, 0, 211, 45,
+	106, 120, 108, 32, 25, 72, 192, 208, 183, 98, 49, 64, 79, 57, 33, 11,
+	224, 236, 162, 120, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 4, 100, 101, 115, 99, 0, 0, 0, 180, 0, 0, 0, 60,
+	99, 112, 114, 116, 0, 0, 0, 240, 0, 0, 0, 36, 119, 116, 112, 116,
+	0, 0, 1, 20, 0, 0, 0, 20, 107, 84, 82, 67, 0, 0, 1, 40,
+	0, 0, 0, 32, 109, 108, 117, 99, 0, 0, 0, 0, 0, 0, 0, 1,
+	0, 0, 0, 12, 101, 110, 85, 83, 0, 0, 0, 30, 0, 0, 0, 28,
+	0, 71, 0, 114, 0, 97, 0, 95, 0, 68, 0, 54, 0, 53, 0, 95,
+	0, 82, 0, 101, 0, 108, 0, 95, 0, 76, 0, 105, 0, 110, 0, 0,
+	109, 108, 117, 99, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 12,
+	101, 110, 85, 83, 0, 0, 0, 6, 0, 0, 0, 28, 0, 67, 0, 67,
+	0, 48, 0, 0, 88, 89, 90, 32, 0, 0, 0, 0, 0, 0, 243, 81,
+	0, 1, 0, 0, 0, 1, 22, 204, 112, 97, 114, 97, 0, 0, 0, 0,
+	0, 3, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+	0, 1, 0, 0, 0, 0, 0, 0,
+};

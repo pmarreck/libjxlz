@@ -49,26 +49,6 @@ static int expect_result(
 	return 1;
 }
 
-/* A verdict alone does not tell a user WHICH feature stopped validation.
- * This asserts the named feature and its offset, so the finding is actionable. */
-static int expect_feature(
-	const char* name,
-	const uint8_t* data,
-	size_t size,
-	const JxlValidationOptions* options,
-	JxlValidationFeature expected_feature
-) {
-	JxlValidationResult result;
-	JxlValidationVerdict verdict = JxlValidate(data, size, options, &result);
-	if (verdict != JXL_VALIDATION_UNSUPPORTED || result.feature != expected_feature) {
-		fprintf(stderr, "%s: verdict=%d feature=%d (%s), expected unsupported feature %d (%s)\n",
-			name, (int)verdict, (int)result.feature, JxlValidationFeatureName(result.feature),
-			(int)expected_feature, JxlValidationFeatureName(expected_feature));
-		return 0;
-	}
-	return 1;
-}
-
 int main(int argc, char** argv) {
 	static const uint8_t invalid_signature[] = {
 		0x00, 0x01, 0x02, 0x03, 0x04, 0x05,
@@ -117,8 +97,13 @@ int main(int argc, char** argv) {
 		fprintf(stderr, "accepted patches: expected two validated frames and no feature gate\n");
 		ok = 0;
 	}
-	ok &= expect_feature("VarDCT ICC gate names itself", vardct, vardct_size, &options,
-		JXL_VALIDATION_FEATURE_ICC_PROFILE);
+	ok &= expect_result("accepted grayscale ICC VarDCT", vardct, vardct_size, &options,
+		JXL_VALIDATION_VALID, JXL_VALIDATION_FINDING_NONE);
+	if (JxlValidate(vardct, vardct_size, &options, &result) != JXL_VALIDATION_VALID ||
+		result.frames_validated != 1 || result.feature != JXL_VALIDATION_FEATURE_NONE) {
+		fprintf(stderr, "grayscale ICC: expected one validated frame and no feature gate\n");
+		ok = 0;
+	}
 
 	/* Specificity: an accepted file must not carry a stale feature from a prior call. */
 	if (JxlValidate(accepted, accepted_size, &options, &result) != JXL_VALIDATION_VALID ||

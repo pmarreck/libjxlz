@@ -232,9 +232,10 @@ fn xybToOutputRgb(x: f32, y: f32, b: f32, params: *const xyb_mod.OpsinParams, me
 
 pub fn writeXYBRenderedImageToOutput(rendered: *const render_mod.FloatImage, alpha_img: ?*const Image, codec_meta: *const image_metadata.CodecMetadata, format: JxlPixelFormat, buffer: [*]u8, buffer_size: usize) JxlError!void {
 	const metadata = &codec_meta.m;
-	if (metadata.color_encoding.channels() != 3) return error.Unsupported;
+	const gray = metadata.color_encoding.isGray();
+	if (!gray and metadata.color_encoding.channels() != 3) return error.Unsupported;
 	if (rendered.channels < 3) return error.Unsupported;
-	if (!(format.num_channels == 3 or format.num_channels == 4)) return error.Unsupported;
+	if (format.num_channels < (if (gray) @as(u32, 1) else 3) or format.num_channels > 4) return error.Unsupported;
 
 	const stride = rowStrideBytes(rendered.xsize, format) orelse return error.Unsupported;
 	if (stride * rendered.ysize > buffer_size) return error.GenericError;
@@ -268,7 +269,8 @@ pub fn writeXYBRenderedImageToOutput(rendered: *const render_mod.FloatImage, alp
 			const rgb = try xybToOutputRgb(row_x[x], row_y[x], row_b[x], &params, metadata);
 			const pixel = row[x * num_channels * bytes_per_channel ..];
 			for (0..num_channels) |c| {
-				const value = if (c < 3) rgb[c] else renderedAlphaOutputValue(rendered, alpha_img, metadata, x, y);
+				const color_channels: usize = if (num_channels <= 2) 1 else 3;
+				const value = if (c < color_channels) rgb[c] else renderedAlphaOutputValue(rendered, alpha_img, metadata, x, y);
 				const normalized = clampNormalizedSample(value);
 				switch (format.data_type) {
 					.JXL_TYPE_UINT8 => {

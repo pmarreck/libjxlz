@@ -1672,9 +1672,9 @@ pub export fn JxlDecoderGetColorAsEncodedProfile(
 		.JXL_COLOR_PROFILE_TARGET_ORIGINAL, .JXL_COLOR_PROFILE_TARGET_DATA => {},
 	}
 
-	const color = &impl.codec_meta.m.color_encoding;
+	const color = if (target == .JXL_COLOR_PROFILE_TARGET_DATA) @import("lib/codec/xyb.zig").outputEncoding(&impl.codec_meta.m) else impl.codec_meta.m.color_encoding;
 	if (color.want_icc) return .JXL_DEC_ERROR;
-	if (color_ptr) |dst| populateColorEncoding(dst, color);
+	if (color_ptr) |dst| populateColorEncoding(dst, &color);
 	return .JXL_DEC_SUCCESS;
 }
 
@@ -1691,10 +1691,11 @@ pub export fn JxlDecoderGetICCProfileSize(
 		.JXL_COLOR_PROFILE_TARGET_ORIGINAL, .JXL_COLOR_PROFILE_TARGET_DATA => {},
 	}
 
-	const profile = if (impl.codec_meta.m.color_encoding.want_icc)
+	const color = if (target == .JXL_COLOR_PROFILE_TARGET_DATA) @import("lib/codec/xyb.zig").outputEncoding(&impl.codec_meta.m) else impl.codec_meta.m.color_encoding;
+	const profile = if (color.want_icc)
 		impl.codec_meta.embedded_icc
 	else
-		icc_profiles.originalProfile(&impl.codec_meta.m.color_encoding) orelse return .JXL_DEC_ERROR;
+		icc_profiles.originalProfile(&color) orelse return .JXL_DEC_ERROR;
 	if (size_ptr) |dst| dst.* = profile.len;
 	return .JXL_DEC_SUCCESS;
 }
@@ -1713,10 +1714,11 @@ pub export fn JxlDecoderGetColorAsICCProfile(
 		.JXL_COLOR_PROFILE_TARGET_ORIGINAL, .JXL_COLOR_PROFILE_TARGET_DATA => {},
 	}
 
-	const profile = if (impl.codec_meta.m.color_encoding.want_icc)
+	const color = if (target == .JXL_COLOR_PROFILE_TARGET_DATA) @import("lib/codec/xyb.zig").outputEncoding(&impl.codec_meta.m) else impl.codec_meta.m.color_encoding;
+	const profile = if (color.want_icc)
 		impl.codec_meta.embedded_icc
 	else
-		icc_profiles.originalProfile(&impl.codec_meta.m.color_encoding) orelse return .JXL_DEC_ERROR;
+		icc_profiles.originalProfile(&color) orelse return .JXL_DEC_ERROR;
 	if (size < profile.len) return .JXL_DEC_ERROR;
 	const dst = icc_profile orelse return .JXL_DEC_ERROR;
 	@memcpy(dst[0..profile.len], profile);
@@ -6135,4 +6137,138 @@ test "floating special samples preserve signed zero infinity and NaN bits" {
 		const key = std.fmt.comptimePrint("{d}", .{id});
 		try @call(.never_inline, checkSpecialFloatPublic, .{ &@field(fixture, "bytes_" ++ key), &@field(fixture, "pixels_" ++ key), &@field(fixture, "float_bits_" ++ key), &@field(fixture, "half_bits_" ++ key) });
 	}
+}
+
+fn checkGrayIccPublic(data: []const u8, expected: []const u8, channels: u32) !void {
+	const dec = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlDecoderDestroy(dec);
+	try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSubscribeEvents(dec, @intFromEnum(JxlDecoderStatus.JXL_DEC_BASIC_INFO) | @intFromEnum(JxlDecoderStatus.JXL_DEC_COLOR_ENCODING) | @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)));
+	try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(dec, data.ptr, data.len));
+	JxlDecoderCloseInput(dec);
+	const output = try std.testing.allocator.alloc(u8, expected.len);
+	defer std.testing.allocator.free(output);
+	var frames: usize = 0;
+	const format = JxlPixelFormat{ .num_channels = channels, .data_type = .JXL_TYPE_UINT8, .endianness = .JXL_NATIVE_ENDIAN, .@"align" = 0 };
+	while (true) {
+		const status = JxlDecoderProcessInput(dec);
+		switch (status) {
+			.JXL_DEC_SUCCESS => break,
+			.JXL_DEC_BASIC_INFO => {},
+			.JXL_DEC_COLOR_ENCODING => {
+				var profile: JxlColorEncoding = undefined;
+				try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_ERROR, JxlDecoderGetColorAsEncodedProfile(dec, .JXL_COLOR_PROFILE_TARGET_ORIGINAL, &profile));
+				try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderGetColorAsEncodedProfile(dec, .JXL_COLOR_PROFILE_TARGET_DATA, &profile));
+				try std.testing.expectEqual(JxlColorSpace.JXL_COLOR_SPACE_GRAY, profile.color_space);
+				try std.testing.expectEqual(JxlTransferFunction.JXL_TRANSFER_FUNCTION_LINEAR, profile.transfer_function);
+			},
+			.JXL_DEC_NEED_IMAGE_OUT_BUFFER => try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(dec, &format, output.ptr, output.len)),
+			.JXL_DEC_FULL_IMAGE => frames += 1,
+			else => {
+				std.debug.print("gray status={any}\n", .{status});
+				return error.TestUnexpectedResult;
+			},
+		}
+	}
+	try std.testing.expectEqual(1, frames);
+	for (output, expected, 0..) |actual, wanted, i| if (@abs(@as(i32, actual) - wanted) > 1) {
+		std.debug.print("gray sample={d} actual={d} wanted={d}\n", .{ i, actual, wanted });
+		return error.TestUnexpectedResult;
+	};
+}
+test "gray ICC XYB has separate original and linear output profiles" {
+	const fixture = @import("lib/codec/gray_profile_fixture.zig");
+	const bytes = @embedFile("lib/testdata/grayscale_icc.jxl");
+	try checkGrayIccPublic(bytes, &fixture.pixels_0, 1);
+	try checkGrayIccPublic(bytes, &fixture.pixels_2, 3);
+}
+
+test "gray ICC data profile exports the upstream linear gray ICC" {
+	const fixture = @import("lib/codec/gray_profile_fixture.zig");
+	const bytes = @embedFile("lib/testdata/grayscale_icc.jxl");
+	const dec = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlDecoderDestroy(dec);
+	try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSubscribeEvents(dec, @intFromEnum(JxlDecoderStatus.JXL_DEC_COLOR_ENCODING)));
+	try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(dec, bytes.ptr, bytes.len));
+	JxlDecoderCloseInput(dec);
+	try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_COLOR_ENCODING, JxlDecoderProcessInput(dec));
+	inline for (.{ JxlColorProfileTarget.JXL_COLOR_PROFILE_TARGET_ORIGINAL, JxlColorProfileTarget.JXL_COLOR_PROFILE_TARGET_DATA }) |target| {
+		const expected = if (target == .JXL_COLOR_PROFILE_TARGET_ORIGINAL) &fixture.original_icc else &fixture.data_icc;
+		var size: usize = 0;
+		try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderGetICCProfileSize(dec, target, &size));
+		try std.testing.expectEqual(expected.len, size);
+		const output = try std.testing.allocator.alloc(u8, size);
+		defer std.testing.allocator.free(output);
+		try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderGetColorAsICCProfile(dec, target, output.ptr, output.len));
+		try std.testing.expectEqualSlices(u8, expected, output);
+	}
+}
+fn checkColorFramePublic(data: []const u8, expected: []const u8, id: usize) !void {
+	const gray = id < 8 or id >= 12;
+	const alpha = (id >= 4 and id < 8) or id >= 10;
+	const channels: u32 = @as(u32, if (gray) 1 else 3) + @intFromBool(alpha);
+	const dec = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlDecoderDestroy(dec);
+	try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSubscribeEvents(dec, @intFromEnum(JxlDecoderStatus.JXL_DEC_COLOR_ENCODING) | @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)));
+	const output = try std.testing.allocator.alloc(u8, expected.len);
+	defer std.testing.allocator.free(output);
+	const format = JxlPixelFormat{ .num_channels = channels, .data_type = .JXL_TYPE_UINT8, .endianness = .JXL_NATIVE_ENDIAN, .@"align" = 0 };
+	for (0..2) |replay| {
+		if (replay != 0) JxlDecoderRewind(dec);
+		try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(dec, data.ptr, data.len));
+		JxlDecoderCloseInput(dec);
+		var frames: usize = 0;
+		var buffers: usize = 0;
+		var profiles: usize = 0;
+		while (true) {
+			switch (JxlDecoderProcessInput(dec)) {
+				.JXL_DEC_SUCCESS => break,
+				.JXL_DEC_COLOR_ENCODING => {
+					profiles += 1;
+					var profile: JxlColorEncoding = undefined;
+					try std.testing.expectEqual(if (id >= 8) JxlDecoderStatus.JXL_DEC_ERROR else JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderGetColorAsEncodedProfile(dec, .JXL_COLOR_PROFILE_TARGET_ORIGINAL, &profile));
+					try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderGetColorAsEncodedProfile(dec, .JXL_COLOR_PROFILE_TARGET_DATA, &profile));
+					try std.testing.expectEqual(if (gray) JxlColorSpace.JXL_COLOR_SPACE_GRAY else JxlColorSpace.JXL_COLOR_SPACE_RGB, profile.color_space);
+					try std.testing.expectEqual(if (id >= 8 or id % 4 >= 2) JxlTransferFunction.JXL_TRANSFER_FUNCTION_LINEAR else JxlTransferFunction.JXL_TRANSFER_FUNCTION_SRGB, profile.transfer_function);
+				},
+				.JXL_DEC_NEED_IMAGE_OUT_BUFFER => {
+					buffers += 1;
+					try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(dec, &format, output.ptr, output.len));
+				},
+				.JXL_DEC_FULL_IMAGE => frames += 1,
+				else => |status| {
+					std.debug.print("color id={d} status={any}\n", .{ id, status });
+					return error.TestUnexpectedResult;
+				},
+			}
+		}
+		try std.testing.expectEqual(1, frames);
+		try std.testing.expectEqual(1, buffers);
+		try std.testing.expectEqual(1, profiles);
+		for (output, expected, 0..) |actual, wanted, i| if (@abs(@as(i32, actual) - wanted) > 1) {
+			std.debug.print("color id={d} sample={d} actual={d} wanted={d}\n", .{ id, i, actual, wanted });
+			return error.TestUnexpectedResult;
+		};
+	}
+}
+test "color frame upstream gray and ICC defaults survive rewind" {
+	@setEvalBranchQuota(20000);
+	const fixture = @import("lib/codec/color_frame_fixture.zig");
+	inline for (0..16) |id| try @call(.never_inline, checkColorFramePublic, .{ &@field(fixture, std.fmt.comptimePrint("bytes_{d}", .{id})), &@field(fixture, std.fmt.comptimePrint("pixels_{d}", .{id})), id });
+}
+test "gray ICC floating output matches upstream linear values" {
+	const fixture = @import("lib/codec/gray_profile_fixture.zig");
+	const bytes = @embedFile("lib/testdata/grayscale_icc.jxl");
+	const dec = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlDecoderDestroy(dec);
+	try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSubscribeEvents(dec, @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)));
+	try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(dec, bytes.ptr, bytes.len));
+	JxlDecoderCloseInput(dec);
+	const output = try std.testing.allocator.alloc(f32, fixture.pixels_1.len);
+	defer std.testing.allocator.free(output);
+	const format = JxlPixelFormat{ .num_channels = 1, .data_type = .JXL_TYPE_FLOAT, .endianness = .JXL_NATIVE_ENDIAN, .@"align" = 0 };
+	try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_NEED_IMAGE_OUT_BUFFER, JxlDecoderProcessInput(dec));
+	try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(dec, &format, @ptrCast(output.ptr), output.len * 4));
+	try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_FULL_IMAGE, JxlDecoderProcessInput(dec));
+	try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderProcessInput(dec));
+	for (output, &fixture.pixels_1) |actual, bits| try std.testing.expectApproxEqAbs(@as(f32, @bitCast(bits)), actual, 0.0001);
 }

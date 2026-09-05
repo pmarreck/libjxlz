@@ -1,10 +1,19 @@
 const std = @import("std");
 const image_metadata = @import("image_metadata.zig");
 
+pub fn outputEncoding(metadata: *const image_metadata.ImageMetadata) @import("color_encoding.zig").ColorEncoding {
+	const original = metadata.color_encoding;
+	if (metadata.xyb_encoded and (original.want_icc or (original.isGray() and original.white_point != .d65))) return .{
+		.color_space = if (original.isGray()) .gray else .rgb,
+		.tf = .{ .transfer_function = .linear },
+	};
+	return original;
+}
+
 /// Output color boundary shared by frame compositing and the C adapter.
 pub fn toOutputRgb(x: f32, y: f32, b: f32, params: *const OpsinParams, metadata: *const image_metadata.ImageMetadata) @import("../base/status.zig").JxlError![3]f32 {
 	var rgb = xybToLinearRgb(x, y, b, params);
-	const tf = metadata.color_encoding.tf;
+	const tf = outputEncoding(metadata).tf;
 	if (tf.have_gamma) return @import("../base/unsupported.zig").unsupported(.color_encoding);
 	switch (tf.transfer_function) {
 		.linear => {},
@@ -78,6 +87,11 @@ pub fn opsinParams(metadata: *const image_metadata.ImageMetadata, transform_data
 		params.neg_opsin_biases_cbrt[row] = signedCubeRoot(params.neg_opsin_biases[row]);
 	}
 
+	if (metadata.color_encoding.isGray()) {
+		var row: [3]f32 = undefined;
+		for (0..3) |c| row[c] = 0.2126 * params.inverse_matrix[0][c] + 0.7152 * params.inverse_matrix[1][c] + 0.0722 * params.inverse_matrix[2][c];
+		params.inverse_matrix = .{ row, row, row };
+	}
 	return params;
 }
 

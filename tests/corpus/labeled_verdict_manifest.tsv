@@ -14,7 +14,7 @@ tests/corpus/labeled/good/animation_icos4d.jxl	good	-	accept
 tests/corpus/labeled/good/bicycles.jxl	good	-	accept
 tests/corpus/labeled/good/delta_palette.jxl	good	-	accept
 tests/corpus/labeled/good/from_gif.jxl	good	-	accept
-tests/corpus/labeled/good/grayscale.jxl	good	-	unsupported
+tests/corpus/labeled/good/grayscale.jxl	good	-	accept
 tests/corpus/labeled/good/patches_lossless.jxl	good	-	accept
 tests/corpus/labeled/good/sunset_logo.jxl	good	-	accept
 tests/corpus/labeled/corrupt/bicycles_corrupt_1.jxl	corrupt	tests/corpus/labeled/good/bicycles.jxl	reject
