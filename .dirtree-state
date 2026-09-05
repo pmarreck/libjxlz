@@ -362,6 +362,7 @@ annotate=[
 	tests/cli/decode_known_unsupported_smoke.sh = explicit decoder gaps where upstream djxl succeeds but packaged djxlz currently rejects the codestream
 	tests/cli/decode_oracle_resolver_smoke.sh = pins and tests the upstream djxl oracle resolver/version contract
 	tests/cli/decode_spline_exact_oracle.sh = Canonical exact gate for both spline fixtures against pinned djxl v0.11.2; remains in full-suite discovery.
+	tests/cli/dequant_output_smoke.sh = Keep inherited benchmark output records intact across processes
 	tests/cli/djxlz_gif_animation_smoke.sh = CLI smoke for the new narrow animated JXL -> GIF path
 	tests/cli/djxlz_icc_profile_contract_smoke.sh = CLI contract smoke for the same decoder-side ICC export surface
 	tests/cli/djxlz_icc_profile_smoke.sh = CLI smoke for decoder-side embedded ICC export

@@ -159,7 +159,7 @@ pub fn main(init: std.process.Init) !void {
 	if (parsed.scaling) {
 		const ratio = try growthRatio(allocator, io, 16);
 		var stderr_buffer: [512]u8 = undefined;
-		var stderr_writer = std.Io.File.stderr().writer(io, &stderr_buffer);
+		var stderr_writer = std.Io.File.stderr().writerStreaming(io, &stderr_buffer);
 		const stderr = &stderr_writer.interface;
 		try stderr.print("getQuantWeights growth {d:.2}x per doubling (linear gate 2.8)\n", .{ratio});
 		try stderr.flush();
@@ -174,7 +174,7 @@ pub fn main(init: std.process.Init) !void {
 
 	if (parsed.print_checksum) {
 		var stdout_buffer: [4096]u8 = undefined;
-		var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
+		var stdout_writer = std.Io.File.stdout().writerStreaming(io, &stdout_buffer);
 		const stdout = &stdout_writer.interface;
 		try stdout.print("{x}\n", .{result.checksum});
 		try stdout.flush();

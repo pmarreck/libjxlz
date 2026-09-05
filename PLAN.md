@@ -109,11 +109,21 @@ below; pause for decisions only when they prevent safe implementation.
   The arithmetic ABI probe builds as a static library for all five platforms;
   these cross-builds do not establish execution on those platforms. Mixed
   references, allocation cleanup and whole-image performance still need checks.
-- [ ] Fix redirected benchmark diagnostics overwriting earlier log records.
+- [x] Fix redirected benchmark diagnostics overwriting earlier log records.
   `bench_dequant_ensure_computed` uses positional stdout/stderr writers; the
   scaling diagnostic overwrote the start of the combined `./bm` log. Retained
   arithmetic JSONL and CPU/wall histories are intact. Reproduce with a persistent
   shared-descriptor test, then use streaming writers, as in the arithmetic tool.
+  The retained CLI regression fails on the previous packaged binary and passes
+  on the streaming-writer build. Integrated both stdout/stderr writer changes;
+  run the full suite and build before keeping them — 16:56 EDT.
+  Full Nix unit checks, all 98 CLI suites, all 264 required mutation detections,
+  Windows cross-compilation and the production build pass — 17:12 EDT.
+  The Modular fix `eec46b15` passed exact-commit Mechatron at 17:06:20 EDT.
+  The isolated floating slice now also passes twenty mixed RGB/YCbCr reference
+  files and sixteen nonfinite patch files, including rewind. Existing finite
+  patch tests and injected allocation failures pass. Check floating alpha, then
+  integrate this slice and measure it before adding further effects.
 
 - [x] Extract a shared-reader permutation path from `toc.zig` without changing
   TOC decoding. Prove shared ANS state, skipped LLF coefficients, discarded
