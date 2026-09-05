@@ -186,7 +186,10 @@ on 2026-09-04; component presence does not establish full-format coverage):
   Raw matrices now decode through modular entropy at all 17 sizes, including
   borrowed global tables. Six additional full-frame fixtures cover alpha,
   two extras, 16-bit alpha and progressive groups; three cover custom opsin
-  matrices/biases, including explicit zeros. Chroma subsampling, resized or
+  matrices/biases, including explicit zeros. Fixed 2x/4x/8x frame upsampling
+  now covers default/custom weights, clamping and mirrored edges. Nine RGB
+  and thirteen RGBA frames match upstream, including unequal color/alpha
+  sampling and extra data spanning AC/DC groups. Chroma subsampling,
   floating-point extras and reference/render features remain gated.
   `splines.zig` already has color-correlation ratios and a continuous spline
   IDCT; neither is the missing VarDCT wire parser or block-transform pipeline.
@@ -194,7 +197,7 @@ on 2026-09-04; component presence does not establish full-format coverage):
   both flags before their payloads. Splines are already decoded and rendered.
 - **Remaining image-render stages.** `loop_filter.zig` already parses
   Gaborish/EPF parameters, and `image_metadata.zig` reads custom upsampling
-  weights. Gaborish/EPF pixel filters are now implemented; frame upsampling,
+  weights. Gaborish/EPF and frame upsampling are now implemented;
   reference blending and noise synthesis remain unfinished.
   Reuse the existing `render.zig` image/spline path, `xyb.zig`
   `xybToLinearRgb`, and `capi/output_buffer.zig` output conversion. Describing
@@ -202,7 +205,7 @@ on 2026-09-04; component presence does not establish full-format coverage):
 - **Progressive and reference-frame semantics.** Header parsing and TOC sizing
   exist; `decodeFrameWithReaderStrategy` already derives modular `pass_id` and
   dispatches it to `decodeGroup`. The C API advances through animation frames
-  and has replay/multi-frame tests. VarDCT progressive reconstruction and
+  and has replay/multi-frame tests. VarDCT progressive DC-frame reconstruction and
   cross-frame reference/blending state still need implementation and proof.
   Do not count all pass routing or animation as missing.
 - **JPEG reconstruction (`jbrd`).** The C API recognizes the reserved box name;
@@ -359,7 +362,7 @@ provided error detection is equal or better.
 ### Phase 4 — Render pipeline
 
 - [x] XYB to linear to sRGB display for complete VarDCT images.
-- [ ] Upsampling (2x, 4x, 8x) with the custom kernels.
+- [x] Upsampling (2x, 4x, 8x) with custom kernels, including extra channels.
 - [x] Gaborish and the edge-preserving filter.
 - [ ] Patches and noise synthesis (removes the `dec_frame.zig:545` rejection).
 - [ ] Frame blending and reference frames (unblocks animation).

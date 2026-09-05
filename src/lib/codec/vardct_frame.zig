@@ -40,9 +40,7 @@ pub fn decode(dec: *jxl.codec.dec_frame.FrameDecoder, data: []const u8, offset: 
 	if (fh.encoding != .var_dct) return error.GenericError;
 	if (!fh.chroma_subsampling.is444()) return unsupported(.chroma_subsampling);
 	if (fh.flags & jxl.codec.frame_header.FrameFlags.use_dc_frame != 0) return unsupported(.progressive_dc_frame);
-	if (fh.upsampling != 1) return unsupported(.upsampling);
 	for (0..dec.metadata.m.num_extra_channels) |i| {
-		if (fh.extra_channel_upsampling[i] != 1 or dec.metadata.m.extra_channel_info[i].dim_shift != 0) return unsupported(.upsampling);
 		if (dec.metadata.m.extra_channel_info[i].bit_depth.floating_point_sample) return unsupported(.bit_depth);
 	}
 	if (fh.frame_type == .dc_frame) return unsupported(.progressive_dc_frame);
@@ -152,9 +150,31 @@ pub fn decode(dec: *jxl.codec.dec_frame.FrameDecoder, data: []const u8, offset: 
 		try filter.epf(dec.allocator, output, params, sigma, 1);
 		if (fh.loop_filter.epf_iters >= 2) try filter.epf(dec.allocator, output, params, sigma, 2);
 	}
-	const rendered = try jxl.codec.render.FloatImage.init(dec.allocator, output.width, output.height, 3);
-	// Keep reconstruction and filtering in Fixed until the XYB display boundary.
-	for (output.data, rendered.data) |value, *dest| dest.* = std.math.ldexp(@as(f32, @floatFromInt(value.m)), value.e - 62);
+	const width = dec.frame_dim.xsize_upsampled;
+	const height = dec.frame_dim.ysize_upsampled;
+	var rendered = try jxl.codec.render.FloatImage.init(dec.allocator, width, height, 3 + dec.metadata.m.num_extra_channels);
+	errdefer rendered.deinit();
+	for (0..3) |c| {
+		const source = output.data[c * output.width * output.height ..][0 .. output.width * output.height];
+		const sampled = if (fh.upsampling == 1) null else try @import("upsampling.zig").fromMetadata(dec.allocator, .{ .width = output.width, .height = output.height, .data = source }, @intCast(fh.upsampling), &dec.metadata.transform_data, width, height);
+		defer if (sampled) |values| dec.allocator.free(values);
+		for (sampled orelse source, rendered.data[c * width * height ..][0 .. width * height]) |value, *dest| dest.* = std.math.ldexp(@as(f32, @floatFromInt(value.m)), value.e - 62);
+	}
+	for (0..dec.metadata.m.num_extra_channels) |index| {
+		const channel = &dec.modular_decoder.full_image.channels.items[index];
+		const values = try dec.allocator.alloc(sf.Fixed, channel.w * channel.h);
+		defer dec.allocator.free(values);
+		const bits = dec.metadata.m.extra_channel_info[index].bit_depth.bits_per_sample;
+		if (bits == 0 or bits > 32) return error.GenericError;
+		const maximum = sf.fromInt((@as(i64, 1) << @as(u6, @intCast(bits))) - 1);
+		for (0..channel.h) |y| for (channel.rowConst(y)[0..channel.w], values[y * channel.w ..][0..channel.w]) |raw, *value| {
+			value.* = sf.div(sf.fromInt(raw), maximum);
+		};
+		const factor = fh.extra_channel_upsampling[index];
+		const sampled = if (factor == 1) null else try @import("upsampling.zig").fromMetadata(dec.allocator, .{ .width = channel.w, .height = channel.h, .data = values }, @intCast(factor), &dec.metadata.transform_data, width, height);
+		defer if (sampled) |data_values| dec.allocator.free(data_values);
+		for (sampled orelse values, rendered.data[(3 + index) * width * height ..][0 .. width * height]) |value, *dest| dest.* = std.math.ldexp(@as(f32, @floatFromInt(value.m)), value.e - 62);
+	}
 	dec.rendered_image = rendered;
 }
 

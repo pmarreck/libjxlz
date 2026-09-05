@@ -121,13 +121,28 @@ below; pause for decisions only when they prevent safe implementation.
   production build passed — 04:30 EDT.
 - [x] Mechatron passed filtered VarDCT and large dequantization (`5df6e49a`)
   in 579 seconds, finishing 03:51:42 EDT.
-- [ ] Integrate the upsampling prototype after the current slice ships.
+- [x] Integrate the upsampling prototype after the current slice ships.
   All 2x/4x/8x stage pixels match upstream, including custom weights, clamping,
-  mirrored and partial edges. Nine complete RGB and nine RGBA frames match
+  mirrored and partial edges. Nine complete RGB and thirteen RGBA frames match
   upstream within one RGB8 level, including unequal alpha/color sampling.
   Allocation sweeps and truncated frames pass. Public output tests exposed
   and fixed an alpha indexing overrun in the prototype. Upstream header probes
-  also establish inherited extra sampling in all-default frames — 04:16 EDT.
+  also establish inherited extra sampling in all-default frames. Larger RGBA
+  cases cover AC/DC group boundaries and progressive passes — 04:31 EDT.
+- [x] Push raw matrices, full-resolution extras and custom opsin as `a30c8bbc`;
+  independently fetched origin and verified the full commit — 04:31 EDT.
+- [x] Run full tests/build for color and extra-channel upsampling. Nix unit
+  checks and all 94 CLI suites passed; production build passed — 04:48 EDT.
+  Keep chroma subsampling and floating extras gated.
+- [x] Mechatron passed `a30c8bbc` in 632 seconds, finishing 04:41:31 EDT.
+- [ ] Verify exact-commit CI for the upsampling shipment.
+- [ ] Reuse the completed sampling/filter stages for modular rendering too.
+  Its current post-transform path only renders spline overlays; it still needs
+  complete handling of sampled color, sampled extras and non-default filters.
+- [ ] Complete shared Fixed blending, then reference-frame state and patches.
+  A separate prototype matches 64 upstream blending configurations across all
+  eight modes, alpha selection, clamping and alpha association. Inputs remain
+  unchanged; invalid output aliasing and alpha indexes fail before writes.
 - [ ] Extend that working path to progressive/reference semantics and remaining
   dequant forms, then patches and remaining render stages. Each subfeature
   needs a known-good upstream fixture and malformed/truncated counterparts.

@@ -144,23 +144,27 @@ fn applyYCbCrChromaSubsampling(
     }
 }
 
-/// Applies `ExtraChannelInfo.dim_shift` to the in-memory modular image so
-/// subsampled alpha/depth planes use their encoded reduced geometry before
-/// ANS token decode and per-group tiling begin.
-fn applyExtraChannelDimShift(
+/// Uses effective frame sampling, which already includes metadata dim_shift.
+/// Group shifts are relative to color resolution; plane sizes are relative
+/// to the full output image.
+fn applyExtraChannelSampling(
 	allocator: std.mem.Allocator,
 	image: *Image,
 	frame_dim: FrameDimensions,
 	metadata: *const CodecMetadata,
+	frame_header: *const FrameHeader,
 	color_channels: usize,
 ) JxlError!void {
 	for (0..metadata.m.num_extra_channels) |extra_index| {
 		const channel_index = color_channels + extra_index;
 		if (channel_index >= image.channels.items.len) return error.GenericError;
 
-		const shift: i32 = @intCast(metadata.m.extra_channel_info[extra_index].dim_shift);
-		const width = common.subsampledSize(frame_dim.xsize, shift);
-		const height = common.subsampledSize(frame_dim.ysize, shift);
+		const factor = frame_header.extra_channel_upsampling[extra_index];
+		const color_factor = frame_header.upsampling;
+		if (factor == 0 or factor > 8 or !std.math.isPowerOfTwo(factor) or color_factor == 0 or !std.math.isPowerOfTwo(color_factor) or factor < color_factor) return error.GenericError;
+		const shift: i32 = @as(i32, @intCast(std.math.log2_int(u32, factor))) - @as(i32, @intCast(std.math.log2_int(u32, color_factor)));
+		const width = std.math.divCeil(usize, frame_dim.xsize_upsampled, factor) catch return error.GenericError;
+		const height = std.math.divCeil(usize, frame_dim.ysize_upsampled, factor) catch return error.GenericError;
 
 		var ch = &image.channels.items[channel_index];
 		ch.hshift = shift;
@@ -1324,11 +1328,12 @@ pub const ModularFrameDecoder = struct {
             );
         }
         if (nb_extra != 0) {
-            try applyExtraChannelDimShift(
+            try applyExtraChannelSampling(
                 self.allocator,
                 &self.full_image,
                 self.frame_dim,
                 metadata,
+                frame_header,
                 nb_chans,
             );
         }
@@ -2860,7 +2865,7 @@ test "applyYCbCrChromaSubsampling shrinks chroma channels" {
     try testing.expectEqual(@as(usize, 5), image.channels.items[2].h);
 }
 
-test "applyExtraChannelDimShift shrinks extra channels" {
+test "applyExtraChannelSampling shrinks extra channels" {
 	const allocator = testing.allocator;
 	var image = try Image.create(allocator, 4, 2, 8, 4);
 	defer image.deinit();
@@ -2879,7 +2884,9 @@ test "applyExtraChannelDimShift shrinks extra channels" {
 	metadata.m.extra_channel_count = 1;
 	metadata.m.extra_channel_info[0] = .{ .dim_shift = 1 };
 
-	try applyExtraChannelDimShift(allocator, &image, frame_dim, &metadata, 3);
+	var header = FrameHeader{};
+	header.extra_channel_upsampling[0] = 2;
+	try applyExtraChannelSampling(allocator, &image, frame_dim, &metadata, &header, 3);
 
 	try testing.expectEqual(@as(usize, 4), image.channels.items[0].w);
 	try testing.expectEqual(@as(usize, 2), image.channels.items[0].h);

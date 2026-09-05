@@ -55,6 +55,7 @@ pub const codec = struct {
 	pub const ac_group = @import("codec/ac_group.zig");
 	pub const ac_global = @import("codec/ac_global.zig");
 	pub const vardct_filters = @import("codec/vardct_filters.zig");
+	pub const upsampling = @import("codec/upsampling.zig");
 	pub const dc_smoothing = @import("codec/dc_smoothing.zig");
 	pub const quantizer = @import("codec/quantizer.zig");
 	pub const codestream_test = @import("codec/codestream_test.zig");
@@ -136,6 +137,9 @@ test {
 	_ = @import("codec/ac_global_test.zig");
 	_ = @import("codec/vardct_frame_test.zig");
 	_ = @import("codec/vardct_filters_test.zig");
+	_ = @import("codec/upsampling_test.zig");
+	_ = @import("codec/upsampling_frame_test.zig");
+	_ = @import("codec/upsampling_extra_test.zig");
 	_ = @import("codec/large_quant_test.zig");
 	_ = @import("codec/raw_quant_test.zig");
 	_ = @import("codec/raw_matrices_test.zig");

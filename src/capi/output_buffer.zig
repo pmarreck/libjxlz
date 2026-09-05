@@ -58,6 +58,13 @@ fn outputValue(img: *const Image, metadata: *const image_metadata.ImageMetadata,
 
 fn renderedOutputValue(rendered: *const render_mod.FloatImage, alpha_img: ?*const Image, metadata: *const image_metadata.ImageMetadata, x: usize, y: usize, requested_channel: usize) f32 {
 	if (requested_channel < 3) return rendered.rowConst(y, requested_channel)[x];
+	return renderedAlphaOutputValue(rendered, alpha_img, metadata, x, y);
+}
+
+fn renderedAlphaOutputValue(rendered: *const render_mod.FloatImage, alpha_img: ?*const Image, metadata: *const image_metadata.ImageMetadata, x: usize, y: usize) f32 {
+	if (alphaChannelIndex(metadata)) |index| {
+		if (rendered.channels > 3 + index) return rendered.rowConst(y, 3 + index)[x];
+	}
 	return normalizedAlphaOutputValue(alpha_img, metadata, x, y);
 }
 
@@ -270,7 +277,7 @@ pub fn writeXYBRenderedImageToOutput(rendered: *const render_mod.FloatImage, alp
 			const rgb = try xybToOutputRgb(row_x[x], row_y[x], row_b[x], &params, metadata);
 			const pixel = row[x * num_channels * bytes_per_channel ..];
 			for (0..num_channels) |c| {
-				const value = if (c < 3) rgb[c] else normalizedAlphaOutputValue(alpha_img, metadata, x, y);
+				const value = if (c < 3) rgb[c] else renderedAlphaOutputValue(rendered, alpha_img, metadata, x, y);
 				const normalized = clampNormalizedSample(value);
 				switch (format.data_type) {
 					.JXL_TYPE_UINT8 => {

@@ -322,7 +322,14 @@ pub const FrameHeader = struct {
     ) JxlError!FrameHeader {
         // AllDefault check
         if (fc.readAllDefault(br)) {
-            return FrameHeader{};
+            var defaults = FrameHeader{};
+            if (metadata) |md| defaults.color_transform = if (md.m.xyb_encoded) .xyb else .none;
+            if (metadata) |md| for (0..md.m.extra_channel_count) |i| {
+                const shift = md.m.extra_channel_info[i].dim_shift;
+                if (shift > 3) return error.GenericError;
+                defaults.extra_channel_upsampling[i] = @as(u32, 1) << @intCast(shift);
+            };
+            return defaults;
         }
         var fh = FrameHeader{};
 
@@ -763,4 +770,24 @@ test "modular pass classifier partitions channel shift pairs" {
     };
     try testing.expectEqual(@as(u32, 0x427000 | 0x210bc0 | 0x10843f), actual);
     try testing.expectError(error.GenericError, passes.shiftRange(5));
+}
+
+test "all-default frame retains metadata extra-channel sampling factors" {
+	// The retained upstream default_frame_oracle.cc reads this one-bit header.
+	var metadata = image_metadata.CodecMetadata{};
+	metadata.m.num_extra_channels = 4;
+	metadata.m.extra_channel_count = 4;
+	for (0..4) |i| metadata.m.extra_channel_info[i].dim_shift = @intCast(i);
+	var br = BitReader.init(&.{1});
+	const fh = try FrameHeader.readFromBitStream(&br, &metadata, false);
+	try testing.expectEqualSlices(u32, &.{ 1, 2, 4, 8 }, fh.extra_channel_upsampling[0..4]);
+	try testing.expectEqual(1, fh.upsampling);
+	try testing.expectEqual(1, br.totalBitsConsumed());
+}
+
+test "all-default frame derives its color transform from metadata" {
+	var metadata = image_metadata.CodecMetadata{};
+	metadata.m.xyb_encoded = false;
+	var br = BitReader.init(&.{1});
+	try testing.expectEqual(ColorTransform.none, (try FrameHeader.readFromBitStream(&br, &metadata, false)).color_transform);
 }
