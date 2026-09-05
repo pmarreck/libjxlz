@@ -322,7 +322,7 @@ fn buildSimpleFrameHeader(
 	var frame_header: frame_header_mod.FrameHeader = .{
 		.encoding = .modular,
 		.color_transform = .none,
-		.loop_filter = .{},
+		.loop_filter = .{ .gab = false, .epf_iters = 0 },
 	};
 	frame_header.animation_frame.duration = frame_duration;
 	frame_header.animation_frame.timecode = frame_timecode;
@@ -761,6 +761,8 @@ fn expectCodestreamRoundtrip(
 	var frame_dec = dec_frame.FrameDecoder.init(allocator, &parsed_meta);
 	defer frame_dec.deinit();
 	try frame_dec.decodeFrame(encoded[2 + frame_offset ..]);
+	try testing.expect(!frame_dec.frame_header.loop_filter.gab);
+	try testing.expectEqual(@as(u32, 0), frame_dec.frame_header.loop_filter.epf_iters);
 
 	const image = frame_dec.getDecodedImage();
 	try testing.expectEqual(@as(usize, expected.num_channels), image.channels.items.len);

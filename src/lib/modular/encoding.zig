@@ -839,9 +839,7 @@ pub fn modularDecodeWithReaderStrategy(
 
     // Apply forward transform metadata (modifies channel structure)
     for (header.transforms) |*t| {
-        var tm = @as(Transform, t.*);
-        try transform_mod.metaApply(image, &tm, allocator);
-        t.* = tm;
+        try transform_mod.metaApply(image, t, allocator);
     }
 
     // Move transforms to image for later undo (header gives up ownership)

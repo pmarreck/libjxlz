@@ -135,10 +135,28 @@ below; pause for decisions only when they prevent safe implementation.
   checks and all 94 CLI suites passed; production build passed — 04:48 EDT.
   Keep chroma subsampling and floating extras gated.
 - [x] Mechatron passed `a30c8bbc` in 632 seconds, finishing 04:41:31 EDT.
-- [ ] Verify exact-commit CI for the upsampling shipment.
-- [ ] Reuse the completed sampling/filter stages for modular rendering too.
-  Its current post-transform path only renders spline overlays; it still needs
-  complete handling of sampled color, sampled extras and non-default filters.
+- [x] Mechatron passed upsampling (`d0c10124`) in 666 seconds, finishing
+  05:03:27 EDT; origin independently matched the pushed commit.
+- [x] Reuse completed sampling/filter stages for modular RGB, XYB and grayscale.
+  Sixteen upstream frames match public output within one 8-bit level. Preserve
+  the existing plain spline path; combined spline/filter/sampling remains.
+  Allocation sweeps exposed a leaked generated squeeze list; transform metadata
+  now updates its owner directly. Default modular EPF sigma is corrected to 1.
+  Fixed-to-display conversion rounds binary32 bits with integer arithmetic;
+  4096 seeded wire values and exponent/rounding boundaries pass — 04:56 EDT.
+- [x] Run full tests/build for shared modular rendering.
+  First full run exposed encoder checks tied to the old sigma default of zero.
+  Corrected both header predicates; 111 existing header/roundtrip tests pass.
+  Stopped that failed run after confirming the common cause; rerunning all
+  checks with the correction — 05:04 EDT.
+  That rerun passed 605 root tests and exposed three ICC pixel roundtrips:
+  the lossless encoder had enabled filters, hidden by the old decoder skipping
+  them. Disabled filters in its shared header builder and added retained
+  header assertions. All 667 public/root Debug tests now pass — 05:10 EDT.
+  Full rerun passed the Nix unit check, all 94 CLI suites and all 264 required
+  mutation detections; production build passed — 05:25 EDT.
+- [ ] Verify exact-commit CI for shared modular rendering and the lossless
+  encoder filter correction.
 - [ ] Complete shared Fixed blending, then reference-frame state and patches.
   A separate prototype matches 64 upstream blending configurations across all
   eight modes, alpha selection, clamping and alpha association. Inputs remain

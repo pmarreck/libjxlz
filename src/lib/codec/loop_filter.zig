@@ -36,7 +36,7 @@ pub const LoopFilter = struct {
     epf_pass2_sigma_scale: f32 = 0,
     epf_border_sad_mul: f32 = 0,
 
-    epf_sigma_for_modular: f32 = 0,
+    epf_sigma_for_modular: f32 = 1,
 
     extensions: u64 = 0,
 
@@ -138,6 +138,7 @@ test "LoopFilter all default" {
     const lf = try LoopFilter.readFromBitStream(&br, false);
     try testing.expect(lf.gab);
     try testing.expectEqual(@as(u32, 2), lf.epf_iters);
+    try testing.expectEqual(@as(f32, 1), lf.epf_sigma_for_modular);
 }
 
 test "LoopFilter non-default gab off" {

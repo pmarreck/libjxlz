@@ -140,6 +140,8 @@ test {
 	_ = @import("codec/upsampling_test.zig");
 	_ = @import("codec/upsampling_frame_test.zig");
 	_ = @import("codec/upsampling_extra_test.zig");
+	_ = @import("codec/modular_render_test.zig");
+	_ = @import("base/fixed_display_test.zig");
 	_ = @import("codec/large_quant_test.zig");
 	_ = @import("codec/raw_quant_test.zig");
 	_ = @import("codec/raw_matrices_test.zig");

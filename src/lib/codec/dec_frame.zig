@@ -1706,7 +1706,7 @@ pub const FrameDecoder = struct {
 
         // Finalize: undo transforms on full image
         try self.modular_decoder.finalizeDecoding();
-        try self.renderSplineOverlays();
+        try @import("modular_render.zig").render(self);
     }
 
     /// Decode an entire frame using the default hot-path reader strategy.

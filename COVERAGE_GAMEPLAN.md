@@ -198,6 +198,10 @@ on 2026-09-04; component presence does not establish full-format coverage):
 - **Remaining image-render stages.** `loop_filter.zig` already parses
   Gaborish/EPF parameters, and `image_metadata.zig` reads custom upsampling
   weights. Gaborish/EPF and frame upsampling are now implemented;
+  modular RGB, XYB and grayscale now reuse those stages. Sixteen complete
+  upstream images cover sampled color/alpha and non-default filters through
+  the public decoder. Combined spline/filter/sampling and floating-point
+  rendering still need completion.
   reference blending and noise synthesis remain unfinished.
   Reuse the existing `render.zig` image/spline path, `xyb.zig`
   `xybToLinearRgb`, and `capi/output_buffer.zig` output conversion. Describing

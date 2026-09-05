@@ -5546,3 +5546,32 @@ test "VarDCT public upsampling color and alpha frames match upstream" {
 		}
 	}
 }
+test "Modular public rendered RGB and gray frames match upstream" {
+	@setEvalBranchQuota(20000);
+	const testing = std.testing;
+	inline for (0..2) |kind| {
+		const fixture = if (kind == 0) @import("lib/codec/modular_render_fixture.zig") else @import("lib/codec/modular_gray_fixture.zig");
+		inline for (0..(if (kind == 0) 12 else 4)) |id| {
+			const data = @field(fixture, "bytes_" ++ std.fmt.comptimePrint("{d}", .{id}));
+			const expected = @field(fixture, "rgb_" ++ std.fmt.comptimePrint("{d}", .{id}));
+			var result: JxlValidationResult = undefined;
+			const verdict = JxlValidate(&data, data.len, null, &result);
+			if (verdict != .JXL_VALIDATION_VALID) std.debug.print("kind={d} id={d} feature={any}\n", .{ kind, id, result.feature });
+			try testing.expectEqual(JxlValidationVerdict.JXL_VALIDATION_VALID, verdict);
+			try testing.expectEqual(@as(u32, 1), result.frames_validated);
+			const decoder = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+			defer JxlDecoderDestroy(decoder);
+			try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSubscribeEvents(decoder, @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)));
+			try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(decoder, &data, data.len));
+			JxlDecoderCloseInput(decoder);
+			try testing.expectEqual(JxlDecoderStatus.JXL_DEC_NEED_IMAGE_OUT_BUFFER, JxlDecoderProcessInput(decoder));
+			const output = try testing.allocator.alloc(u8, expected.len);
+			defer testing.allocator.free(output);
+			const format = JxlPixelFormat{ .num_channels = if (kind == 0) 4 else 2, .data_type = .JXL_TYPE_UINT8, .endianness = .JXL_NATIVE_ENDIAN, .@"align" = 0 };
+			try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(decoder, &format, output.ptr, output.len));
+			try testing.expectEqual(JxlDecoderStatus.JXL_DEC_FULL_IMAGE, JxlDecoderProcessInput(decoder));
+			for (output, expected) |actual, reference| try testing.expect(@abs(@as(i32, actual) - @as(i32, reference)) <= 1);
+			try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderProcessInput(decoder));
+		}
+	}
+}

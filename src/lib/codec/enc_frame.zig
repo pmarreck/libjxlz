@@ -165,7 +165,7 @@ fn isDefaultLoopFilter(loop_filter: *const @import("loop_filter.zig").LoopFilter
         loop_filter.epf_pass0_sigma_scale == 0 and
         loop_filter.epf_pass2_sigma_scale == 0 and
         loop_filter.epf_border_sad_mul == 0 and
-        loop_filter.epf_sigma_for_modular == 0 and
+        loop_filter.epf_sigma_for_modular == 1 and
         loop_filter.extensions == 0;
 }
 
@@ -182,7 +182,7 @@ fn isSimpleDisabledLoopFilter(loop_filter: *const @import("loop_filter.zig").Loo
         !loop_filter.epf_sharp_custom and
         !loop_filter.epf_weight_custom and
         !loop_filter.epf_sigma_custom and
-        loop_filter.epf_sigma_for_modular == 0 and
+        loop_filter.epf_sigma_for_modular == 1 and
         loop_filter.extensions == 0;
 }
 

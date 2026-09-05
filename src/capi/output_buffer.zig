@@ -167,9 +167,10 @@ pub fn writeImageToOutput(img: *const Image, metadata: *const image_metadata.Ima
 /// Writes a post-render normalized float RGB image into the public C API output
 /// buffer; XYB-to-output color conversion is a separate stage.
 pub fn writeRenderedImageToOutput(rendered: *const render_mod.FloatImage, alpha_img: ?*const Image, metadata: *const image_metadata.ImageMetadata, format: JxlPixelFormat, buffer: [*]u8, buffer_size: usize) JxlError!void {
-	if (metadata.color_encoding.channels() != 3) return error.Unsupported;
+	const gray = metadata.color_encoding.channels() == 1;
+	if (!gray and metadata.color_encoding.channels() != 3) return error.Unsupported;
 	if (rendered.channels < 3) return error.Unsupported;
-	if (!(format.num_channels == 3 or format.num_channels == 4)) return error.Unsupported;
+	if (format.num_channels < (if (gray) @as(u32, 1) else 3) or format.num_channels > 4) return error.Unsupported;
 
 	const stride = rowStrideBytes(rendered.xsize, format) orelse return error.Unsupported;
 	if (stride * rendered.ysize > buffer_size) return error.GenericError;
@@ -197,7 +198,8 @@ pub fn writeRenderedImageToOutput(rendered: *const render_mod.FloatImage, alpha_
 		for (0..rendered.xsize) |x| {
 			const pixel = row[x * num_channels * bytes_per_channel ..];
 			for (0..num_channels) |c| {
-				const value = renderedOutputValue(rendered, alpha_img, metadata, x, y, c);
+				const source_channel = if (gray and num_channels == 2 and c == 1) 3 else c;
+				const value = renderedOutputValue(rendered, alpha_img, metadata, x, y, source_channel);
 				const normalized = clampNormalizedSample(value);
 				switch (format.data_type) {
 					.JXL_TYPE_UINT8 => {
