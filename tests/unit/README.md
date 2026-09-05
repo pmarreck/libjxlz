@@ -40,3 +40,9 @@ asserts the actual emitted mode.
 The Huffman generator compares every lookup-table entry and every possible
 15-bit lookahead across nine trees. The blending, patch and reference generators
 compare upstream pixels, with complete-frame checks through the public API.
+
+`progressive_dc_oracle.cc` checks frame offsets, DC levels and dependency flags
+before comparing displayed pixels. The public encoder produces levels 1/2.
+For levels 3/4, the generator repeats 1x1 DC sections with rewritten headers;
+the upstream decoder validates and renders the resulting complete streams.
+It also verifies that all four missing-higher-reference variants are rejected.

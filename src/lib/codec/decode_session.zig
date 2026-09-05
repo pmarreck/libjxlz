@@ -19,11 +19,16 @@ fn mode(info: jxl.codec.frame_header.BlendingInfo) blend.Info {
 pub const Session = struct {
 	allocator: std.mem.Allocator,
 	refs: [4]patch.Reference = @splat(.{}),
+	dc_refs: [4]?patch.Image = @splat(null),
 	coalescing: bool = true,
 	pub fn init(allocator: std.mem.Allocator) Session {
 		return .{ .allocator = allocator };
 	}
 	pub fn deinit(self: *Session) void {
+		for (&self.dc_refs) |*slot| {
+			if (slot.*) |image| self.allocator.free(image.data);
+			slot.* = null;
+		}
 		for (&self.refs) |*ref| {
 			if (ref.image) |image| self.allocator.free(image.data);
 			ref.* = .{};
@@ -34,6 +39,7 @@ pub const Session = struct {
 		errdefer dec.deinit();
 		dec.force_render = true;
 		dec.references = &self.refs;
+		dec.dc_references = &self.dc_refs;
 		try dec.decodeFrame(data);
 		try self.finish(&dec);
 		return dec;
@@ -41,23 +47,48 @@ pub const Session = struct {
 	fn finish(self: *Session, dec: *FrameDecoder) Error!void {
 		const fh = &dec.frame_header;
 		const metadata = dec.metadata;
+		if (fh.frame_type == .dc_frame) {
+			if (fh.dc_level == 0 or fh.dc_level > 4) return error.GenericError;
+			const rendered = dec.rendered_image orelse return error.GenericError;
+			if (rendered.channels < 3) return error.GenericError;
+			const values = try self.allocator.alloc(sf.Fixed, 3 * rendered.xsize * rendered.ysize);
+			errdefer self.allocator.free(values);
+			for (rendered.data[0..values.len], values) |value, *dest| dest.* = try jxl.base.float16.loadFloat32Fixed(value);
+			const slot = &self.dc_refs[fh.dc_level - 1];
+			if (slot.*) |old| self.allocator.free(old.data);
+			slot.* = .{ .width = rendered.xsize, .height = rendered.ysize, .channels = 3, .data = values };
+			return;
+		}
 		if (!fh.canBeReferenced() and !fh.needsBlending(metadata.m.num_extra_channels)) return;
 		const rendered = dec.rendered_image orelse return error.GenericError;
 		const xyb = metadata.m.xyb_encoded or fh.color_transform == .xyb;
-		if (xyb and !fh.save_before_color_transform) return error.Unsupported;
 		if (!xyb and fh.color_transform != .none) return error.Unsupported;
 		const input = patch.Image{ .width = rendered.xsize, .height = rendered.ysize, .channels = rendered.channels, .data = try self.allocator.alloc(sf.Fixed, rendered.data.len) };
 		defer self.allocator.free(input.data);
 		for (rendered.data, input.data) |value, *dest| dest.* = try jxl.base.float16.loadFloat32Fixed(value);
 		const regular = fh.frame_type == .regular_frame or fh.frame_type == .skip_progressive;
-		const composed = if (self.coalescing and regular and !xyb) try self.compose(input, fh, metadata) else null;
+		const post_color = xyb and self.coalescing and (!fh.save_before_color_transform or (regular and fh.needsBlending(metadata.m.num_extra_channels)));
+		var converted: ?patch.Image = null;
+		defer if (converted) |image| self.allocator.free(image.data);
+		if (post_color) {
+			const owned = try self.allocator.dupe(sf.Fixed, input.data);
+			converted = input;
+			converted.?.data = owned;
+			const params = jxl.codec.xyb.opsinParams(&metadata.m, &metadata.transform_data);
+			for (0..input.height) |y| for (0..input.width) |x| {
+				const rgb = try jxl.codec.xyb.toOutputRgb(rendered.rowConst(y, 0)[x], rendered.rowConst(y, 1)[x], rendered.rowConst(y, 2)[x], &params, &metadata.m);
+				for (rgb, 0..) |value, c| converted.?.data[(c * input.height + y) * input.width + x] = try jxl.base.float16.loadFloat32Fixed(value);
+			};
+		}
+		const pixels = converted orelse input;
+		const composed = if (self.coalescing and regular and (!xyb or post_color)) try self.compose(pixels, fh, metadata) else null;
 		defer if (composed) |image| self.allocator.free(image.data);
 		var final = try jxl.codec.render.FloatImage.init(self.allocator, if (composed) |image| image.width else input.width, if (composed) |image| image.height else input.height, input.channels);
 		errdefer final.deinit();
-		for (if (composed) |image| image.data else input.data, final.data) |value, *dest| dest.* = @bitCast(display.bits(value));
+		for (if (composed) |image| image.data else pixels.data, final.data) |value, *dest| dest.* = @bitCast(display.bits(value));
 		if (fh.canBeReferenced() and (fh.save_before_color_transform or self.coalescing)) {
 			if (fh.save_as_reference >= 4) return error.GenericError;
-			const saved = if (fh.save_before_color_transform) input else composed orelse input;
+			const saved = if (fh.save_before_color_transform) input else composed orelse pixels;
 			const owned = try self.allocator.dupe(sf.Fixed, saved.data);
 			const slot = &self.refs[fh.save_as_reference];
 			if (slot.image) |old| self.allocator.free(old.data);
@@ -65,6 +96,7 @@ pub const Session = struct {
 		}
 		dec.rendered_image.?.deinit();
 		dec.rendered_image = final;
+		dec.rendered_in_output_space = post_color;
 	}
 	fn compose(self: *Session, input: patch.Image, fh: *const jxl.codec.frame_header.FrameHeader, metadata: *const jxl.codec.image_metadata.CodecMetadata) Error!patch.Image {
 		const width = metadata.xsize();

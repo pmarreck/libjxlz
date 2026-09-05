@@ -39,13 +39,11 @@ pub fn decode(dec: *jxl.codec.dec_frame.FrameDecoder, data: []const u8, offset: 
 	const unsupported = @import("../base/unsupported.zig").unsupported;
 	if (fh.encoding != .var_dct) return error.GenericError;
 	if (!fh.chroma_subsampling.is444()) return unsupported(.chroma_subsampling);
-	if (fh.flags & jxl.codec.frame_header.FrameFlags.use_dc_frame != 0) return unsupported(.progressive_dc_frame);
+	const use_dc = fh.flags & jxl.codec.frame_header.FrameFlags.use_dc_frame != 0;
 	for (0..dec.metadata.m.num_extra_channels) |i| {
 		if (dec.metadata.m.extra_channel_info[i].bit_depth.floating_point_sample) return unsupported(.bit_depth);
 	}
-	if (fh.frame_type == .dc_frame) return unsupported(.progressive_dc_frame);
-	if (fh.frame_type == .reference_only) return unsupported(.reference_frame);
-	if (fh.blending_info.mode != .replace or fh.custom_size_or_origin) return unsupported(.frame_blending);
+	if (!dec.force_render and (fh.frame_type == .reference_only or fh.needsBlending(dec.metadata.m.num_extra_channels))) return unsupported(.frame_blending);
 	if (fh.color_transform != .xyb) return unsupported(.color_encoding);
 	if (fh.flags & jxl.codec.frame_header.FrameFlags.splines != 0) return unsupported(.splines);
 	if (dec.metadata.m.color_encoding.want_icc) return unsupported(.icc_profile);
@@ -70,23 +68,34 @@ pub fn decode(dec: *jxl.codec.dec_frame.FrameDecoder, data: []const u8, offset: 
 	for (&full_dc.planes) |*plane| {
 		plane.* = .{ .width = full_dc.width, .height = full_dc.height, .samples = try dec.allocator.alloc(sf.Fixed, full_dc.width * full_dc.height) };
 	}
+	if (use_dc) {
+		if (fh.dc_level >= 4) return error.GenericError;
+		const refs = dec.dc_references orelse return error.GenericError;
+		const image = refs[fh.dc_level] orelse return error.GenericError;
+		if (image.width != full_dc.width or image.height != full_dc.height or image.channels != 3 or image.data.len != 3 * image.width * image.height) return error.GenericError;
+		for (full_dc.planes, 0..) |plane, c| @memcpy(plane.samples, image.data[c * image.width * image.height ..][0 .. image.width * image.height]);
+	}
 	var used_acs: u32 = 0;
 	for (dc_sections, 0..) |*slot, id| {
 		const br = section(readers, id + 1);
-		var dc = try dec.decodeVarDctDC(br, id);
+		const rect = dec.frame_dim.dcGroupRect(id);
+		var dc = if (use_dc) jxl.codec.dc_group.DcGroup{ .allocator = dec.allocator, .width = rect.xsize(), .height = rect.ysize() } else try dec.decodeVarDctDC(br, id);
 		errdefer dc.deinit();
+		if (use_dc) {
+			dc.buckets = try dec.allocator.alloc(u8, rect.xsize() * rect.ysize());
+			@memset(dc.buckets, 0);
+		}
 		try dec.modular_decoder.decodeGroup(br, id, 0, true);
 		const meta = try dec.modular_decoder.decodeAcMetadata(br, id, fh);
 		slot.* = .{ .dc = dc, .meta = meta };
 		used_acs |= meta.block_map.used_acs;
-		const rect = dec.frame_dim.dcGroupRect(id);
-		for (dc.planes, full_dc.planes) |src, dst| for (0..rect.ysize()) |y| {
+		if (!use_dc) for (dc.planes, full_dc.planes) |src, dst| for (0..rect.ysize()) |y| {
 			@memcpy(dst.samples[(rect.y0() + y) * full_dc.width + rect.x0() ..][0..rect.xsize()], src.samples[y * src.width ..][0..rect.xsize()]);
 		};
 	}
 	const global = &dec.vardct_global.?;
 	// Smoothing needs neighbors across DC-group boundaries.
-	if (fh.flags & jxl.codec.frame_header.FrameFlags.skip_adaptive_dc_smoothing == 0)
+	if (!use_dc and fh.flags & jxl.codec.frame_header.FrameFlags.skip_adaptive_dc_smoothing == 0)
 		try jxl.codec.dc_smoothing.smooth(dec.allocator, full_dc.planes, global.quantizer.dcSteps(dec.dequant_matrices.dc_quant));
 	const ac_global_id = 1 + dec.frame_dim.num_dc_groups;
 	const modular = &dec.modular_decoder;

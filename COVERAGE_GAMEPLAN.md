@@ -40,9 +40,9 @@ management fact. It says nothing about whether the frame is modular or VarDCT,
 and it misled a consumer into guessing modular transforms were the gap.
 ## 1. August baseline and subsequent corrections
 
-Current measured partition (2026-09-05): six labeled-good images decode and
-two remain unsupported (`grayscale.jxl`, `animation_icos4d.jxl`). Both patch
-images decode completely. Four corrupted bicycles images are rejected; the
+Current measured partition (2026-09-05): seven labeled-good images decode and
+`grayscale.jxl` remains unsupported at the ICC gate. Both patch images and all
+48 frames of `animation_icos4d.jxl` decode. Four corrupted bicycles images are rejected; the
 fifth is also accepted by upstream. Section 1.4 records current implementation
 coverage; the earlier measurements below retain the original diagnosis.
 
@@ -154,7 +154,7 @@ and prefix entropy decoding with LZ77, modular mode (MA trees, predictors,
 weighted predictor, and all three transforms: RCT, Palette, and Squeeze, each
 with a working inverse), splines, and a narrow lossless modular encoder.
 
-Current coverage and remaining work (2026-09-05 06:28 EDT):
+Current coverage and remaining work (2026-09-05 08:15 EDT):
 
 - VarDCT frames now connect DC-global metadata, DC/AC groups, coefficient
   orders and all 27 inverse transforms through DCT256. Dequantization covers
@@ -163,7 +163,7 @@ Current coverage and remaining work (2026-09-05 06:28 EDT):
   cover partial edges, multiple AC/DC groups, progressive AC, extra channels,
   16-bit alpha and custom opsin matrices, including explicit zeros. Long
   Huffman tables now match upstream for every 15-bit lookahead across nine
-  trees. Chroma-subsampled frame rendering, progressive DC frames and
+  trees. Chroma-subsampled frame rendering and
   floating-point extra channels still need completion.
 - Patch dictionaries now decode into owned state and apply all eight modes in
   Fixed. Independent tests cover 24 dictionaries, signed offsets, overlap,
@@ -182,15 +182,17 @@ Current coverage and remaining work (2026-09-05 06:28 EDT):
   supply patches. The public decoder coalesces hidden layers, retains reference
   state across skips, resets it on rewind, and requests a fresh output buffer
   per displayed frame. With coalescing disabled, twenty upstream layer outputs
-  match dimensions, headers and pixels. Post-color XYB reference/blending and
-  progressive DC references remain unfinished. Existing TOC permutations,
+  match dimensions, headers and pixels. Twenty post-color XYB layer cases
+  match upstream. Progressive DC references cover all four levels, missing
+  dependencies, size mismatches, allocation failures and reset/rewind.
+  Existing TOC permutations,
   modular pass routing and ordinary animation support are already present.
 - Container/BMFF and compressed ICC support are partial. JPEG reconstruction
   (`jbrd`) is still recognized only by box name; payload parsing and exact JPEG
   reconstruction need implementation and independent proof.
 
-The reference/patch slice has passed targeted and prototype regression tests;
-its full repository suite and production build are still pending.
+Reference/patch and post-color/progressive-DC slices have passed the full
+repository suite and production build. Reference/patch CI passed at `39923aab`.
 
 These categories were already listed at commit `3bbf1a3e`, before tonight's
 work. The earlier wording mixed whole subsystems with missing subcomponents,

@@ -5791,3 +5791,74 @@ test "extra-channel-only frame blending matches upstream RGBA" {
 		try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderProcessInput(decoder));
 	}
 }
+test "post-color XYB reference layers match upstream RGB and RGBA" {
+	@setEvalBranchQuota(30000);
+	const fixture = @import("lib/codec/postcolor_fixture.zig");
+	const testing = std.testing;
+	inline for (0..20) |id| {
+		const suffix = std.fmt.comptimePrint("{d}", .{id});
+		const data = @field(fixture, "bytes_" ++ suffix);
+		const expected = @field(fixture, "pixels_" ++ suffix);
+		var validation: JxlValidationResult = undefined;
+		try testing.expectEqual(JxlValidationVerdict.JXL_VALIDATION_VALID, JxlValidate(&data, data.len, null, &validation));
+		const decoder = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+		defer JxlDecoderDestroy(decoder);
+		try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSubscribeEvents(decoder, @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)));
+		for (0..3) |attempt| {
+			if (attempt == 1) JxlDecoderRewind(decoder);
+			if (attempt == 2) {
+				JxlDecoderReset(decoder);
+				try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSubscribeEvents(decoder, @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)));
+			}
+			try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(decoder, &data, data.len));
+			JxlDecoderCloseInput(decoder);
+			try testing.expectEqual(JxlDecoderStatus.JXL_DEC_NEED_IMAGE_OUT_BUFFER, JxlDecoderProcessInput(decoder));
+			const output = try testing.allocator.alloc(u8, expected.len);
+			defer testing.allocator.free(output);
+			const format = JxlPixelFormat{ .num_channels = 3 + (id % 10) / 5, .data_type = .JXL_TYPE_UINT8, .endianness = .JXL_NATIVE_ENDIAN, .@"align" = 0 };
+			try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(decoder, &format, output.ptr, output.len));
+			try testing.expectEqual(JxlDecoderStatus.JXL_DEC_FULL_IMAGE, JxlDecoderProcessInput(decoder));
+			for (output, expected, 0..) |actual, wanted, index| if (@abs(@as(i32, actual) - @as(i32, wanted)) > 1) {
+				std.debug.print("id={d} index={d} actual={d} expected={d}\n", .{ id, index, actual, wanted });
+				return error.TestUnexpectedResult;
+			};
+			try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderProcessInput(decoder));
+		}
+	}
+}
+test "progressive DC public decoder matches upstream RGB and RGBA" {
+	@setEvalBranchQuota(30000);
+	const fixture = @import("lib/codec/progressive_dc_fixture.zig");
+	const testing = std.testing;
+	inline for (0..10) |id| {
+		const suffix = std.fmt.comptimePrint("{d}", .{id});
+		const data = @field(fixture, "bytes_" ++ suffix);
+		const expected = @field(fixture, "pixels_" ++ suffix);
+		var validation: JxlValidationResult = undefined;
+		try testing.expectEqual(JxlValidationVerdict.JXL_VALIDATION_VALID, JxlValidate(&data, data.len, null, &validation));
+		try testing.expectEqual(@as(u32, if (id >= 8) id - 4 else 2 + id % 2), validation.frames_validated);
+		const decoder = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+		defer JxlDecoderDestroy(decoder);
+		try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSubscribeEvents(decoder, @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)));
+		for (0..3) |attempt| {
+			if (attempt == 1) JxlDecoderRewind(decoder);
+			if (attempt == 2) {
+				JxlDecoderReset(decoder);
+				try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSubscribeEvents(decoder, @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)));
+			}
+			try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(decoder, &data, data.len));
+			JxlDecoderCloseInput(decoder);
+			try testing.expectEqual(JxlDecoderStatus.JXL_DEC_NEED_IMAGE_OUT_BUFFER, JxlDecoderProcessInput(decoder));
+			const output = try testing.allocator.alloc(u8, expected.len);
+			defer testing.allocator.free(output);
+			const format = JxlPixelFormat{ .num_channels = if (id < 4 or id >= 8) 3 else 4, .data_type = .JXL_TYPE_UINT8, .endianness = .JXL_NATIVE_ENDIAN, .@"align" = 0 };
+			try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(decoder, &format, output.ptr, output.len));
+			try testing.expectEqual(JxlDecoderStatus.JXL_DEC_FULL_IMAGE, JxlDecoderProcessInput(decoder));
+			for (output, expected, 0..) |actual, wanted, index| if (@abs(@as(i32, actual) - @as(i32, wanted)) > 1) {
+				std.debug.print("id={d} index={d} actual={d} expected={d}\n", .{ id, index, actual, wanted });
+				return error.TestUnexpectedResult;
+			};
+			try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderProcessInput(decoder));
+		}
+	}
+}

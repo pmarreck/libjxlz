@@ -1,6 +1,23 @@
 const std = @import("std");
 const image_metadata = @import("image_metadata.zig");
 
+/// Output color boundary shared by frame compositing and the C adapter.
+pub fn toOutputRgb(x: f32, y: f32, b: f32, params: *const OpsinParams, metadata: *const image_metadata.ImageMetadata) @import("../base/status.zig").JxlError![3]f32 {
+	var rgb = xybToLinearRgb(x, y, b, params);
+	const tf = metadata.color_encoding.tf;
+	if (tf.have_gamma) return @import("../base/unsupported.zig").unsupported(.color_encoding);
+	switch (tf.transfer_function) {
+		.linear => {},
+		.srgb => for (&rgb) |*value| {
+			const magnitude = @abs(value.*);
+			const encoded = if (magnitude <= 0.0031308) magnitude * 12.92 else 1.055 * std.math.pow(f32, magnitude, 1.0 / 2.4) - 0.055;
+			value.* = if (value.* < 0) -encoded else encoded;
+		},
+		else => return @import("../base/unsupported.zig").unsupported(.color_encoding),
+	}
+	return rgb;
+}
+
 const default_intensity_target: f32 = 255.0;
 const default_opsin_bias: f32 = 0.0037930732552754493;
 const default_neg_opsin_biases = [3]f32{

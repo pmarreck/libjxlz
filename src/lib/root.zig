@@ -104,6 +104,8 @@ test {
 	_ = @import("codec/blending_test.zig");
 	_ = @import("codec/patches_test.zig");
 	_ = @import("codec/decode_session_test.zig");
+	_ = @import("codec/postcolor_test.zig");
+	_ = @import("codec/progressive_dc_test.zig");
 	_ = @import("codec/patch_frame_test.zig");
 	_ = @import("entropy/hybrid_uint.zig");
 	_ = @import("entropy/inverse_mtf.zig");

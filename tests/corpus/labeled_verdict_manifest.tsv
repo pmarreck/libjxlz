@@ -10,7 +10,7 @@
 #   base     clean fixture a corrupt case was derived from, or - when unpaired
 #   expected accept | reject | unsupported  (see tests/lib/labeled_corpus_matrix.bash)
 tests/corpus/labeled/good/alpha_premultiplied.jxl	good	-	accept
-tests/corpus/labeled/good/animation_icos4d.jxl	good	-	unsupported
+tests/corpus/labeled/good/animation_icos4d.jxl	good	-	accept
 tests/corpus/labeled/good/bicycles.jxl	good	-	accept
 tests/corpus/labeled/good/delta_palette.jxl	good	-	accept
 tests/corpus/labeled/good/from_gif.jxl	good	-	accept

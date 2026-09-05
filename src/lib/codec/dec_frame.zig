@@ -1516,8 +1516,10 @@ pub const FrameDecoder = struct {
     dequant_matrices: DequantMatrices = .{},
     vardct_global: ?VarDctGlobal = null,
     rendered_image: ?render_mod.FloatImage = null,
+    rendered_in_output_space: bool = false,
     force_render: bool = false,
     references: ?*const [4]@import("patches.zig").Reference = null,
+    dc_references: ?*const [4]?@import("patches.zig").Image = null,
     patches: ?@import("patches.zig").Dictionary = null,
     metadata: *const CodecMetadata,
     decoded_dc_global: bool = false,
@@ -1669,6 +1671,12 @@ pub const FrameDecoder = struct {
         const header_byte_offset = self.headerBytes(&header_br);
         try header_br.close();
 
+        if (self.frame_header.flags & frame_header_mod.FrameFlags.use_dc_frame != 0) {
+            if (self.frame_header.dc_level >= 4) return error.GenericError;
+            const refs = self.dc_references orelse return error.GenericError;
+            if (refs[self.frame_header.dc_level] == null) return error.GenericError;
+        }
+
         if (self.frame_header.encoding != .modular) {
             return @import("vardct_frame.zig").decode(self, data, header_byte_offset);
         }
@@ -1731,6 +1739,7 @@ pub const FrameDecoder = struct {
     }
 
     fn clearRenderedImage(self: *FrameDecoder) void {
+        self.rendered_in_output_space = false;
         if (self.rendered_image) |*image| {
             image.deinit();
             self.rendered_image = null;

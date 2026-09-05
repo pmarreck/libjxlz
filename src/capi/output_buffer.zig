@@ -227,18 +227,7 @@ pub fn writeRenderedImageToOutput(rendered: *const render_mod.FloatImage, alpha_
 /// Converts rendered XYB float rows through the scalar inverse-opsin path and
 /// writes normalized RGB samples into the public C API's interleaved buffer.
 fn xybToOutputRgb(x: f32, y: f32, b: f32, params: *const xyb_mod.OpsinParams, metadata: *const image_metadata.ImageMetadata) JxlError![3]f32 {
-	var rgb = xyb_mod.xybToLinearRgb(x, y, b, params);
-	const tf = metadata.color_encoding.tf;
-	if (tf.have_gamma) return @import("../lib/base/unsupported.zig").unsupported(.color_encoding);
-	switch (tf.transfer_function) {
-		.linear => {},
-		.srgb => for (&rgb) |*value| {
-			value.* = if (value.* <= 0.0031308) value.* * 12.92 else
-				1.055 * std.math.pow(f32, value.*, 1.0 / 2.4) - 0.055;
-		},
-		else => return @import("../lib/base/unsupported.zig").unsupported(.color_encoding),
-	}
-	return rgb;
+	return xyb_mod.toOutputRgb(x, y, b, params, metadata);
 }
 
 pub fn writeXYBRenderedImageToOutput(rendered: *const render_mod.FloatImage, alpha_img: ?*const Image, codec_meta: *const image_metadata.CodecMetadata, format: JxlPixelFormat, buffer: [*]u8, buffer_size: usize) JxlError!void {
@@ -309,7 +298,7 @@ pub fn writeXYBRenderedImageToOutput(rendered: *const render_mod.FloatImage, alp
 pub fn writeFrameDecoderOutput(frame_dec: *dec_frame.FrameDecoder, codec_meta: *const image_metadata.CodecMetadata, format: JxlPixelFormat, buffer: [*]u8, buffer_size: usize) JxlError!void {
 	const metadata = &codec_meta.m;
 	if (frame_dec.rendered_image) |*rendered| {
-		if (metadata.xyb_encoded or frame_dec.frame_header.color_transform == .xyb) {
+		if (!frame_dec.rendered_in_output_space and (metadata.xyb_encoded or frame_dec.frame_header.color_transform == .xyb)) {
 			return writeXYBRenderedImageToOutput(rendered, frame_dec.getDecodedImage(), codec_meta, format, buffer, buffer_size);
 		}
 		return writeRenderedImageToOutput(rendered, frame_dec.getDecodedImage(), metadata, format, buffer, buffer_size);

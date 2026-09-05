@@ -68,17 +68,21 @@ grep -Eq '^verdict[[:space:]]+valid$' "${OUT}" || fail "patches_lossless should 
 grep -Eq '^feature[[:space:]]+none$' "${OUT}" || fail "patches_lossless should name no feature gate, got: $(cat "${OUT}")"
 grep -Eq '^frames_validated[[:space:]]+2$' "${OUT}" || fail "patches_lossless should validate two frames"
 
+run_validate tests/corpus/labeled/good/animation_icos4d.jxl
+status=$?
+[ "${status}" -eq 0 ] || fail "animation_icos4d should exit 0, got ${status}"
+grep -Eq '^frames_validated[[:space:]]+48$' "${OUT}" || fail "animation_icos4d should validate all 48 frames"
+
 run_validate tests/corpus/labeled/good/grayscale.jxl
 status=$?
 [ "${status}" -eq 1 ] || fail "grayscale should exit 1 (unsupported), got ${status}"
 grep -Eq '^verdict[[:space:]]+unsupported$' "${OUT}" || fail "grayscale should report unsupported, got: $(cat "${OUT}")"
 grep -Eq '^feature[[:space:]]+icc_profile$' "${OUT}" || fail "grayscale should name icc_profile, got: $(cat "${OUT}")"
 
-# Classifier over the labeled-good set: every unsupported file must name a
-# real feature, and the set of names must not collapse to one answer.
+# Classifier over the labeled-good set: accepted files name no feature gate;
+# the remaining unsupported file must identify its ICC profile.
 unsupported_count=0
 unknown_count=0
-saw_blending=0
 saw_icc=0
 valid_count=0
 while IFS= read -r fixture; do
@@ -93,7 +97,6 @@ while IFS= read -r fixture; do
 			unknown_count=$((unknown_count + 1))
 			fail "${fixture}: unsupported with unnamed feature (${feature:-empty})"
 		fi
-		[ "${feature}" = "frame_blending" ] && saw_blending=1
 		[ "${feature}" = "icc_profile" ] && saw_icc=1
 	elif [ "${verdict}" = "valid" ]; then
 		valid_count=$((valid_count + 1))
@@ -104,10 +107,9 @@ while IFS= read -r fixture; do
 	fi
 done < <(find tests/corpus/labeled/good -type f -name '*.jxl' | sort)
 
-[ "${unsupported_count}" -eq 2 ] || fail "classifier saw ${unsupported_count} unsupported files; expected 2"
-[ "${valid_count}" -eq 6 ] || fail "classifier saw ${valid_count} valid files; expected 6"
+[ "${unsupported_count}" -eq 1 ] || fail "classifier saw ${unsupported_count} unsupported files; expected 1"
+[ "${valid_count}" -eq 7 ] || fail "classifier saw ${valid_count} valid files; expected 7"
 [ "${unknown_count}" -eq 0 ] || fail "classifier saw ${unknown_count} unknown features; want 0"
-[ "${saw_blending}" -eq 1 ] || fail "classifier never saw feature=frame_blending over labeled-good"
 [ "${saw_icc}" -eq 1 ] || fail "classifier never saw feature=icc_profile over labeled-good"
 
 # --json for tooling. Later --json must still win if it follows the path.

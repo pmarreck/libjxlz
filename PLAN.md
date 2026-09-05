@@ -193,7 +193,7 @@ below; pause for decisions only when they prevent safe implementation.
   matches HEAD. Mechatron is building the exact commit — 06:20 EDT.
 - [x] Run all integrated Debug tests for references/patches: all 687 passed
   — 06:31 EDT.
-- [ ] Run full suite and production build for references/patches, then
+- [x] Run full suite and production build for references/patches, then
   commit/push and verify Mechatron.
   The first Nix unit check overflowed the stack with the baseline x86-64 target;
   all 687 native-CPU Debug and ReleaseSafe tests had passed. Reproduced the
@@ -218,10 +218,12 @@ below; pause for decisions only when they prevent safe implementation.
   remains the required partition — 07:28 EDT.
   Final `./test` passed the Nix unit check, all 94 CLI suites and all 264
   required mutation detections. `./build` passed — 07:43 EDT.
-- [ ] Integrate post-color XYB references after this slice ships. Twenty actual
+  Committed and pushed as `39923aab`; independently fetched origin matches
+  HEAD. Mechatron passed in 710 seconds, finishing 07:56:04 EDT.
+- [x] Integrate post-color XYB references after this slice ships. Twenty actual
   upstream modular/VarDCT layers now match RGB/RGBA in the isolated prototype;
   negative sRGB transfer and allocation cleanup regressions are covered.
-- [ ] Integrate progressive DC references. Eight upstream complete streams with
+- [x] Integrate progressive DC references. Eight upstream complete streams with
   levels 1/2, RGB/RGBA and progressive AC match public output in the prototype.
   Missing/wrong-sized references and allocation sweeps pass. Extend the oracle
   to DC levels 3/4 before integration.
@@ -230,6 +232,16 @@ below; pause for decisions only when they prevent safe implementation.
   Four malformed modular DC frames exposed a missing common dependency check.
   All 695 baseline-target tests pass; public reset/rewind runs also pass.
   Prototype: `/tmp/libjxlz-postcolor-src` — 07:26 EDT.
+  Integrated this slice, including all four DC levels, post-color XYB layers,
+  signed sRGB transfer and public reset/rewind checks. Run the full suite/build
+  before committing — 07:46 EDT.
+  Build and Nix unit checks pass. The 48-frame labeled animation now validates,
+  leaving seven accepted labeled-good files and one ICC-gated grayscale image.
+  A targeted CLI run witnessed the stale partition assertions fail. Stopped
+  the still-running full suite at CLI 52, updated the classifier and manifest,
+  and restart the complete run with the corrected expectations — 07:56 EDT.
+  The complete rerun passed Nix unit checks, all 94 CLI suites and all 264
+  required mutation detections; production build passed — 08:15 EDT.
 - [ ] Integrate noise synthesis after the reference slices. The isolated Fixed
   prototype matches 28 complete upstream modular/VarDCT layer streams, including
   RGB/RGBA, group boundaries and 2x/8x upsampling. Add component, truncation,
