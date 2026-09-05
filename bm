@@ -22,7 +22,7 @@ DEQUANT_HISTORY="tests/benchmark/dequant_ensure_computed_history.tsv"
 # (checksum smoke) but `./bm` does not seed the TSV.
 DEQUANT_READY=0
 DEQUANT_REPEAT=64
-TMP_BM_DIR="${TMPDIR}/libjxlz-bm-public-api"
+TMP_BM_DIR="$(mktemp -d "${TMPDIR}/libjxlz-bm-public-api.XXXXXX")" || exit 1
 OUR_BIN="${TMP_BM_DIR}/decode_public_api_libjxlz"
 REF_BIN="${TMP_BM_DIR}/decode_public_api_libjxl_ref"
 ENCODE_BIN="${TMP_BM_DIR}/bench_modular_encode_codestream"
@@ -34,15 +34,15 @@ OUR_COMPILE_LOG="${TMP_BM_DIR}/compile_ours.log"
 REF_COMPILE_LOG="${TMP_BM_DIR}/compile_ref.log"
 ENCODE_COMPILE_LOG="${TMP_BM_DIR}/compile_encode.log"
 DEQUANT_COMPILE_LOG="${TMP_BM_DIR}/compile_dequant.log"
-REF_BUILD_DIR="build-cpp-bm"
+REF_BUILD_DIR="${LIBJXLZ_BENCH_REF_BUILD:-build-cpp-bm}"
 PACKAGE_OUT=""
 
-# The optimize mode packages.default is built with. Benchmark rows are only ever
+# The optimize mode packages.releasefast is built with. Benchmark rows are only ever
 # compared against rows from the same mode and machine: mixing a ReleaseSafe
 # measurement into a ReleaseFast series produces a step change that reads as a
 # regression but is really a different binary. All rows recorded before
 # 2026-08-01 predate the ReleaseSafe switch and are backfilled as ReleaseFast.
-BUILD_MODE="ReleaseSafe"
+BUILD_MODE="ReleaseFast"
 
 # Stable per-machine identifier so a new machine seeds its own baseline instead
 # of failing the build against someone else's timings. Override the host portion
@@ -72,7 +72,7 @@ assert_not_debug_build() {
 	local banner
 	banner="$("${PACKAGE_OUT}/bin/djxlz" --about 2>&1 >/dev/null)"
 	if printf '%s' "${banner}" | grep -q 'DEBUG BUILD'; then
-		echo "refusing to benchmark a debug build of packages.default" >&2
+		echo "refusing to benchmark a debug build of packages.releasefast" >&2
 		exit 1
 	fi
 }
@@ -80,7 +80,7 @@ assert_not_debug_build() {
 mkdir -p "${TMP_BM_DIR}"
 
 compile_ours() {
-	if ! PACKAGE_OUT="$(nix build --no-link --print-out-paths ".#packages.${SYSTEM}.default" 2>"${OUR_COMPILE_LOG}")"; then
+	if ! PACKAGE_OUT="$(nix build --no-link --print-out-paths ".#packages.${SYSTEM}.releasefast" 2>"${OUR_COMPILE_LOG}")"; then
 		cat "${OUR_COMPILE_LOG}"
 		exit 1
 	fi
@@ -101,19 +101,24 @@ compile_ours() {
 }
 
 compile_ref() {
-	REF_LIB="$(fd '^libjxl(\..*)?\.(dylib|so|a)$' build-cpp/lib -t f 2>/dev/null | head -n 1)"
+	REF_LIB="$(fd '^libjxl(\..*)?\.(dylib|so|a)$' "${REF_BUILD_DIR}/lib" -t f 2>/dev/null | head -n 1)"
 	if [ -z "${REF_LIB}" ]; then
 		cmake -S . -B "${REF_BUILD_DIR}" -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF >/dev/null
 		cmake --build "${REF_BUILD_DIR}" >/dev/null
 	fi
 
-	REF_LIB="$(fd '^libjxl(\..*)?\.(dylib|so|a)$' build-cpp/lib "${REF_BUILD_DIR}/lib" -t f 2>/dev/null | head -n 1)"
+	REF_LIB="$(fd '^libjxl(\..*)?\.(dylib|so|a)$' "${REF_BUILD_DIR}/lib" -t f 2>/dev/null | head -n 1)"
 	if [ -z "${REF_LIB}" ]; then
 		echo "reference libjxl build not found under build-cpp/lib" >&2
 		exit 1
 	fi
 	REF_LIB_DIR="$(cd "$(dirname "${REF_LIB}")" && pwd)"
 	REF_ROOT_DIR="$(cd "${REF_LIB_DIR}/.." && pwd)"
+	REF_EXTRA=()
+	if [[ "$REF_LIB" == *.a ]]; then
+		REF_EXTRA=("${REF_LIB_DIR}/libjxl_cms.a" "${REF_ROOT_DIR}/third_party/highway/libhwy.a")
+		if [ "$(uname -s)" = Darwin ]; then REF_EXTRA+=(-lc++); else REF_EXTRA+=(-lstdc++); fi
+	fi
 
 	if ! clang \
 		-std=c11 \
@@ -121,8 +126,11 @@ compile_ref() {
 		-Wall -Wextra -Werror \
 		-Iinclude \
 		-Ilib/include \
+		-I"${REF_ROOT_DIR}/lib/include" \
 		tests/benchmark/decode_public_api.c \
 		"${REF_LIB}" \
+		"${REF_EXTRA[@]}" \
+		$(pkg-config --libs libbrotlienc libbrotlidec libbrotlicommon lcms2) -lm \
 		-Wl,-rpath,"${REF_LIB_DIR}" \
 		-Wl,-rpath,"${REF_ROOT_DIR}/third_party/brotli" \
 		-o "${REF_BIN}" >"${REF_COMPILE_LOG}" 2>&1; then
@@ -168,8 +176,12 @@ benchmark_scenario() {
 
 	OUR_MEAN="$(awk -F, 'NR==2 { gsub(/"/, "", $2); print $2 }' "${CSV_OUT}")"
 	REF_MEAN="$(awk -F, 'NR==3 { gsub(/"/, "", $2); print $2 }' "${CSV_OUT}")"
+	OUR_CPU="$(awk -F, 'NR==2 { print $5 + $6 }' "${CSV_OUT}")"
+	REF_CPU="$(awk -F, 'NR==3 { print $5 + $6 }' "${CSV_OUT}")"
+	printf '{"timestamp":"%s","commit":"%s","kernel_sha256":"%s","machine":"%s","mode":"%s","scenario":"%s","repeat":%s,"our_wall_s":%s,"ref_wall_s":%s,"our_cpu_s":%s,"ref_cpu_s":%s}\n' \
+		"$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$(git rev-parse HEAD)" "$(sha256sum src/lib/base/soft_float.zig | cut -d ' ' -f 1)" "$MACHINE_ID" "$BUILD_MODE" "$SCENARIO_NAME" "$REPEAT_COUNT" "$OUR_MEAN" "$REF_MEAN" "$OUR_CPU" "$REF_CPU" >> tests/benchmark/public_api_cpu_history.jsonl
 	SPEEDUP="$(awk -v our="${OUR_MEAN}" -v ref="${REF_MEAN}" 'BEGIN { printf "%.6f", ref / our }')"
-	STAMP="$(TZ=America/New_York date '+%Y-%m-%d %I:%M:%S %p EST')"
+	STAMP="$(TZ=America/New_York date '+%Y-%m-%d %I:%M:%S %p %Z')"
 
 	if [ ! -f "${HISTORY}" ]; then
 		printf 'timestamp_est\tscenario\trepeat\tour_mean_s\tref_mean_s\tref_over_our\tbuild_mode\tmachine_id\n' > "${HISTORY}"
@@ -288,7 +300,31 @@ benchmark_dequant_ensure_computed() {
 	fi
 }
 
+benchmark_arithmetic() {
+	local history raw recorded numeric output status stamp commit
+	history=tests/benchmark/arithmetic_history.jsonl
+	raw="${TMP_BM_DIR}/arithmetic.jsonl"
+	recorded="${TMP_BM_DIR}/arithmetic-recorded.jsonl"
+	: > "$raw"
+	for numeric in Fixed f32 f64; do
+		output="$("${PACKAGE_OUT}/bin/bench_fixed_arithmetic" "$numeric" 4096 32768)" || return 1
+		printf '%s\n' "$output" >> "$raw"
+	done
+	stamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+	commit="$(git rev-parse HEAD)"
+	awk -v stamp="$stamp" -v commit="$commit" -v machine="$MACHINE_ID" -v target="$SYSTEM" \
+		'{ sub(/^\{/, "{\"timestamp\":\"" stamp "\",\"commit\":\"" commit "\",\"machine\":\"" machine "\",\"target\":\"" target "\",\"mode\":\"ReleaseFast\","); print }' "$raw" > "$recorded"
+	[ -f "$history" ] || : > "$history"
+	awk -f tests/benchmark/arithmetic_history.awk "$history" "$recorded"
+	status=$?
+	if [ "$status" -eq 2 ]; then return 1; fi
+	cat "$recorded" >> "$history"
+	cat "$raw"
+	return "$status"
+}
+
 compile_ours
+benchmark_arithmetic || exit 1
 compile_ref
 compile_encode_codestream
 compile_dequant
@@ -305,5 +341,7 @@ LARGE_FILE=(src/lib/testdata/lossless_600x300_multigroup_rgb.jxl)
 
 benchmark_scenario full_corpus "${FULL_REPEAT}" "${FULL_FILES[@]}"
 benchmark_scenario large_multigroup_rgb "${LARGE_REPEAT}" "${LARGE_FILE[@]}"
+"${PACKAGE_OUT}/bin/bench_fixed_arithmetic" --vardct-fixture > "${TMP_BM_DIR}/vardct-272x19.jxl" || exit 1
+benchmark_scenario vardct_272x19 256 "${TMP_BM_DIR}/vardct-272x19.jxl"
 benchmark_encode_codestream modular_encode_codestream_rgb_multigroup
 benchmark_dequant_ensure_computed dequant_ensure_computed_dct8_library

@@ -219,10 +219,8 @@ pub fn toIntTrunc(x: Fixed) i64 {
 /// bit from each side identically and collapses a true 1-ULP difference to a
 /// false canonical zero — the reference pins that exact case.
 ///
-/// Every "shift" here is a truncating DIVISION (`@divTrunc`), not `>>`:
-/// arithmetic shift right floors, and the two differ on negative odd operands.
-/// This is the same floor-vs-truncate divergence the whole plan warns about,
-/// in its second habitat.
+/// Align unsigned magnitudes, then restore the sign to preserve truncation
+/// toward zero. Shifting a signed negative mantissa would round downward.
 pub fn add(a: Fixed, b: Fixed) Fixed {
     // A zero operand returns the OTHER operand verbatim, not renormalized —
     // same as the reference.
@@ -242,7 +240,9 @@ pub fn add(a: Fixed, b: Fixed) Fixed {
     const d: i64 = @as(i64, x.e) - @as(i64, y.e);
     if (d >= 63) return x; // second operand is entirely below the ulp
 
-    const shifted = @divTrunc(y.m, POW2[@intCast(d)]);
+    const magnitude = @abs(y.m) >> @as(u6, @intCast(d));
+    const aligned: i64 = @bitCast(magnitude);
+    const shifted = if (y.m < 0) -%aligned else aligned;
     // Unreachable under the normalization invariant (|y.m| >= 2^62 and
     // d <= 62 give |shifted| >= 1); kept as defense against an unnormalized
     // caller, mirroring the reference.
@@ -309,28 +309,11 @@ pub fn frac(x: Fixed) Fixed {
     return sub(x, fromInt(ip));
 }
 
-/// Bit-serial magnitude division: floor((a/b) · 2^62) for normalized u64
-/// magnitudes. Mirrors `lib/fixed.lua`'s `divmag` exactly: one integer
-/// quotient bit (a/b lies in [1/2, 2) for normalized operands, so q0 is 0 or
-/// 1), then 62 restoring-division rounds producing one fraction bit each.
-/// The magnitude is FLOORED here; the caller reapplies the sign afterwards,
-/// which makes the overall rounding truncation toward zero.
-///
-/// No step can overflow u64: rem < b < 2^63 so rem*2 < 2^64, frac gains at
-/// most one bit per round for 62 rounds, and q0·2^62 + frac < 2^63.
+/// Exact floor((a/b) · 2^62), equivalent to the reference's 62 restoring
+/// division rounds. The numerator needs at most 125 bits; the quotient fits
+/// 63 bits for normalized inputs. Restoring the sign truncates toward zero.
 fn divmag(a: u64, b: u64) u64 {
-    const q0 = a / b;
-    var rem = a % b;
-    var fbits: u64 = 0;
-    for (0..62) |_| {
-        rem *= 2;
-        fbits *= 2;
-        if (rem >= b) {
-            rem -= b;
-            fbits += 1;
-        }
-    }
-    return q0 * TWO62 + fbits;
+    return @intCast((@as(u128, a) << 62) / b);
 }
 
 /// Divides two normalized soft-floats, truncating toward zero. Mirrors

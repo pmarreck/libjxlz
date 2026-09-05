@@ -302,6 +302,25 @@ pub fn build(b: *std.Build) void {
 	const dequant_bench_step = b.step("dequant-bench", "Build the VarDCT dequant EnsureComputed benchmark");
 	dequant_bench_step.dependOn(&install_dequant_bench.step);
 
+	const arithmetic_bench_mod = b.createModule(.{
+		.root_source_file = b.path("bench_fixed_arithmetic.zig"),
+		.target = target,
+		.optimize = .ReleaseFast,
+		.link_libc = true,
+	});
+	const arithmetic_bench = b.addExecutable(.{ .name = "bench_fixed_arithmetic", .root_module = arithmetic_bench_mod });
+	b.installArtifact(arithmetic_bench);
+	b.step("arithmetic-bench", "Build the Fixed and native arithmetic comparison").dependOn(&arithmetic_bench.step);
+	const arithmetic_tests = b.addTest(.{
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("bench_fixed_arithmetic.zig"),
+			.target = target,
+			.optimize = optimize,
+			.link_libc = true,
+		}),
+		.filters = test_filters,
+	});
+
 	const unit_tests_mod = b.createModule(.{
 		.root_source_file = b.path("src/root.zig"),
 		.target = target,
@@ -402,6 +421,7 @@ pub fn build(b: *std.Build) void {
 	test_step.dependOn(&run_encode_codestream_bench_tests.step);
 	test_step.dependOn(&run_dequant_bench_tests.step);
 	test_step.dependOn(&run_capi_tests.step);
+	test_step.dependOn(&b.addRunArtifact(arithmetic_tests).step);
 
 	// `test-compile` builds every test binary but does not run them. The
 	// Nix flake check uses this on Linux so it can invoke each binary via
@@ -411,6 +431,10 @@ pub fn build(b: *std.Build) void {
 	// the `FileNotFound` failure when `zig build test` tried to spawn the
 	// compiled test binaries.
 	const test_compile_step = b.step("test-compile", "Compile test binaries without running them");
+	test_compile_step.dependOn(&b.addInstallArtifact(arithmetic_tests, .{
+		.dest_dir = .{ .override = .{ .custom = "test-bins" } },
+		.dest_sub_path = "arithmetic_tests",
+	}).step);
 	test_compile_step.dependOn(&b.addInstallArtifact(unit_tests, .{
 		.dest_dir = .{ .override = .{ .custom = "test-bins" } },
 		.dest_sub_path = "unit_tests",

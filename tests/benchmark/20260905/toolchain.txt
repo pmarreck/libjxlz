@@ -1,0 +1,4 @@
+host=thelio-nixos
+0.16.0
+clang version 21.1.8
+hyperfine 1.20.0

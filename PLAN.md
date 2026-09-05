@@ -11,6 +11,18 @@ below; pause for decisions only when they prevent safe implementation.
   separately. Record CPU and wall time, hardware, commit and checked outputs.
   Revisit whether normalization, allocation or missing SIMD explains each cost;
   an upstream decoder ratio alone cannot isolate the numeric representation.
+  Five ReleaseFast runs on the Threadripper 3990X measured Fixed add/mul/div
+  at 17.37/2.15/71.46 ns per element and f32 at 0.282/0.489/0.847 ns.
+  Native controls can auto-vectorize; arrays and conversions are outside timing.
+  Complete 272x19 VarDCT decoding measured 6.09 ms vs upstream 0.35 ms;
+  600x300 modular measured 26.6 ms vs 23.7 ms. A bit-identical integer quotient
+  and sign-preserving magnitude alignment reduce the VarDCT case to 5.43 ms.
+  Integrated those optimizations with retained pre-change arithmetic controls,
+  ReleaseFast benchmark selection and CPU/wall history. Run the full suite,
+  build and benchmark before keeping them. Continue color-profile coverage next.
+  Full Nix unit checks, all 97 CLI suites, 264 required mutation detections and
+  the production build passed — 10:26 EDT. Record the first integrated `./bm`
+  run after committing so its source revision names the measured code.
 
 - [x] Extract a shared-reader permutation path from `toc.zig` without changing
   TOC decoding. Prove shared ANS state, skipped LLF coefficients, discarded
@@ -314,6 +326,8 @@ below; pause for decisions only when they prevent safe implementation.
   upstream streams before claiming floating-sample combinations complete.
 - [x] Mechatron passed spline commit `3c303c4a` in 801 seconds,
   finishing 09:31:28 EDT.
+- [x] Mechatron passed floating-sample commit `5ee037fa` in 809 seconds,
+  finishing 10:05:03 EDT.
 - [x] Mechatron passed Huffman correction `6a92234b` in 672 seconds,
   finishing 06:31:13 EDT.
 - [ ] Extend that working path to progressive/reference semantics and remaining

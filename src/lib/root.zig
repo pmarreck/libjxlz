@@ -81,6 +81,7 @@ pub const modular = struct {
 };
 
 test {
+	_ = @import("base/soft_float_optimization_test.zig");
 	// Use refAllDecls to verify all declarations compile.
 	// Explicit test imports below ensure tests from all modules are discovered.
 	@import("std").testing.refAllDecls(@This());
