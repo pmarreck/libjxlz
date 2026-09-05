@@ -184,6 +184,10 @@ test {
 	_ = @import("codec/float_patch_test.zig");
 	_ = @import("codec/float_patch_allocation_test.zig");
 	_ = @import("codec/float_image_dimensions_test.zig");
+	_ = @import("codec/float_upsampling_test.zig");
+	_ = @import("codec/float_upsampling_allocation_test.zig");
+	_ = @import("codec/float_extra_upsampling_allocation_test.zig");
+	_ = @import("codec/float_chroma_allocation_test.zig");
 
 	// Modular
 	_ = @import("modular/ma_common.zig");

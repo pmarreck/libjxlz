@@ -1,7 +1,8 @@
 # Floating sample effects
 
-Full-resolution, non-XYB Modular images can preserve binary32 samples through
-Gaborish, EPF, patches, YCbCr conversion and reference-frame blending. Stored
+Non-XYB Modular images can preserve binary32 samples through Gaborish, EPF,
+patches, color/extra upsampling, chroma sampling, YCbCr conversion and
+reference-frame blending. Stored
 samples include signed zero, subnormals, infinities and NaNs. Integer image
 paths keep their existing Fixed arithmetic.
 
@@ -29,6 +30,10 @@ fixtures, so an encoder option alone cannot establish the intended coverage.
 | `float_filter_oracle.cc` | 8 files; Gaborish off/on crossed with zero through three EPF iterations |
 | `float_patch_oracle.cc` | 16 files; all eight patch modes with/without alpha and three overlapping placements |
 | `float_blending_oracle.cc` | 64 configurations, 4,352 components; all eight modes, zero through two extras and numeric boundaries |
+| `float_upsampling_oracle.cc` | 102,144 stage components; 2x/4x/8x factors, mirrored borders and custom weights |
+| `float_upsampling_frame_oracle.cc` | 9 files; all three factors with default/custom weights or filters, cropped edges and rewind |
+| `float_extra_upsampling_oracle.cc` | 18 files; nine legal color/extra sampling pairs with integer or floating color and nonfinite alpha |
+| `float_modular_chroma_oracle.cc` | 12 files; subsampled YCbCr, narrow borders and multiple groups |
 
 Public API tests repeat reference, mixed-reference and alpha files with and
 without coalescing, then rewind and repeat. Patch files also rewind. Copied
@@ -59,8 +64,8 @@ use the C calling convention without naming libc as their provider. The probe
 builds without `-lc` on all five targets; the standalone Windows core check
 first caught the unnecessary libc dependency in the original declarations.
 
-Remaining nonfinite coverage includes resampling, subsampled YCbCr, noise,
-splines and VarDCT/XYB extra channels. JPEG reconstruction is a separate
+Remaining nonfinite coverage includes noise, splines and VarDCT/XYB extra
+channels. JPEG reconstruction is a separate
 unfinished feature. These tests do not establish full JPEG XL conformance.
 
 Image allocation now rejects dimension products that overflow usize before

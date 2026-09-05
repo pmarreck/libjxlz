@@ -21,12 +21,7 @@ pub fn apply(dec: *jxl.codec.dec_frame.FrameDecoder) !void {
 		try filter.epf(dec.allocator, image, params, sigma, 1);
 		if (fh.loop_filter.epf_iters >= 2) try filter.epf(dec.allocator, image, params, sigma, 2);
 	}
-	if (dec.patches) |*dictionary| {
-		const patch = @import("patches.zig");
-		const channels = rendered.channels;
-		const extras = try dec.allocator.alloc(patch.blend.Extra, channels - 3);
-		defer dec.allocator.free(extras);
-		for (extras, 0..) |*extra, e| extra.* = .{ .is_alpha = dec.metadata.m.extra_channel_info[e].type == .alpha, .associated = dec.metadata.m.extra_channel_info[e].alpha_associated };
-		try dictionary.applyBinary32(.{ .width = rendered.xsize, .height = rendered.ysize, .channels = channels, .data = @as([*]u32, @ptrCast(rendered.data.ptr))[0..rendered.data.len] }, dec.references orelse return error.GenericError, extras);
-	}
+	try @import("frame_render.zig").finishBinary32(dec, image);
+	var previous = rendered;
+	previous.deinit();
 }

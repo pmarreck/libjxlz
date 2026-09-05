@@ -16,11 +16,10 @@ pub fn render(dec: *jxl.codec.dec_frame.FrameDecoder) !void {
 	const image = &dec.modular_decoder.full_image;
 	const colors = image.channels.items.len - metadata.num_extra_channels;
 	if (colors != 3 and (colors != 1 or xyb)) return @import("../base/unsupported.zig").unsupported(.color_channel_count);
-	if (has_float and !effects and !xyb) return renderDirect(dec, colors);
-	var binary32_effects = fh.upsampling == 1 and !dec.noise.hasAny() and !dec.splines.hasAny() and (fh.color_transform == .none or (fh.color_transform == .ycbcr and fh.chroma_subsampling.is444()));
-	for (fh.extra_channel_upsampling[0..metadata.num_extra_channels]) |factor| binary32_effects = binary32_effects and factor == 1;
+	if (has_float and !effects and !xyb) return renderDirect(dec, colors, 3 + metadata.num_extra_channels);
+	const binary32_effects = !dec.noise.hasAny() and !dec.splines.hasAny() and (fh.color_transform == .none or fh.color_transform == .ycbcr);
 	if (has_float and !xyb and binary32_effects) {
-		try renderDirect(dec, colors);
+		try renderDirect(dec, colors, 3);
 		try @import("float_render.zig").apply(dec);
 		return;
 	}
@@ -71,16 +70,28 @@ pub fn render(dec: *jxl.codec.dec_frame.FrameDecoder) !void {
 }
 
 // Preserve signed zeros and non-finite storage when no pixel math is required.
-fn renderDirect(dec: *jxl.codec.dec_frame.FrameDecoder, colors: usize) !void {
+fn renderDirect(dec: *jxl.codec.dec_frame.FrameDecoder, colors: usize, channels: usize) !void {
 	const metadata = &dec.metadata.m;
 	const image = &dec.modular_decoder.full_image;
-	var output = try jxl.codec.render.FloatImage.init(dec.allocator, dec.frame_dim.xsize, dec.frame_dim.ysize, 3 + metadata.num_extra_channels);
+	var output = try jxl.codec.render.FloatImage.init(dec.allocator, dec.frame_dim.xsize, dec.frame_dim.ysize, channels);
 	errdefer output.deinit();
 	for (0..output.channels) |c| {
 		const index = if (c < 3) (if (colors == 1) 0 else c) else colors + c - 3;
 		const channel = &image.channels.items[index];
-		if (channel.w != output.xsize or channel.h != output.ysize) return error.GenericError;
 		const depth = if (c < 3) metadata.bit_depth else metadata.extra_channel_info[c - 3].bit_depth;
+		if (c < 3 and (dec.frame_header.chroma_subsampling.hShift(c) != 0 or dec.frame_header.chroma_subsampling.vShift(c) != 0)) {
+			const raw = try dec.allocator.alloc(u32, channel.w * channel.h);
+			defer dec.allocator.free(raw);
+			for (0..channel.h) |y| for (channel.rowConst(y)[0..channel.w], raw[y * channel.w ..][0..channel.w]) |value, *dest| {
+				dest.* = if (depth.floating_point_sample) try @import("float_samples.zig").toBits(value, depth.bits_per_sample, depth.exponent_bits_per_sample) else @import("../base/fixed_display.zig").bits(try @import("float_samples.zig").toFixed(value, depth));
+			};
+			const sampled = try @import("chroma.zig").Binary32.upsample(dec.allocator, .{ .width = channel.w, .height = channel.h, .data = raw }, dec.frame_header.chroma_subsampling.hShift(c), dec.frame_header.chroma_subsampling.vShift(c), output.xsize, output.ysize);
+			defer dec.allocator.free(sampled);
+			const area = output.xsize * output.ysize;
+			@memcpy(@as([*]u32, @ptrCast(output.data.ptr))[c * area ..][0..area], sampled);
+			continue;
+		}
+		if (channel.w != output.xsize or channel.h != output.ysize) return error.GenericError;
 		for (0..output.ysize) |y| for (channel.rowConst(y)[0..channel.w], output.row(y, c)) |raw, *value| {
 			value.* = if (depth.floating_point_sample) @bitCast(try @import("float_samples.zig").toBits(raw, depth.bits_per_sample, depth.exponent_bits_per_sample)) else @bitCast(@import("../base/fixed_display.zig").bits(try @import("float_samples.zig").toFixed(raw, depth)));
 		};

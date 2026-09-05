@@ -150,16 +150,37 @@ below; pause for decisions only when they prevent safe implementation.
   large Modular 26.626 ms versus 23.704 ms. The previous corresponding
   measurements were 5.704 ms and 26.599 ms, so no material regression is
   apparent. CPU/wall histories retain the exact revision — 18:29 EDT.
-- [ ] Integrate floating upsampling, then subsampled YCbCr, from the saved
+- [x] Integrate floating upsampling, then subsampled YCbCr, from the saved
   `/tmp/libjxlz-sampling-integration` and `/tmp/libjxlz-chroma-integration`
   snapshots. Combined upstream image/stage and allocation controls pass all
   124 selected tests. Reuse shared frame/chroma sampling; keep native spline
   arithmetic explicit against the original integer-ALU policy while covering
   remaining noise/spline and VarDCT/XYB floating extra-channel behavior.
-  The next isolated upsampling slice passes 102,144 upstream stage components
-  and nine complete files with 2x/4x/8x sampling, custom weights, filters,
-  cropped output and rewind. Its NaN clamp regression requires upstream's
-  reduction order. Keep this separate until the reference/filter slice ships.
+  Applied both sampling snapshots after recording the baseline. Retained the
+  four upstream generators and split public tests into the C API test directory.
+  All 127 integrated selected tests pass, and all four retained upstream
+  generators reproduce their fixtures byte for byte. Run the full suite and
+  production build with the source tree frozen — 18:37 EDT.
+  Full Nix unit checks, all 99 CLI suites, 264 required mutation detections,
+  Windows cross-compilation and the production build pass — 18:57 EDT.
+  Coverage includes 102,144 upstream stage components, nine sampled color
+  files, 18 unequal color/extra sampling files and 12 YCbCr files, with crop,
+  filters and rewind. The NaN clamp regression requires upstream's reduction
+  order. Commit, verify the remote revision and measure performance.
+- [ ] Integrate floating noise and the non-XYB default color-correlation fix.
+  The isolated 20-file oracle covers floating and integer color, blends,
+  cropped layers, reference reuse and rewind. Both old paths selected B=0
+  instead of the decoder's default B=1; retained tests fail on blue samples
+  before the fix. All 17 selected tests, including allocation-failure cleanup,
+  pass. Snapshot: `/tmp/libjxlz-noise-integration-20260905` — 18:57 EDT.
+- [ ] Replace native spline arithmetic before enabling nonfinite spline frames.
+  Current integer-image comparisons pass; floating spline images are rejected.
+  An isolated exact integer FMA passes 208,000 native comparisons, geometry
+  rounding/sqrt passes 800,092 and log/hypot passes 400,000 within one ULP.
+  The drawing prototype passes smaller image controls but slows the large
+  spline fixture; measure ReleaseFast costs before retaining it. Geometry/cache
+  conversion and whole-image parity remain. Source prototype:
+  `/tmp/libjxlz-spline-integer-src` — 18:57 EDT.
 - [x] Fix redirected benchmark diagnostics overwriting earlier log records.
   `bench_dequant_ensure_computed` uses positional stdout/stderr writers; the
   scaling diagnostic overwrote the start of the combined `./bm` log. Retained

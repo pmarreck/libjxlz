@@ -6,34 +6,48 @@ pub fn toRgb(cb: sf.Fixed, y: sf.Fixed, cr: sf.Fixed) [3]sf.Fixed {
 }
 const std = @import("std");
 const Error = @import("../base/status.zig").JxlError;
-pub const Plane = struct { width: usize, height: usize, data: []const sf.Fixed };
-pub fn upsample(allocator: std.mem.Allocator, input: Plane, hs: u8, vs: u8, width: usize, height: usize) Error![]sf.Fixed {
-	if (hs > 1 or vs > 1 or width == 0 or height == 0 or width == std.math.maxInt(usize) or height == std.math.maxInt(usize)) return error.GenericError;
-	if (input.width != (width + hs) >> @intCast(hs) or input.height != (height + vs) >> @intCast(vs)) return error.GenericError;
-	const area = std.math.mul(usize, input.width, input.height) catch return error.GenericError;
-	if (input.data.len != area) return error.GenericError;
-	const horizontal_size = std.math.mul(usize, width, input.height) catch return error.GenericError;
-	const horizontal = try allocator.alloc(sf.Fixed, horizontal_size);
-	errdefer allocator.free(horizontal);
-	for (0..input.height) |y| for (0..width) |x| {
-		if (hs == 0) {
-			horizontal[y * width + x] = input.data[y * input.width + x];
-			continue;
+fn mixFixed(center: sf.Fixed, neighbor: sf.Fixed) sf.Fixed {
+	return sf.div(sf.add(sf.mul(sf.fromInt(3), center), neighbor), sf.fromInt(4));
+}
+fn mixBinary32(center: u32, neighbor: u32) u32 {
+	const bits = @import("../base/binary32.zig");
+	return bits.add(bits.mul(comptime bits.parse("0.75").?, center), bits.mul(comptime bits.parse("0.25").?, neighbor));
+}
+pub const Plane = Sampling(sf.Fixed, mixFixed).SamplePlane;
+pub const upsample = Sampling(sf.Fixed, mixFixed).upsample;
+pub const Binary32 = Sampling(u32, mixBinary32);
+fn Sampling(comptime Pixel: type, comptime mix: fn (Pixel, Pixel) Pixel) type {
+	return struct {
+		pub const SamplePlane = struct { width: usize, height: usize, data: []const Pixel };
+		pub fn upsample(allocator: std.mem.Allocator, input: SamplePlane, hs: u8, vs: u8, width: usize, height: usize) Error![]Pixel {
+			if (hs > 1 or vs > 1 or width == 0 or height == 0 or width == std.math.maxInt(usize) or height == std.math.maxInt(usize)) return error.GenericError;
+			if (input.width != (width + hs) >> @intCast(hs) or input.height != (height + vs) >> @intCast(vs)) return error.GenericError;
+			const area = std.math.mul(usize, input.width, input.height) catch return error.GenericError;
+			if (input.data.len != area) return error.GenericError;
+			const horizontal_size = std.math.mul(usize, width, input.height) catch return error.GenericError;
+			const horizontal = try allocator.alloc(Pixel, horizontal_size);
+			errdefer allocator.free(horizontal);
+			for (0..input.height) |y| for (0..width) |x| {
+				if (hs == 0) {
+					horizontal[y * width + x] = input.data[y * input.width + x];
+					continue;
+				}
+				const cx = x / 2;
+				const neighbor = if (x % 2 == 0) cx - @intFromBool(cx != 0) else @min(cx + 1, input.width - 1);
+				horizontal[y * width + x] = mix(input.data[y * input.width + cx], input.data[y * input.width + neighbor]);
+			};
+			if (vs == 0) return horizontal;
+			const size = std.math.mul(usize, width, height) catch return error.GenericError;
+			const output = try allocator.alloc(Pixel, size);
+			for (0..height) |y| for (0..width) |x| {
+				const cy = y / 2;
+				const neighbor = if (y % 2 == 0) cy - @intFromBool(cy != 0) else @min(cy + 1, input.height - 1);
+				output[y * width + x] = mix(horizontal[cy * width + x], horizontal[neighbor * width + x]);
+			};
+			allocator.free(horizontal);
+			return output;
 		}
-		const cx = x / 2;
-		const neighbor = if (x % 2 == 0) cx - @intFromBool(cx != 0) else @min(cx + 1, input.width - 1);
-		horizontal[y * width + x] = sf.div(sf.add(sf.mul(sf.fromInt(3), input.data[y * input.width + cx]), input.data[y * input.width + neighbor]), sf.fromInt(4));
 	};
-	if (vs == 0) return horizontal;
-	const size = std.math.mul(usize, width, height) catch return error.GenericError;
-	const output = try allocator.alloc(sf.Fixed, size);
-	for (0..height) |y| for (0..width) |x| {
-		const cy = y / 2;
-		const neighbor = if (y % 2 == 0) cy - @intFromBool(cy != 0) else @min(cy + 1, input.height - 1);
-		output[y * width + x] = sf.div(sf.add(sf.mul(sf.fromInt(3), horizontal[cy * width + x]), horizontal[neighbor * width + x]), sf.fromInt(4));
-	};
-	allocator.free(horizontal);
-	return output;
 }
 
 test "chroma shape validation rejects impossible planes before allocation" {
