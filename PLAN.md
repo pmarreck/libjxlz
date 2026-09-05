@@ -242,11 +242,24 @@ below; pause for decisions only when they prevent safe implementation.
   and restart the complete run with the corrected expectations — 07:56 EDT.
   The complete rerun passed Nix unit checks, all 94 CLI suites and all 264
   required mutation detections; production build passed — 08:15 EDT.
-- [ ] Integrate noise synthesis after the reference slices. The isolated Fixed
+  Pushed as `7558c88c`; independently fetched origin matched HEAD. Mechatron
+  passed in 744 seconds, finishing 08:29:14 EDT.
+- [x] Integrate noise synthesis after the reference slices. The isolated Fixed
   prototype matches 28 complete upstream modular/VarDCT layer streams, including
   RGB/RGBA, group boundaries and 2x/8x upsampling. Add component, truncation,
   allocation and animation-counter tests before integrating.
   Prototype: `/tmp/libjxlz-noise-src` — 07:28 EDT.
+  Integrated 32 complete upstream streams, including four-frame animations.
+  Component tests compare eight RNG seeds and eight synthesis geometries;
+  truncation, allocation failures, public reset/rewind and frame skipping pass.
+  All 703 baseline-target prototype tests passed before formatting; ten noise
+  tests passed again afterward. Run the complete repository suite — 08:18 EDT.
+  Nix unit checks, all 94 CLI suites and all 264 required mutation detections
+  passed; production build passed — 08:35 EDT.
+- [ ] Complete chroma-subsampled reconstruction and YCbCr conversion, reusing
+  existing DC/AC sampling. Six JPEG transcodes and six modular YCbCr fixtures
+  now match upstream in `/tmp/libjxlz-chroma-src`. Expand geometry and public
+  API tests before integration; check unusual sampling and padded group edges.
 - [x] Mechatron passed Huffman correction `6a92234b` in 672 seconds,
   finishing 06:31:13 EDT.
 - [ ] Extend that working path to progressive/reference semantics and remaining

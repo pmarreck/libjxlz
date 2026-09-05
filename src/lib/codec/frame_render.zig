@@ -50,12 +50,23 @@ pub fn finish(dec: *jxl.codec.dec_frame.FrameDecoder, output: jxl.codec.vardct_f
 	}
 	var rendered = try jxl.codec.render.FloatImage.init(dec.allocator, width, height, channels);
 	errdefer rendered.deinit();
+	const noise_pixels = if (dec.noise.hasAny()) try dec.allocator.alloc(sf.Fixed, 3 * width * height) else null;
+	defer if (noise_pixels) |pixels| dec.allocator.free(pixels);
 	for (planes, 0..) |plane, c| {
 		const factor = if (c < 3 or late) fh.upsampling else 1;
 		const sampled = if (factor == 1) null else try up.fromMetadata(dec.allocator, .{ .width = plane.width, .height = plane.height, .data = plane.data }, @intCast(factor), &dec.metadata.transform_data, width, height);
 		defer if (sampled) |data| dec.allocator.free(data);
 		if ((sampled orelse plane.data).len != width * height) return error.GenericError;
+		if (c < 3) if (noise_pixels) |pixels| {
+			@memcpy(pixels[c * width * height ..][0 .. width * height], sampled orelse plane.data);
+			continue;
+		};
 		for (sampled orelse plane.data, rendered.data[c * width * height ..][0 .. width * height]) |value, *dest| dest.* = @bitCast(display.bits(value));
+	}
+	if (noise_pixels) |pixels| {
+		const cfl = if (dec.vardct_global) |global| global.color_correlation.base else [2]sf.Fixed{ sf.Fixed.zero, sf.fromInt(@intFromBool(metadata.xyb_encoded)) };
+		try @import("noise.zig").apply(dec.allocator, .{ .width = width, .height = height, .data = pixels }, dec.noise, .{ .visible = dec.visible_frame_index, .nonvisible = dec.nonvisible_frame_index, .group_dim = dec.frame_dim.grp_dim }, cfl);
+		for (pixels, rendered.data[0..pixels.len]) |value, *dest| dest.* = @bitCast(display.bits(value));
 	}
 	dec.rendered_image = rendered;
 }

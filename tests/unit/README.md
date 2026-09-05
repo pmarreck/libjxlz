@@ -46,3 +46,11 @@ before comparing displayed pixels. The public encoder produces levels 1/2.
 For levels 3/4, the generator repeats 1x1 DC sections with rewritten headers;
 the upstream decoder validates and renders the resulting complete streams.
 It also verifies that all four missing-higher-reference variants are rejected.
+
+`noise_oracle.cc` records eight upstream random-number seed cases and eight
+noise-stage geometries, including narrow and partial groups. The complete
+streams from `noise_frame_oracle.cc` cover modular/VarDCT, cropped layers,
+all five blend modes, RGB/RGBA, 2x/8x upsampling and four-frame animations.
+The generator inserts the 80-bit noise payload into otherwise upstream-encoded
+frames, then reads their headers back and decodes every displayed frame with
+upstream libjxl. Public tests compare all frames after rewind, reset and skip.

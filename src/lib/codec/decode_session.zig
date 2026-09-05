@@ -21,10 +21,14 @@ pub const Session = struct {
 	refs: [4]patch.Reference = @splat(.{}),
 	dc_refs: [4]?patch.Image = @splat(null),
 	coalescing: bool = true,
+	visible_frame_index: u32 = 0,
+	nonvisible_frame_index: u32 = 0,
 	pub fn init(allocator: std.mem.Allocator) Session {
 		return .{ .allocator = allocator };
 	}
 	pub fn deinit(self: *Session) void {
+		self.visible_frame_index = 0;
+		self.nonvisible_frame_index = 0;
 		for (&self.dc_refs) |*slot| {
 			if (slot.*) |image| self.allocator.free(image.data);
 			slot.* = null;
@@ -38,10 +42,14 @@ pub const Session = struct {
 		var dec = FrameDecoder.init(self.allocator, metadata);
 		errdefer dec.deinit();
 		dec.force_render = true;
+		dec.visible_frame_index = self.visible_frame_index;
+		dec.nonvisible_frame_index = self.nonvisible_frame_index;
 		dec.references = &self.refs;
 		dec.dc_references = &self.dc_refs;
 		try dec.decodeFrame(data);
 		try self.finish(&dec);
+		self.visible_frame_index = dec.visible_frame_index;
+		self.nonvisible_frame_index = dec.nonvisible_frame_index;
 		return dec;
 	}
 	fn finish(self: *Session, dec: *FrameDecoder) Error!void {

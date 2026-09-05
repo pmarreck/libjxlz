@@ -58,6 +58,7 @@ pub const codec = struct {
 	pub const ac_global = @import("codec/ac_global.zig");
 	pub const vardct_filters = @import("codec/vardct_filters.zig");
 	pub const upsampling = @import("codec/upsampling.zig");
+	pub const noise = @import("codec/noise.zig");
 	pub const dc_smoothing = @import("codec/dc_smoothing.zig");
 	pub const quantizer = @import("codec/quantizer.zig");
 	pub const codestream_test = @import("codec/codestream_test.zig");
@@ -105,6 +106,7 @@ test {
 	_ = @import("codec/patches_test.zig");
 	_ = @import("codec/decode_session_test.zig");
 	_ = @import("codec/postcolor_test.zig");
+	_ = @import("codec/noise_frame_test.zig");
 	_ = @import("codec/progressive_dc_test.zig");
 	_ = @import("codec/patch_frame_test.zig");
 	_ = @import("entropy/hybrid_uint.zig");

@@ -52,7 +52,7 @@ pub const Image = struct {
 	width: usize,
 	height: usize,
 	data: []sf.Fixed,
-	fn validate(self: Image) JxlError!void {
+	pub fn validate(self: Image) JxlError!void {
 		if (self.width == 0 or self.height == 0 or self.width > std.math.maxInt(isize) / 2 or self.height > std.math.maxInt(isize) / 2) return error.GenericError;
 		const area = std.math.mul(usize, self.width, self.height) catch return error.GenericError;
 		const size = std.math.mul(usize, area, 3) catch return error.GenericError;

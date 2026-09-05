@@ -1518,6 +1518,9 @@ pub const FrameDecoder = struct {
     rendered_image: ?render_mod.FloatImage = null,
     rendered_in_output_space: bool = false,
     force_render: bool = false,
+    noise: @import("noise.zig").Params = .{},
+    visible_frame_index: u32 = 0,
+    nonvisible_frame_index: u32 = 0,
     references: ?*const [4]@import("patches.zig").Reference = null,
     dc_references: ?*const [4]?@import("patches.zig").Image = null,
     patches: ?@import("patches.zig").Dictionary = null,
@@ -1589,12 +1592,7 @@ pub const FrameDecoder = struct {
         self.decoded_dc_global = false;
         self.clearVarDctGlobal();
         errdefer self.clearVarDctGlobal();
-        const unsupported_flags = frame_header_mod.FrameFlags.noise;
-        if ((self.frame_header.flags & unsupported_flags) != 0) {
-            return unsupported_mod.unsupported(
-                if ((self.frame_header.flags & frame_header_mod.FrameFlags.patches) != 0) .patches else .noise,
-            );
-        }
+        self.noise = .{};
 
         if ((self.frame_header.flags & frame_header_mod.FrameFlags.patches) != 0) {
             const references = self.references orelse return unsupported_mod.unsupported(.reference_frame);
@@ -1607,6 +1605,9 @@ pub const FrameDecoder = struct {
         }
 
         // DequantMatrices::DecodeDC — always called, even for modular frames
+        if (self.frame_header.flags & frame_header_mod.FrameFlags.noise != 0)
+            self.noise = try @import("noise.zig").Params.decode(br);
+
         self.dequant_matrices.deinit(self.allocator);
         self.dequant_matrices = .{};
         try self.dequant_matrices.decodeDC(br);
@@ -1670,6 +1671,12 @@ pub const FrameDecoder = struct {
         try self.initFrame(&header_br);
         const header_byte_offset = self.headerBytes(&header_br);
         try header_br.close();
+
+        if ((self.frame_header.frame_type == .regular_frame or self.frame_header.frame_type == .skip_progressive) and
+            (self.frame_header.is_last or self.frame_header.animation_frame.duration != 0)) {
+            self.visible_frame_index +%= 1;
+            self.nonvisible_frame_index = 0;
+        } else self.nonvisible_frame_index +%= 1;
 
         if (self.frame_header.flags & frame_header_mod.FrameFlags.use_dc_frame != 0) {
             if (self.frame_header.dc_level >= 4) return error.GenericError;
@@ -2640,7 +2647,7 @@ test "ensureComputed afv places 4x8 weights on odd rows and 4x4 on even-odd" {
 	try testing.expectEqual(sf.div(kOne, sf.fromInt(400)), x[3]);
 }
 
-test "processDCGlobal rejects unsupported frame features" {
+test "processDCGlobal rejects truncated noise parameters" {
     const allocator = testing.allocator;
     var metadata = CodecMetadata{};
     var dec = FrameDecoder.init(allocator, &metadata);
@@ -2650,7 +2657,7 @@ test "processDCGlobal rejects unsupported frame features" {
     var data = [_]u8{0x01};
     var br = BitReader.init(&data);
 
-    try testing.expectError(error.Unsupported, dec.processDCGlobalWithReaderStrategy(.specialized, &br));
+    try testing.expectError(error.NotEnoughBytes, dec.processDCGlobalWithReaderStrategy(.specialized, &br));
 }
 
 fn makeSplinePayloadForTest(allocator: std.mem.Allocator) ![]u8 {

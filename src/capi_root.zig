@@ -5862,3 +5862,61 @@ test "progressive DC public decoder matches upstream RGB and RGBA" {
 		}
 	}
 }
+fn checkNoisePublic(data: []const u8, expected: []const []const u8, channels: u32) !void {
+	const testing = std.testing;
+	var validation: JxlValidationResult = undefined;
+	try testing.expectEqual(JxlValidationVerdict.JXL_VALIDATION_VALID, JxlValidate(data.ptr, data.len, null, &validation));
+	try testing.expectEqual(@as(u32, if (expected.len == 1) 2 else 4), validation.frames_validated);
+	const decoder = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlDecoderDestroy(decoder);
+	try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSubscribeEvents(decoder, @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)));
+	const output = try testing.allocator.alloc(u8, expected[0].len);
+	defer testing.allocator.free(output);
+	const format = JxlPixelFormat{ .num_channels = channels, .data_type = .JXL_TYPE_UINT8, .endianness = .JXL_NATIVE_ENDIAN, .@"align" = 0 };
+	for (0..4) |attempt| {
+		if (attempt == 1 or attempt == 3) JxlDecoderRewind(decoder);
+		if (attempt == 2) {
+			JxlDecoderReset(decoder);
+			try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSubscribeEvents(decoder, @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)));
+		}
+		if (attempt == 3) JxlDecoderSkipFrames(decoder, 1);
+		try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(decoder, data.ptr, data.len));
+		JxlDecoderCloseInput(decoder);
+		var frames: usize = if (attempt == 3) 1 else 0;
+		while (true) {
+			const status = JxlDecoderProcessInput(decoder);
+			switch (status) {
+				.JXL_DEC_NEED_IMAGE_OUT_BUFFER => {
+					try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(decoder, &format, output.ptr, output.len));
+				},
+				.JXL_DEC_FULL_IMAGE => {
+					try testing.expect(frames < expected.len);
+					for (output, expected[frames], 0..) |actual, wanted, index| if (@abs(@as(i32, actual) - @as(i32, wanted)) > 1) {
+						std.debug.print("noise public attempt={d} frame={d} pixel={d} actual={d} expected={d}\n", .{ attempt, frames, index, actual, wanted });
+						return error.TestUnexpectedResult;
+					};
+					frames += 1;
+				},
+				.JXL_DEC_SUCCESS => break,
+				else => {
+					std.debug.print("noise public attempt={d} frame={d} status={s}\n", .{ attempt, frames, @tagName(status) });
+					return error.TestUnexpectedResult;
+				},
+			}
+		}
+		try testing.expectEqual(expected.len, frames);
+	}
+}
+test "noise public frames match upstream after rewind reset and skip" {
+	@setEvalBranchQuota(50000);
+	const fixture = @import("lib/codec/noise_frame_fixture.zig");
+	inline for (0..28) |id| {
+		const key = std.fmt.comptimePrint("{d}", .{id});
+		try @call(.never_inline, checkNoisePublic, .{ &@field(fixture, "bytes_" ++ key), &[_][]const u8{&@field(fixture, "pixels_" ++ key)}, @as(u32, 3 + (id % 10) / 5) });
+	}
+	inline for (28..32) |id| {
+		const key = std.fmt.comptimePrint("{d}", .{id});
+		const expected = [_][]const u8{ &@field(fixture, "pixels_" ++ key ++ "_0"), &@field(fixture, "pixels_" ++ key ++ "_1"), &@field(fixture, "pixels_" ++ key ++ "_2"), &@field(fixture, "pixels_" ++ key ++ "_3") };
+		try @call(.never_inline, checkNoisePublic, .{ &@field(fixture, "bytes_" ++ key), &expected, @as(u32, 3 + (id % 10) / 5) });
+	}
+}

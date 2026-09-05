@@ -7,7 +7,7 @@ pub fn render(dec: *jxl.codec.dec_frame.FrameDecoder) !void {
 	const fh = &dec.frame_header;
 	const metadata = &dec.metadata.m;
 	const xyb = metadata.xyb_encoded or fh.color_transform == .xyb;
-	var effects = fh.upsampling != 1 or fh.loop_filter.gab or fh.loop_filter.epf_iters != 0 or dec.patches != null;
+	var effects = fh.upsampling != 1 or fh.loop_filter.gab or fh.loop_filter.epf_iters != 0 or dec.patches != null or dec.noise.hasAny();
 	for (fh.extra_channel_upsampling[0..metadata.num_extra_channels]) |factor| effects = effects or factor != 1;
 	if (dec.splines.hasAny()) {
 		if (effects) return @import("../base/unsupported.zig").unsupported(.splines);

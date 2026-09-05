@@ -170,7 +170,9 @@ Current coverage and remaining work (2026-09-05 08:15 EDT):
   alpha association, clamping, reference-slot sets, truncation and allocation
   failures. Complete upstream comparisons cover 32 modular and 64 VarDCT
   patch streams, including equal color/alpha sampling and padded destinations.
-  Noise payloads and synthesis remain gated.
+  Noise payloads and Fixed synthesis now have component and complete-frame
+  upstream comparisons, including animation seed counters and reset/skip.
+  The integrated noise slice passed the full repository suite and build.
 - Shared rendering supports modular RGB, XYB and grayscale with Gaborish,
   EPF and 2x/4x/8x upsampling. Existing tests cover default/custom weights,
   mirrored edges, clamping and unequal color/alpha factors. The existing
