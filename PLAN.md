@@ -158,7 +158,7 @@ below; pause for decisions only when they prevent safe implementation.
 - [x] Push modular rendering and the lossless filter correction as `a7413d71`;
   independently fetched origin and verified the full commit. Mechatron passed
   in 665 seconds, finishing 05:37:02 EDT.
-- [ ] Complete shared Fixed blending, then reference-frame state and patches.
+- [x] Complete shared Fixed blending, then reference-frame state and patches.
   A separate prototype matches 64 upstream blending configurations across all
   eight modes, alpha selection, clamping and alpha association. Inputs remain
   unchanged; invalid output aliasing and alpha indexes fail before writes.
@@ -179,11 +179,64 @@ below; pause for decisions only when they prevent safe implementation.
 - [x] Run the full suite/build for the Huffman correction. The Nix unit check,
   all 94 CLI suites and all 264 required mutation detections passed; production
   build passed — 06:19 EDT. Ship before merging the reference/patch slice.
-- [ ] Finish reference/patch integration. Padded destinations, unequal sampling
+- [x] Finish reference/patch integration. Padded destinations, unequal sampling
   rejection and all 20 uncoalesced layer outputs now pass upstream comparisons.
   The latter exposed a stale caller-buffer pointer; request a fresh buffer for
   each displayed frame. Existing 671 public/core Debug tests pass in the
-  prototype. Finish the extra-only blending check before integrating.
+  prototype. The fixture audit found the upstream ImageBundle encoder overwrote
+  requested FrameInfo blend modes/origins. Corrected all three layer generators
+  and now assert the settings in emitted headers. Corrected fixtures pass;
+  extra-only blending exposed and fixed a missing compositing trigger.
+  Integrated 32 modular and 64 VarDCT patch cases, including padded edges,
+  plus component parsing, pixel, truncation and allocation tests — 06:28 EDT.
+- [x] Push Huffman correction as `6a92234b`; independently fetched origin
+  matches HEAD. Mechatron is building the exact commit — 06:20 EDT.
+- [x] Run all integrated Debug tests for references/patches: all 687 passed
+  — 06:31 EDT.
+- [ ] Run full suite and production build for references/patches, then
+  commit/push and verify Mechatron.
+  The first Nix unit check overflowed the stack with the baseline x86-64 target;
+  all 687 native-CPU Debug and ReleaseSafe tests had passed. Reproduced the
+  exact target failure in the 32-frame patch test. Move its large metadata to
+  the heap and call a shared fixture function instead of expanding its body
+  for every fixture. Apply the same pattern to the layer test. Both frame tests
+  and their allocation sweeps now pass with the baseline target — 06:46 EDT.
+  Second run passed the Nix unit check and production build. Four CLI suites
+  retained unsupported expectations for newly decoded patches/layers. Updated
+  the two labeled patch verdicts, CLI/C validation assertions, and moved the
+  cropped traffic-light image into the exact upstream pixel comparison set.
+  The labeled-good partition is six accepted and two unsupported; all 264
+  required mutation detections still pass — 07:06 EDT.
+  The cropped animation exposed a CLI still-output bug: retaining the last
+  frame disagreed with upstream's first frame and leaked earlier buffers.
+  Retain the first complete displayed frame; exact PAM comparison now passes.
+  Added independent upstream hashes for all four cropped animation frames,
+  retaining rewind/skip checks through the C API — 07:14 EDT.
+  The full run caught early CLI success hiding an unsupported later animation
+  frame. Keep the first output buffer while decoding every remaining frame,
+  releasing each scratch buffer. The six-accepted/two-unsupported classifier
+  remains the required partition — 07:28 EDT.
+  Final `./test` passed the Nix unit check, all 94 CLI suites and all 264
+  required mutation detections. `./build` passed — 07:43 EDT.
+- [ ] Integrate post-color XYB references after this slice ships. Twenty actual
+  upstream modular/VarDCT layers now match RGB/RGBA in the isolated prototype;
+  negative sRGB transfer and allocation cleanup regressions are covered.
+- [ ] Integrate progressive DC references. Eight upstream complete streams with
+  levels 1/2, RGB/RGBA and progressive AC match public output in the prototype.
+  Missing/wrong-sized references and allocation sweeps pass. Extend the oracle
+  to DC levels 3/4 before integration.
+  All four levels now match the upstream decoder; the generator rewrites 1x1
+  pyramid headers to produce levels 3/4 and verifies every emitted header.
+  Four malformed modular DC frames exposed a missing common dependency check.
+  All 695 baseline-target tests pass; public reset/rewind runs also pass.
+  Prototype: `/tmp/libjxlz-postcolor-src` — 07:26 EDT.
+- [ ] Integrate noise synthesis after the reference slices. The isolated Fixed
+  prototype matches 28 complete upstream modular/VarDCT layer streams, including
+  RGB/RGBA, group boundaries and 2x/8x upsampling. Add component, truncation,
+  allocation and animation-counter tests before integrating.
+  Prototype: `/tmp/libjxlz-noise-src` — 07:28 EDT.
+- [x] Mechatron passed Huffman correction `6a92234b` in 672 seconds,
+  finishing 06:31:13 EDT.
 - [ ] Extend that working path to progressive/reference semantics and remaining
   dequant forms, then patches and remaining render stages. Each subfeature
   needs a known-good upstream fixture and malformed/truncated counterparts.

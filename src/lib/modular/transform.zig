@@ -1230,9 +1230,9 @@ pub fn metaPalette(image: *Image, begin_c: u32, end_c: u32, nb_colors: u32, nb_d
     }
 
     // Insert palette channel at front
-    var pch = Channel.create(allocator, nb_colors + nb_deltas, nb, -1, -1) catch return error.GenericError;
-    _ = &pch;
-    image.channels.insert(allocator, 0, pch) catch return error.GenericError;
+    var pch = try Channel.create(allocator, nb_colors + nb_deltas, nb, -1, -1);
+    errdefer pch.deinit();
+    try image.channels.insert(allocator, 0, pch);
 }
 
 // ── InvPalette ──
@@ -1353,9 +1353,9 @@ pub fn invPalette(image: *Image, begin_c: u32, nb_colors: u32, nb_deltas: u32, p
     // Create output channels (nb-1 new ones after c0)
     var i: usize = 1;
     while (i < nb) : (i += 1) {
-        var ch = Channel.create(allocator, w, h, image.channels.items[c0].hshift, image.channels.items[c0].vshift) catch return error.GenericError;
-        _ = &ch;
-        image.channels.insert(allocator, c0 + 1, ch) catch return error.GenericError;
+        var ch = try Channel.create(allocator, w, h, image.channels.items[c0].hshift, image.channels.items[c0].vshift);
+        errdefer ch.deinit();
+        try image.channels.insert(allocator, c0 + 1, ch);
     }
 
     if (w == 0) {

@@ -542,6 +542,14 @@ pub const FrameHeader = struct {
             (self.animation_frame.duration == 0 or self.save_as_reference != 0);
     }
 
+    pub fn needsBlending(self: *const FrameHeader, extra_count: usize) bool {
+        if (self.custom_size_or_origin or self.blending_info.mode != .replace) return true;
+        for (self.extra_channel_blending_info[0..extra_count]) |info| {
+            if (info.mode != .replace) return true;
+        }
+        return false;
+    }
+
     pub fn needsColorTransform(self: FrameHeader) bool {
         return !self.save_before_color_transform or
             self.frame_type == .regular_frame or

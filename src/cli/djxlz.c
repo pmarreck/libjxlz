@@ -182,6 +182,7 @@ static const char* infer_output_format(const char* output_path) {
 
 static int decode_image(const uint8_t* data, size_t size, const char* output_format, DecodedImage* out, char* err, size_t err_cap) {
 	memset(out, 0, sizeof(*out));
+	uint8_t* first_pixels = NULL;
 	JxlDecoder* dec = JxlDecoderCreate(NULL);
 	if (!dec) {
 		snprintf(err, err_cap, "JxlDecoderCreate failed");
@@ -206,12 +207,14 @@ static int decode_image(const uint8_t* data, size_t size, const char* output_for
 		if (status == JXL_DEC_ERROR) {
 			snprintf(err, err_cap, "JxlDecoderProcessInput failed");
 			free(out->pixels);
+			free(first_pixels);
 			JxlDecoderDestroy(dec);
 			return 0;
 		}
 		if (status == JXL_DEC_NEED_MORE_INPUT) {
 			snprintf(err, err_cap, "unexpected need-more-input");
 			free(out->pixels);
+			free(first_pixels);
 			JxlDecoderDestroy(dec);
 			return 0;
 		}
@@ -219,10 +222,13 @@ static int decode_image(const uint8_t* data, size_t size, const char* output_for
 			if (JxlDecoderGetBasicInfo(dec, &out->info) != JXL_DEC_SUCCESS) {
 				snprintf(err, err_cap, "JxlDecoderGetBasicInfo failed");
 				free(out->pixels);
+				free(first_pixels);
 				JxlDecoderDestroy(dec);
 				return 0;
 			}
 			if (!configure_pnm_pixel_format(&out->info, &out->format, err, err_cap)) {
+				free(out->pixels);
+				free(first_pixels);
 				JxlDecoderDestroy(dec);
 				return 0;
 			}
@@ -236,6 +242,8 @@ static int decode_image(const uint8_t* data, size_t size, const char* output_for
 				out->format.num_channels = out->info.num_color_channels + (out->info.alpha_bits != 0 ? 1u : 0u);
 			} else {
 				snprintf(err, err_cap, "unsupported output format");
+				free(out->pixels);
+				free(first_pixels);
 				JxlDecoderDestroy(dec);
 				return 0;
 			}
@@ -245,32 +253,46 @@ static int decode_image(const uint8_t* data, size_t size, const char* output_for
 			if (JxlDecoderImageOutBufferSize(dec, &out->format, &out->pixels_size) != JXL_DEC_SUCCESS) {
 				snprintf(err, err_cap, "JxlDecoderImageOutBufferSize failed");
 				free(out->pixels);
+				free(first_pixels);
 				JxlDecoderDestroy(dec);
 				return 0;
 			}
+			free(out->pixels);
 			out->pixels = (uint8_t*)malloc(out->pixels_size);
 			if (!out->pixels) {
 				snprintf(err, err_cap, "malloc failed");
+				free(first_pixels);
 				JxlDecoderDestroy(dec);
 				return 0;
 			}
 			if (JxlDecoderSetImageOutBuffer(dec, &out->format, out->pixels, out->pixels_size) != JXL_DEC_SUCCESS) {
 				snprintf(err, err_cap, "JxlDecoderSetImageOutBuffer failed");
 				free(out->pixels);
+				free(first_pixels);
 				JxlDecoderDestroy(dec);
 				return 0;
 			}
 			continue;
 		}
 		if (status == JXL_DEC_FULL_IMAGE) {
+			/* Keep the first still output, but validate all later frames. */
+			if (!first_pixels) {
+				first_pixels = out->pixels;
+				out->pixels = NULL;
+			}
 			continue;
 		}
 		if (status == JXL_DEC_SUCCESS) {
+			if (first_pixels) {
+				free(out->pixels);
+				out->pixels = first_pixels;
+			}
 			JxlDecoderDestroy(dec);
 			return 1;
 		}
 		snprintf(err, err_cap, "unexpected decoder status %d", (int)status);
 		free(out->pixels);
+		free(first_pixels);
 		JxlDecoderDestroy(dec);
 		return 0;
 	}

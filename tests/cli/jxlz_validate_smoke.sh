@@ -60,13 +60,13 @@ grep -Eq '^verdict[[:space:]]+valid$' "${OUT}" || fail "valid modular should rep
 grep -Eq '^feature[[:space:]]+none$' "${OUT}" || fail "valid modular should report feature none, got: $(cat "${OUT}")"
 grep -Eq '^frames_validated[[:space:]]+[1-9]' "${OUT}" || fail "valid modular should validate at least one frame, got: $(cat "${OUT}")"
 
-# Discriminating named features: a single hardcoded answer would pass one
-# of these and fail the other.
+# Patches now validate both the saved reference and the displayed frame.
 run_validate tests/corpus/labeled/good/patches_lossless.jxl
 status=$?
-[ "${status}" -eq 1 ] || fail "patches_lossless should exit 1 (unsupported), got ${status}"
-grep -Eq '^verdict[[:space:]]+unsupported$' "${OUT}" || fail "patches_lossless should report unsupported, got: $(cat "${OUT}")"
-grep -Eq '^feature[[:space:]]+patches$' "${OUT}" || fail "patches_lossless should name patches, got: $(cat "${OUT}")"
+[ "${status}" -eq 0 ] || fail "patches_lossless should exit 0, got ${status}"
+grep -Eq '^verdict[[:space:]]+valid$' "${OUT}" || fail "patches_lossless should report valid, got: $(cat "${OUT}")"
+grep -Eq '^feature[[:space:]]+none$' "${OUT}" || fail "patches_lossless should name no feature gate, got: $(cat "${OUT}")"
+grep -Eq '^frames_validated[[:space:]]+2$' "${OUT}" || fail "patches_lossless should validate two frames"
 
 run_validate tests/corpus/labeled/good/grayscale.jxl
 status=$?
@@ -78,8 +78,9 @@ grep -Eq '^feature[[:space:]]+icc_profile$' "${OUT}" || fail "grayscale should n
 # real feature, and the set of names must not collapse to one answer.
 unsupported_count=0
 unknown_count=0
-saw_patches=0
+saw_blending=0
 saw_icc=0
+valid_count=0
 while IFS= read -r fixture; do
 	run_validate "${fixture}"
 	status=$?
@@ -92,24 +93,28 @@ while IFS= read -r fixture; do
 			unknown_count=$((unknown_count + 1))
 			fail "${fixture}: unsupported with unnamed feature (${feature:-empty})"
 		fi
-		[ "${feature}" = "patches" ] && saw_patches=1
+		[ "${feature}" = "frame_blending" ] && saw_blending=1
 		[ "${feature}" = "icc_profile" ] && saw_icc=1
 	elif [ "${verdict}" = "valid" ]; then
+		valid_count=$((valid_count + 1))
 		[ "${status}" -eq 0 ] || fail "${fixture}: valid should exit 0, got ${status}"
 		[ "${feature}" = "none" ] || fail "${fixture}: valid must report feature none, got ${feature}"
+	else
+		fail "${fixture}: labeled-good file returned ${verdict:-empty}"
 	fi
 done < <(find tests/corpus/labeled/good -type f -name '*.jxl' | sort)
 
-[ "${unsupported_count}" -ge 2 ] || fail "classifier saw ${unsupported_count} unsupported files; need at least 2"
+[ "${unsupported_count}" -eq 2 ] || fail "classifier saw ${unsupported_count} unsupported files; expected 2"
+[ "${valid_count}" -eq 6 ] || fail "classifier saw ${valid_count} valid files; expected 6"
 [ "${unknown_count}" -eq 0 ] || fail "classifier saw ${unknown_count} unknown features; want 0"
-[ "${saw_patches}" -eq 1 ] || fail "classifier never saw feature=patches over labeled-good"
+[ "${saw_blending}" -eq 1 ] || fail "classifier never saw feature=frame_blending over labeled-good"
 [ "${saw_icc}" -eq 1 ] || fail "classifier never saw feature=icc_profile over labeled-good"
 
 # --json for tooling. Later --json must still win if it follows the path.
 run_validate tests/corpus/labeled/good/patches_lossless.jxl --json
-[ $? -eq 1 ] || fail "json unsupported should still exit 1"
-grep -q '"verdict": "unsupported"' "${OUT}" || fail "json should carry verdict, got: $(cat "${OUT}")"
-grep -q '"feature": "patches"' "${OUT}" || fail "json should carry feature patches, got: $(cat "${OUT}")"
+[ $? -eq 0 ] || fail "json valid should still exit 0"
+grep -q '"verdict": "valid"' "${OUT}" || fail "json should carry valid verdict, got: $(cat "${OUT}")"
+grep -q '"feature": "none"' "${OUT}" || fail "json should carry feature none, got: $(cat "${OUT}")"
 
 # stdin aliases and an invalid signature (corrupt, not unsupported).
 invalid_sig="${TMPDIR:-/tmp}/jxlz_validate_invalid.bin"

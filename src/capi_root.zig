@@ -274,6 +274,9 @@ const DecoderImpl = struct {
 	frame_parsed: bool = false,
 	frame_emitted: bool = false,
 	frame_decoded: bool = false,
+	frame_displayed: bool = true,
+	decoded_frame: ?dec_frame.FrameDecoder = null,
+	decode_session: @import("lib/codec/decode_session.zig").Session = .{ .allocator = std.heap.c_allocator },
 	frame_name_len: usize = 0,
 	frame_name_buf: [1071]u8 = [_]u8{0} ** 1071,
 	frame_header: JxlFrameHeader = std.mem.zeroes(JxlFrameHeader),
@@ -398,6 +401,8 @@ fn allocDecoder(mm: ?*const JxlMemoryManager) ?*DecoderImpl {
 }
 
 fn freeDecoder(dec: *DecoderImpl) void {
+	clearDecodedFrame(dec);
+	dec.decode_session.deinit();
 	if (dec.owned_codestream.len != 0) {
 		std.heap.c_allocator.free(dec.owned_codestream);
 		dec.owned_codestream = &.{};
@@ -1058,6 +1063,10 @@ fn ensureCurrentFrameParsed(dec: *DecoderImpl) JxlDecoderStatus {
 
 	dec.frame_size = dec_frame.frameByteCount(std.heap.c_allocator, &dec.codec_meta, dec.frame_data[dec.frame_offset..]) catch |err| return decoderStatusFromError(dec, err);
 	populateFrameHeader(&dec.frame_header, &frame_dec.frame_header);
+	dec.frame_header.layer_info.xsize = @intCast(frame_dec.frame_dim.xsize_upsampled);
+	dec.frame_header.layer_info.ysize = @intCast(frame_dec.frame_dim.ysize_upsampled);
+	dec.frame_displayed = (frame_dec.frame_header.frame_type == .regular_frame or frame_dec.frame_header.frame_type == .skip_progressive) and
+		(!dec.coalescing or frame_dec.frame_header.is_last or frame_dec.frame_header.animation_frame.duration != 0);
 	dec.frame_name_len = @intCast(frame_dec.frame_header.name_len);
 	if (dec.frame_name_len != 0) {
 		@memcpy(dec.frame_name_buf[0..dec.frame_name_len], frame_dec.frame_header.getName());
@@ -1068,6 +1077,11 @@ fn ensureCurrentFrameParsed(dec: *DecoderImpl) JxlDecoderStatus {
 
 fn advanceCurrentFrame(dec: *DecoderImpl) void {
 	if (!dec.frame_parsed) return;
+	if (dec.frame_displayed) {
+		dec.output_buffer = null;
+		dec.output_buffer_size = 0;
+	}
+	clearDecodedFrame(dec);
 	dec.frame_offset += dec.frame_size;
 	dec.frame_size = 0;
 	dec.frame_parsed = false;
@@ -1119,6 +1133,8 @@ fn advanceCurrentBox(dec: *DecoderImpl) void {
 }
 
 fn resetFrameIteration(dec: *DecoderImpl) void {
+	clearDecodedFrame(dec);
+	dec.decode_session.deinit();
 	dec.frame_offset = 0;
 	dec.frame_size = 0;
 	dec.frame_parsed = false;
@@ -1211,6 +1227,17 @@ fn bitReaderError(br: *const BitReader, err: JxlError) JxlError {
 	return err;
 }
 
+fn clearDecodedFrame(dec: *DecoderImpl) void {
+	if (dec.decoded_frame) |*frame| frame.deinit();
+	dec.decoded_frame = null;
+}
+
+fn decodeCurrentFrame(dec: *DecoderImpl) JxlError!*dec_frame.FrameDecoder {
+	dec.decode_session.coalescing = dec.coalescing;
+	if (dec.decoded_frame == null) dec.decoded_frame = try dec.decode_session.decode(&dec.codec_meta, dec.frame_data[dec.frame_offset .. dec.frame_offset + dec.frame_size]);
+	return &dec.decoded_frame.?;
+}
+
 fn ensureDecoded(dec: *DecoderImpl) JxlDecoderStatus {
 	if (dec.decode_complete) return .JXL_DEC_SUCCESS;
 	const frame_status = ensureCurrentFrameParsed(dec);
@@ -1219,11 +1246,8 @@ fn ensureDecoded(dec: *DecoderImpl) JxlDecoderStatus {
 	if (dec.frame_decoded) return .JXL_DEC_SUCCESS;
 	if (dec.output_buffer == null) return .JXL_DEC_NEED_IMAGE_OUT_BUFFER;
 
-	var frame_dec = dec_frame.FrameDecoder.init(std.heap.c_allocator, &dec.codec_meta);
-	defer frame_dec.deinit();
-	frame_dec.decodeFrame(dec.frame_data[dec.frame_offset .. dec.frame_offset + dec.frame_size]) catch |err| return decoderStatusFromError(dec, err);
-
-	writeFrameDecoderOutput(&frame_dec, &dec.codec_meta, dec.output_format, dec.output_buffer.?, dec.output_buffer_size) catch |err| return decoderStatusFromError(dec, err);
+	const frame_dec = decodeCurrentFrame(dec) catch |err| return decoderStatusFromError(dec, err);
+	writeFrameDecoderOutput(frame_dec, &dec.codec_meta, dec.output_format, dec.output_buffer.?, dec.output_buffer_size) catch |err| return decoderStatusFromError(dec, err);
 	dec.frame_decoded = true;
 	return .JXL_DEC_SUCCESS;
 }
@@ -1338,9 +1362,7 @@ pub export fn JxlValidate(
 			return setValidationResult(result, .JXL_VALIDATION_INDETERMINATE, .JXL_VALIDATION_FINDING_RESOURCE_LIMIT, dec.frame_offset, host_offset, false, frames_validated);
 		}
 
-		var frame_dec = dec_frame.FrameDecoder.init(std.heap.c_allocator, &dec.codec_meta);
-		defer frame_dec.deinit();
-		frame_dec.decodeFrame(dec.frame_data[dec.frame_offset .. dec.frame_offset + dec.frame_size]) catch |err| {
+		_ = decodeCurrentFrame(dec) catch |err| {
 			return validationFailure(result, err, dec.frame_offset, host_offset, false, frames_validated);
 		};
 		frames_validated += 1;
@@ -1413,6 +1435,8 @@ pub export fn JxlDecoderReset(dec_ptr: ?*JxlDecoder) void {
 	const dec = dec_ptr orelse return;
 	const impl: *DecoderImpl = @ptrCast(@alignCast(dec));
 	const mm = impl.memory_manager;
+	clearDecodedFrame(impl);
+	impl.decode_session.deinit();
 	if (impl.owned_codestream.len != 0) std.heap.c_allocator.free(impl.owned_codestream);
 	if (impl.owned_icc.len != 0) std.heap.c_allocator.free(impl.owned_icc);
 	if (impl.owned_boxes.len != 0) {
@@ -1452,6 +1476,7 @@ pub export fn JxlDecoderSkipCurrentFrame(dec_ptr: ?*JxlDecoder) JxlDecoderStatus
 	const dec = dec_ptr orelse return .JXL_DEC_ERROR;
 	const impl: *DecoderImpl = @ptrCast(@alignCast(dec));
 	if (!impl.frame_parsed or impl.full_image_emitted or impl.decode_complete) return .JXL_DEC_ERROR;
+	_ = decodeCurrentFrame(impl) catch |err| return decoderStatusFromError(impl, err);
 	advanceCurrentFrame(impl);
 	return .JXL_DEC_SUCCESS;
 }
@@ -1702,7 +1727,14 @@ pub export fn JxlDecoderGetFrameHeader(dec_ptr: ?*const JxlDecoder, header_ptr: 
 	const dec = dec_ptr orelse return .JXL_DEC_ERROR;
 	const impl: *const DecoderImpl = @ptrCast(@alignCast(dec));
 	if (!impl.frame_parsed) return .JXL_DEC_NEED_MORE_INPUT;
-	if (header_ptr) |dst| dst.* = impl.frame_header;
+	if (header_ptr) |dst| {
+		dst.* = impl.frame_header;
+		if (impl.coalescing) {
+			dst.layer_info = std.mem.zeroes(JxlLayerInfo);
+			dst.layer_info.xsize = impl.basic_info.xsize;
+			dst.layer_info.ysize = impl.basic_info.ysize;
+		}
+	}
 	return .JXL_DEC_SUCCESS;
 }
 
@@ -1729,8 +1761,11 @@ pub export fn JxlDecoderImageOutBufferSize(dec_ptr: ?*const JxlDecoder, format: 
 	const pixel_format = format orelse return .JXL_DEC_ERROR;
 	const out_size = size orelse return .JXL_DEC_ERROR;
 	if (!impl.basic_info_available) return .JXL_DEC_ERROR;
-	const stride = rowStrideBytes(impl.basic_info.xsize, pixel_format.*) orelse return .JXL_DEC_ERROR;
-	out_size.* = stride * impl.basic_info.ysize;
+	if (!impl.coalescing and !impl.frame_parsed) return .JXL_DEC_ERROR;
+	const width = if (impl.coalescing) impl.basic_info.xsize else impl.frame_header.layer_info.xsize;
+	const height = if (impl.coalescing) impl.basic_info.ysize else impl.frame_header.layer_info.ysize;
+	const stride = rowStrideBytes(width, pixel_format.*) orelse return .JXL_DEC_ERROR;
+	out_size.* = std.math.mul(usize, stride, height) catch return .JXL_DEC_ERROR;
 	return .JXL_DEC_SUCCESS;
 }
 
@@ -1810,7 +1845,13 @@ pub export fn JxlDecoderProcessInput(dec_ptr: ?*JxlDecoder) JxlDecoderStatus {
 		const frame_status = ensureCurrentFrameParsed(impl);
 		if (frame_status != .JXL_DEC_SUCCESS) return frame_status;
 		if (!impl.frame_parsed) return .JXL_DEC_SUCCESS;
+		if (!impl.frame_displayed) {
+			_ = decodeCurrentFrame(impl) catch |err| return decoderStatusFromError(impl, err);
+			advanceCurrentFrame(impl);
+			continue;
+		}
 		if (impl.frames_to_skip != 0) {
+			_ = decodeCurrentFrame(impl) catch |err| return decoderStatusFromError(impl, err);
 			impl.frames_to_skip -= 1;
 			advanceCurrentFrame(impl);
 			continue;
@@ -5003,7 +5044,6 @@ test "JxlDecoder emits frame headers for animated codestreams" {
 
 	var basic_info = std.mem.zeroes(JxlBasicInfo);
 	var output: [12]u8 = undefined;
-	var output_set = false;
 	var durations: [2]u32 = .{ 0, 0 };
 	var timecodes: [2]u32 = .{ 0, 0 };
 	var last_flags: [2]JXL_BOOL = .{ 0, 0 };
@@ -5026,10 +5066,7 @@ test "JxlDecoder emits frame headers for animated codestreams" {
 				frame_count += 1;
 			},
 			.JXL_DEC_NEED_IMAGE_OUT_BUFFER => {
-				if (!output_set) {
-					try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(dec, &format, &output, output.len));
-					output_set = true;
-				}
+				try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(dec, &format, &output, output.len));
 			},
 			.JXL_DEC_FULL_IMAGE => full_count += 1,
 			.JXL_DEC_SUCCESS => break,
@@ -5573,5 +5610,184 @@ test "Modular public rendered RGB and gray frames match upstream" {
 			for (output, expected) |actual, reference| try testing.expect(@abs(@as(i32, actual) - @as(i32, reference)) <= 1);
 			try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderProcessInput(decoder));
 		}
+	}
+}
+test "reference public decoder coalesces saved backgrounds and cropped layers" {
+	@setEvalBranchQuota(20000);
+	const fixture = @import("lib/codec/reference_fixture.zig");
+	inline for (0..10) |id| {
+		const data = @field(fixture, "bytes_" ++ std.fmt.comptimePrint("{d}", .{id}));
+		const expected = @field(fixture, "pixels_" ++ std.fmt.comptimePrint("{d}", .{id}));
+		var validation: JxlValidationResult = undefined;
+		try std.testing.expectEqual(JxlValidationVerdict.JXL_VALIDATION_VALID, JxlValidate(&data, data.len, null, &validation));
+		try std.testing.expectEqual(@as(u32, 2), validation.frames_validated);
+		const decoder = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+		defer JxlDecoderDestroy(decoder);
+		try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSubscribeEvents(decoder, @intFromEnum(JxlDecoderStatus.JXL_DEC_FRAME) | @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)));
+		for (0..2) |replay| {
+			if (replay != 0) JxlDecoderRewind(decoder);
+			try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(decoder, &data, data.len));
+			JxlDecoderCloseInput(decoder);
+			const output = try std.testing.allocator.alloc(u8, expected.len);
+			defer std.testing.allocator.free(output);
+			const format = JxlPixelFormat{ .num_channels = 3 + id / 5, .data_type = .JXL_TYPE_UINT8, .endianness = .JXL_NATIVE_ENDIAN, .@"align" = 0 };
+			var frames: usize = 0;
+			var full: usize = 0;
+			while (true) {
+				switch (JxlDecoderProcessInput(decoder)) {
+					.JXL_DEC_SUCCESS => break,
+					.JXL_DEC_FRAME => frames += 1,
+					.JXL_DEC_NEED_IMAGE_OUT_BUFFER => try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(decoder, &format, output.ptr, output.len)),
+					.JXL_DEC_FULL_IMAGE => {
+						full += 1;
+						for (output, expected) |actual, wanted| try std.testing.expect(@abs(@as(i32, actual) - @as(i32, wanted)) <= 1);
+					},
+					else => return error.UnexpectedDecoderStatus,
+				}
+			}
+			try std.testing.expectEqual(1, frames);
+			try std.testing.expectEqual(1, full);
+		}
+	}
+}
+test "patch public decoder applies sampled reference dictionaries" {
+	@setEvalBranchQuota(20000);
+	const fixture = @import("lib/codec/patch_frame_fixture.zig");
+	inline for (0..32) |id| {
+		const data = @field(fixture, "bytes_" ++ std.fmt.comptimePrint("{d}", .{id}));
+		const expected = @field(fixture, "pixels_" ++ std.fmt.comptimePrint("{d}", .{id}));
+		var validation: JxlValidationResult = undefined;
+		try std.testing.expectEqual(JxlValidationVerdict.JXL_VALIDATION_VALID, JxlValidate(&data, data.len, null, &validation));
+		try std.testing.expectEqual(@as(u32, 2), validation.frames_validated);
+		const decoder = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+		defer JxlDecoderDestroy(decoder);
+		try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSubscribeEvents(decoder, @intFromEnum(JxlDecoderStatus.JXL_DEC_FRAME) | @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)));
+		for (0..2) |replay| {
+			if (replay != 0) JxlDecoderRewind(decoder);
+			try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(decoder, &data, data.len));
+			JxlDecoderCloseInput(decoder);
+			const output = try std.testing.allocator.alloc(u8, expected.len);
+			defer std.testing.allocator.free(output);
+			const format = JxlPixelFormat{ .num_channels = 3 + (id / 8) % 2, .data_type = .JXL_TYPE_UINT8, .endianness = .JXL_NATIVE_ENDIAN, .@"align" = 0 };
+			var frames: usize = 0;
+			var full: usize = 0;
+			while (true) {
+				switch (JxlDecoderProcessInput(decoder)) {
+					.JXL_DEC_SUCCESS => break,
+					.JXL_DEC_FRAME => frames += 1,
+					.JXL_DEC_NEED_IMAGE_OUT_BUFFER => try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(decoder, &format, output.ptr, output.len)),
+					.JXL_DEC_FULL_IMAGE => {
+						full += 1;
+						for (output, expected) |actual, wanted| try std.testing.expect(@abs(@as(i32, actual) - @as(i32, wanted)) <= 1);
+					},
+					else => return error.UnexpectedDecoderStatus,
+				}
+			}
+			try std.testing.expectEqual(1, frames);
+			try std.testing.expectEqual(1, full);
+		}
+	}
+}
+test "VarDCT patch public decoder applies sampled reference dictionaries" {
+	@setEvalBranchQuota(50000);
+	inline for (0..2) |kind| {
+		const fixture = if (kind == 0) @import("lib/codec/patch_vardct_fixture.zig") else @import("lib/codec/patch_padding_fixture.zig");
+		inline for (0..32) |id| {
+			const data = @field(fixture, "bytes_" ++ std.fmt.comptimePrint("{d}", .{id}));
+			const expected = @field(fixture, "pixels_" ++ std.fmt.comptimePrint("{d}", .{id}));
+			var validation: JxlValidationResult = undefined;
+			try std.testing.expectEqual(JxlValidationVerdict.JXL_VALIDATION_VALID, JxlValidate(&data, data.len, null, &validation));
+			try std.testing.expectEqual(@as(u32, 2), validation.frames_validated);
+			const decoder = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+			defer JxlDecoderDestroy(decoder);
+			try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSubscribeEvents(decoder, @intFromEnum(JxlDecoderStatus.JXL_DEC_FRAME) | @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)));
+			for (0..2) |replay| {
+				if (replay != 0) JxlDecoderRewind(decoder);
+				try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(decoder, &data, data.len));
+				JxlDecoderCloseInput(decoder);
+				const output = try std.testing.allocator.alloc(u8, expected.len);
+				defer std.testing.allocator.free(output);
+				const format = JxlPixelFormat{ .num_channels = 3 + (id / 8) % 2, .data_type = .JXL_TYPE_UINT8, .endianness = .JXL_NATIVE_ENDIAN, .@"align" = 0 };
+				var frames: usize = 0;
+				var full: usize = 0;
+				while (true) {
+					switch (JxlDecoderProcessInput(decoder)) {
+						.JXL_DEC_SUCCESS => break,
+						.JXL_DEC_FRAME => frames += 1,
+						.JXL_DEC_NEED_IMAGE_OUT_BUFFER => try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(decoder, &format, output.ptr, output.len)),
+						.JXL_DEC_FULL_IMAGE => {
+							full += 1;
+							for (output, expected, 0..) |actual, wanted, p| {
+								if (@abs(@as(i32, actual) - @as(i32, wanted)) > 1) {
+									std.debug.print("id={d} index={d} actual={d} expected={d}\n", .{ id, p, actual, wanted });
+									return error.TestUnexpectedResult;
+								}
+							}
+						},
+						else => return error.UnexpectedDecoderStatus,
+					}
+				}
+				try std.testing.expectEqual(1, frames);
+				try std.testing.expectEqual(1, full);
+			}
+		}
+	}
+}
+test "uncoalesced layers match upstream pixels sizes and headers" {
+	@setEvalBranchQuota(20000);
+	const fixture = @import("lib/codec/layer_control_fixture.zig");
+	const testing = std.testing;
+	inline for (0..10) |id| {
+		const suffix = std.fmt.comptimePrint("{d}", .{id});
+		const data = @field(fixture, "bytes_" ++ suffix);
+		const decoder = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+		defer JxlDecoderDestroy(decoder);
+		try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetCoalescing(decoder, 0));
+		try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSubscribeEvents(decoder, @intFromEnum(JxlDecoderStatus.JXL_DEC_FRAME) | @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)));
+		try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(decoder, &data, data.len));
+		JxlDecoderCloseInput(decoder);
+		const format = JxlPixelFormat{ .num_channels = 3 + id / 5, .data_type = .JXL_TYPE_UINT8, .endianness = .JXL_NATIVE_ENDIAN, .@"align" = 0 };
+		inline for (0..2) |frame| {
+			const key = suffix ++ "_" ++ std.fmt.comptimePrint("{d}", .{frame});
+			const expected = @field(fixture, "raw_" ++ key);
+			const wanted = @field(fixture, "header_" ++ key);
+			try testing.expectEqual(JxlDecoderStatus.JXL_DEC_FRAME, JxlDecoderProcessInput(decoder));
+			var header: JxlFrameHeader = undefined;
+			try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderGetFrameHeader(decoder, &header));
+			const actual = [_]i32{ @intCast(header.layer_info.xsize), @intCast(header.layer_info.ysize), header.layer_info.have_crop, header.layer_info.crop_x0, header.layer_info.crop_y0, @intFromEnum(header.layer_info.blend_info.blendmode), @intCast(header.layer_info.blend_info.source), @intCast(header.layer_info.save_as_reference) };
+			try testing.expectEqualSlices(i32, &wanted, &actual);
+			try testing.expectEqual(JxlDecoderStatus.JXL_DEC_NEED_IMAGE_OUT_BUFFER, JxlDecoderProcessInput(decoder));
+			var size: usize = 0;
+			try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderImageOutBufferSize(decoder, &format, &size));
+			try testing.expectEqual(expected.len, size);
+			const output = try testing.allocator.alloc(u8, size);
+			defer testing.allocator.free(output);
+			try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(decoder, &format, output.ptr, output.len));
+			try testing.expectEqual(JxlDecoderStatus.JXL_DEC_FULL_IMAGE, JxlDecoderProcessInput(decoder));
+			try testing.expectEqualSlices(u8, &expected, output);
+		}
+		try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderProcessInput(decoder));
+	}
+}
+test "extra-channel-only frame blending matches upstream RGBA" {
+	const fixture = @import("lib/codec/extra_blend_fixture.zig");
+	const testing = std.testing;
+	inline for (0..5) |id| {
+		const suffix = std.fmt.comptimePrint("{d}", .{id});
+		const data = @field(fixture, "bytes_" ++ suffix);
+		const expected = @field(fixture, "pixels_" ++ suffix);
+		const decoder = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+		defer JxlDecoderDestroy(decoder);
+		try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSubscribeEvents(decoder, @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)));
+		try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(decoder, &data, data.len));
+		JxlDecoderCloseInput(decoder);
+		try testing.expectEqual(JxlDecoderStatus.JXL_DEC_NEED_IMAGE_OUT_BUFFER, JxlDecoderProcessInput(decoder));
+		const output = try testing.allocator.alloc(u8, expected.len);
+		defer testing.allocator.free(output);
+		const format = JxlPixelFormat{ .num_channels = 4, .data_type = .JXL_TYPE_UINT8, .endianness = .JXL_NATIVE_ENDIAN, .@"align" = 0 };
+		try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(decoder, &format, output.ptr, output.len));
+		try testing.expectEqual(JxlDecoderStatus.JXL_DEC_FULL_IMAGE, JxlDecoderProcessInput(decoder));
+		for (output, expected) |actual, wanted| try testing.expect(@abs(@as(i32, actual) - @as(i32, wanted)) <= 1);
+		try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderProcessInput(decoder));
 	}
 }

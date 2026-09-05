@@ -86,14 +86,14 @@ static int collect_hashes(
 			continue;
 		}
 		if (status == JXL_DEC_FRAME) {
+			continue;
+		}
+		if (status == JXL_DEC_NEED_IMAGE_OUT_BUFFER) {
 			if (use_skip_current && !skip_current_done) {
 				skip_current_done = 1;
 				if (JXL_DEC_SUCCESS != JxlDecoderSkipCurrentFrame(dec)) goto fail;
 				continue;
 			}
-			continue;
-		}
-		if (status == JXL_DEC_NEED_IMAGE_OUT_BUFFER) {
 			if (!ensure_output(dec, &out, &out_size)) goto fail;
 			continue;
 		}

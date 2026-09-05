@@ -1516,6 +1516,9 @@ pub const FrameDecoder = struct {
     dequant_matrices: DequantMatrices = .{},
     vardct_global: ?VarDctGlobal = null,
     rendered_image: ?render_mod.FloatImage = null,
+    force_render: bool = false,
+    references: ?*const [4]@import("patches.zig").Reference = null,
+    patches: ?@import("patches.zig").Dictionary = null,
     metadata: *const CodecMetadata,
     decoded_dc_global: bool = false,
     allocator: std.mem.Allocator,
@@ -1530,6 +1533,7 @@ pub const FrameDecoder = struct {
     }
 
     pub fn deinit(self: *FrameDecoder) void {
+        if (self.patches) |*dictionary| dictionary.deinit();
         self.clearRenderedImage();
         self.clearVarDctGlobal();
         self.dequant_matrices.deinit(self.allocator);
@@ -1543,6 +1547,8 @@ pub const FrameDecoder = struct {
 
     /// Read frame header and TOC.
     pub fn initFrame(self: *FrameDecoder, br: *BitReader) JxlError!void {
+        if (self.patches) |*dictionary| dictionary.deinit();
+        self.patches = null;
         self.frame_header = try FrameHeader.readFromBitStream(br, self.metadata, false);
         self.frame_dim = self.frame_header.toFrameDimensions(self.metadata, false);
         self.modular_decoder.initFrame(self.frame_dim);
@@ -1581,12 +1587,17 @@ pub const FrameDecoder = struct {
         self.decoded_dc_global = false;
         self.clearVarDctGlobal();
         errdefer self.clearVarDctGlobal();
-        const unsupported_flags = frame_header_mod.FrameFlags.noise |
-            frame_header_mod.FrameFlags.patches;
+        const unsupported_flags = frame_header_mod.FrameFlags.noise;
         if ((self.frame_header.flags & unsupported_flags) != 0) {
             return unsupported_mod.unsupported(
                 if ((self.frame_header.flags & frame_header_mod.FrameFlags.patches) != 0) .patches else .noise,
             );
+        }
+
+        if ((self.frame_header.flags & frame_header_mod.FrameFlags.patches) != 0) {
+            const references = self.references orelse return unsupported_mod.unsupported(.reference_frame);
+            self.patches = try @import("patches.zig").Dictionary.decode(self.allocator, br, self.frame_dim.xsize_padded, self.frame_dim.ysize_padded, self.metadata.m.num_extra_channels, references);
+            try self.patches.?.validateSampling(self.frame_header.upsampling, self.frame_header.extra_channel_upsampling[0..self.metadata.m.num_extra_channels]);
         }
 
         if ((self.frame_header.flags & frame_header_mod.FrameFlags.splines) != 0) {

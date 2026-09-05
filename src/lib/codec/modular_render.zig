@@ -7,13 +7,14 @@ pub fn render(dec: *jxl.codec.dec_frame.FrameDecoder) !void {
 	const fh = &dec.frame_header;
 	const metadata = &dec.metadata.m;
 	const xyb = metadata.xyb_encoded or fh.color_transform == .xyb;
-	var effects = fh.upsampling != 1 or fh.loop_filter.gab or fh.loop_filter.epf_iters != 0;
+	var effects = fh.upsampling != 1 or fh.loop_filter.gab or fh.loop_filter.epf_iters != 0 or dec.patches != null;
 	for (fh.extra_channel_upsampling[0..metadata.num_extra_channels]) |factor| effects = effects or factor != 1;
 	if (dec.splines.hasAny()) {
 		if (effects) return @import("../base/unsupported.zig").unsupported(.splines);
 		return dec.renderSplineOverlays();
 	}
-	if (!effects and !xyb) return;
+	const needs_state = fh.canBeReferenced() or fh.needsBlending(metadata.num_extra_channels);
+	if (!effects and !xyb and !(dec.force_render and needs_state)) return;
 	if (metadata.bit_depth.floating_point_sample) return @import("../base/unsupported.zig").unsupported(.bit_depth);
 	if (!fh.chroma_subsampling.is444()) return @import("../base/unsupported.zig").unsupported(.chroma_subsampling);
 	const image = &dec.modular_decoder.full_image;

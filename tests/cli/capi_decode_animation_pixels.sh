@@ -55,3 +55,16 @@ if ! grep -Eq '^[0-9a-f]{16}( [0-9a-f]{16}){9}$' "${RUN_STDOUT}"; then
 	cat "${RUN_STDOUT}"
 	exit 1
 fi
+
+# Generated independently by tests/unit/cropped_animation_oracle.cc linked to
+# upstream libjxl. The probe also checks rewind/skip against these full frames.
+if ! "${CHECK_BIN}" testdata/jxl/blending/cropped_traffic_light.jxl >"${RUN_STDOUT}" 2>"${RUN_STDERR}"; then
+	cat "${RUN_STDERR}"
+	exit 1
+fi
+expected='9f6c7e0516cb7c89 dbb4ee2e37958d29 e3c7fa45b878c8a2 c4103485f6340d83'
+actual="$(awk '{print $1, $2, $3, $4}' "${RUN_STDOUT}")"
+if [ "${actual}" != "${expected}" ]; then
+	echo "cropped animation frames differ from upstream: ${actual}" >&2
+	exit 1
+fi

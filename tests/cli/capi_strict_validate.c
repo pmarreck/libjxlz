@@ -107,15 +107,16 @@ int main(int argc, char** argv) {
 		fprintf(stderr, "accepted modular: no frame was validated\n");
 		ok = 0;
 	}
-	ok &= expect_result("unsupported valid", unsupported, unsupported_size, &options,
-		JXL_VALIDATION_UNSUPPORTED, JXL_VALIDATION_FINDING_UNSUPPORTED_FEATURE);
+	ok &= expect_result("accepted patches", unsupported, unsupported_size, &options,
+		JXL_VALIDATION_VALID, JXL_VALIDATION_FINDING_NONE);
 	ok &= expect_result("bicycles modular", bicycles, bicycles_size, &options,
 		JXL_VALIDATION_VALID, JXL_VALIDATION_FINDING_NONE);
 
-	/* The finding must NAME the feature, and must name a DIFFERENT one per file:
-	 * a single hardcoded answer would pass one of these and fail the other. */
-	ok &= expect_feature("patches names itself", unsupported, unsupported_size, &options,
-		JXL_VALIDATION_FEATURE_PATCHES);
+	if (JxlValidate(unsupported, unsupported_size, &options, &result) != JXL_VALIDATION_VALID ||
+		result.frames_validated != 2 || result.feature != JXL_VALIDATION_FEATURE_NONE) {
+		fprintf(stderr, "accepted patches: expected two validated frames and no feature gate\n");
+		ok = 0;
+	}
 	ok &= expect_feature("VarDCT ICC gate names itself", vardct, vardct_size, &options,
 		JXL_VALIDATION_FEATURE_ICC_PROFILE);
 
