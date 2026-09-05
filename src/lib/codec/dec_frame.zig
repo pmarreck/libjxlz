@@ -33,6 +33,7 @@ const ModularOptions = options_mod.ModularOptions;
 const transform_mod = @import("../modular/transform.zig");
 const float_utils = @import("../base/float.zig");
 const sf = @import("../base/soft_float.zig");
+pub const Quantizer = @import("quantizer.zig").Quantizer;
 
 const SectionLayout = struct {
     offsets: []u64,
@@ -1638,6 +1639,83 @@ pub const FrameDecoder = struct {
 // ── Tests ──
 
 const testing = std.testing;
+
+test "Quantizer decodes every selector endpoint without consuming the next field" {
+	const BitWriter = @import("../base/bit_writer.zig").BitWriter;
+	// lib/jxl/quantizer.cc, QuantizerParams::VisitFields. Write the wire
+	// selectors directly so this does not round-trip our U32 encoder.
+	const scales = [_]struct { selector: u2, bits: u6, payload: u32, value: u32 }{
+		.{ .selector = 0, .bits = 11, .payload = 0, .value = 1 },
+		.{ .selector = 0, .bits = 11, .payload = 2047, .value = 2048 },
+		.{ .selector = 1, .bits = 11, .payload = 0, .value = 2049 },
+		.{ .selector = 1, .bits = 11, .payload = 2047, .value = 4096 },
+		.{ .selector = 2, .bits = 12, .payload = 0, .value = 4097 },
+		.{ .selector = 2, .bits = 12, .payload = 4095, .value = 8192 },
+		.{ .selector = 3, .bits = 16, .payload = 0, .value = 8193 },
+		.{ .selector = 3, .bits = 16, .payload = 65535, .value = 73728 },
+	};
+	const dc_values = [_]struct { selector: u2, bits: u6, payload: u32, value: u32 }{
+		.{ .selector = 0, .bits = 0, .payload = 0, .value = 16 },
+		.{ .selector = 1, .bits = 5, .payload = 0, .value = 1 },
+		.{ .selector = 1, .bits = 5, .payload = 31, .value = 32 },
+		.{ .selector = 2, .bits = 8, .payload = 0, .value = 1 },
+		.{ .selector = 2, .bits = 8, .payload = 255, .value = 256 },
+		.{ .selector = 3, .bits = 16, .payload = 0, .value = 1 },
+		.{ .selector = 3, .bits = 16, .payload = 65535, .value = 65536 },
+	};
+	for (scales) |scale| {
+		for (dc_values) |dc| {
+			var writer = BitWriter.init(testing.allocator);
+			defer writer.deinit();
+			try writer.write(2, scale.selector);
+			try writer.write(scale.bits, scale.payload);
+			try writer.write(2, dc.selector);
+			try writer.write(dc.bits, dc.payload);
+			try writer.write(8, 0xA5);
+			try writer.zeroPadToByte();
+			var br = BitReader.init(writer.bytes());
+			const q = try Quantizer.decode(&br);
+			try testing.expectEqual(scale.value, q.global_scale);
+			try testing.expectEqual(dc.value, q.quant_dc);
+			try testing.expectEqual(@as(usize, 4) + scale.bits + dc.bits, br.totalBitsConsumed());
+			try testing.expectEqual(@as(u64, 0xA5), br.readBits(8));
+			try br.close();
+		}
+	}
+}
+
+test "Quantizer rejects every truncated prefix of the longest encoding" {
+	// Both selectors 3, both 16-bit payloads all ones: 36 one bits.
+	const bytes = [_]u8{0xFF} ** 5;
+	for (0..36) |available_bits| {
+		const byte_count = (available_bits + 7) / 8;
+		var br = BitReader.init(bytes[0..byte_count]);
+		br.skipBits(byte_count * 8 - available_bits);
+		try testing.expectError(error.NotEnoughBytes, Quantizer.decode(&br));
+	}
+}
+
+test "Quantizer derives DC and AC scales with integer soft-floats" {
+	const q = try Quantizer.init(1024, 64);
+	try testing.expectEqual(sf.div(sf.fromInt(1), sf.fromInt(64)), q.scale());
+	try testing.expectEqual(sf.fromInt(64), q.invGlobalScale());
+	try testing.expectEqual(sf.fromInt(1), q.invQuantDC());
+	try testing.expectEqual(sf.fromInt(8), try q.invQuantAC(8));
+	try testing.expectEqual(sf.div(sf.fromInt(1), sf.fromInt(4)), try q.invQuantAC(256));
+	const dc_steps = q.dcSteps(.{ sf.div(kOne, sf.fromInt(4096)), sf.div(kOne, sf.fromInt(512)), sf.div(kOne, sf.fromInt(256)) });
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(4096)), dc_steps[0]);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(512)), dc_steps[1]);
+	try testing.expectEqual(sf.div(kOne, sf.fromInt(256)), dc_steps[2]);
+	const scaled = try Quantizer.init(2048, 16);
+	try testing.expectEqual(sf.fromInt(2), scaled.invQuantDC());
+	try testing.expectEqual(sf.fromInt(4), try scaled.invQuantAC(8));
+	try testing.expectError(error.GenericError, Quantizer.init(0, 1));
+	try testing.expectError(error.GenericError, Quantizer.init(1, 0));
+	try testing.expectError(error.GenericError, Quantizer.init(73729, 1));
+	try testing.expectError(error.GenericError, Quantizer.init(1, 65537));
+	try testing.expectError(error.GenericError, q.invQuantAC(0));
+	try testing.expectError(error.GenericError, q.invQuantAC(257));
+}
 
 test "ModularStreamId global" {
     var fd = FrameDimensions{};

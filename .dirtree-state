@@ -80,6 +80,7 @@ annotate=[
 	src/lib/codec/icc_test_fixtures.zig = hermetic ICC oracle bytes used by tests that need a real nontrivial profile without depending on the untracked testdata/ tree
 	src/lib/codec/image_metadata.zig = Codestream metadata structs; ExtraChannelInfo.eql compares semantic fields and only the live name_buf prefix, since the undefined tail broke frame comparison under ReleaseFast
 	src/lib/codec/loop_filter.zig = LoopFilter (Gaborish + EPF parameters) with full readFromBitStream, extension support
+	src/lib/codec/quantizer.zig = VarDCT quantizer wire parameters and integer soft-float coefficient scales
 	src/lib/codec/render.zig = first float render seam for decoder features that cannot be represented as immediate integer modular output
 	src/lib/codec/splines.zig = Pure Zig spline decoding/rendering matching libjxl v0.12.0, including its all-single-precision ComputeSegments cutoff
 	src/lib/codec/toc.zig = TOC reading (section sizes + Lehmer-coded permutation via ANS), numTocEntries, acGroupIndex, computeGroupOffsets for validated section-layout construction

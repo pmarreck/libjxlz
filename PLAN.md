@@ -1,5 +1,29 @@
 # libjxlz Plan
 
+## Active parsing work (2026-09-04)
+
+Full JPEG XL parsing and decode coverage remain the completion target.
+Preserve typed rejection of unsupported features until their payloads are checked.
+
+- [x] Read the handoff and implement quantizer parsing and coefficient scales
+  in randomz Fixed. Witnessed missing-implementation failures, then passed
+  56 selector-endpoint combinations, all 36 truncated bit prefixes, scale
+  arithmetic and constructor bounds. `./test` (94 CLI suites) and `./build`
+  passed. Wire reference: `lib/jxl/quantizer.cc` — 2026-09-04 20:25 EDT.
+- [ ] Decode the adaptive quant field. Curiosity poke: signed modular values,
+  per-block bounds, partial edge blocks, and ownership on failure.
+- [ ] Preserve allocation errors in the modular entropy path. The new
+  AC-metadata allocation sweep reproduced `OutOfMemory` being collapsed to
+  `GenericError` by `dec_ma.decodeTree`.
+- [ ] Correct permutation entropy contexts before sharing that code with
+  coefficient-order decoding; compare all strategy orders against compiled C++.
+- [ ] Continue coefficient orders, AC strategy, CfL, inverse transforms, and
+  VarDCT group decoding, then integrate and compare real files with libjxl.
+  Curiosity poke: progressive passes and large transforms must remain visible.
+- [ ] Run `./test` and `./build`, update coverage notes, and commit each passing
+  unit of work. Keep patches, rendering, progressive structure, and the other
+  existing coverage items in scope after VarDCT.
+
 ## Mechatron CI (2026-08-27)
 
 - [x] `4cb13298` (feature naming) **success** on Mechatron: started 20:43:26Z,
