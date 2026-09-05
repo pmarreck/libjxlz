@@ -47,6 +47,23 @@ below; pause for decisions only when they prevent safe implementation.
 - [ ] Implement VarDCT DC/AC coefficient-group processing and block inverse
   transforms, reusing modular and entropy machinery and existing XYB output.
   First end-to-end gate: a public upstream-produced VarDCT image matches libjxl.
+- [x] Decode AC coefficient passes using the existing entropy decoder. All 30
+  upstream tokenized/encoded streams match every token context and coefficient
+  hash, covering all strategies, mixed blocks, 4:2:0, ANS and Huffman. Added
+  shifted-pass accumulation, custom scanning, impossible-count rejection,
+  truncated-prefix checks and allocation sweeps — 02:27 EDT.
+- [x] Implement whole-image adaptive DC smoothing in Fixed. Complete upstream
+  image comparisons, exact border preservation, partial-strength and sharp
+  discontinuity cases, shape/scale validation and allocation sweeps pass
+  — 02:27 EDT. `./test` passed the Nix unit check and all 94 CLI suites;
+  `./build` passed — 02:39 EDT.
+- [x] Mechatron passed inverse transforms (`6c57e410`) in 470 seconds,
+  finishing 02:29:06 EDT; origin independently matched the pushed commit.
+- [ ] Add a fixture that proves LZ77 is actually selected. Requesting RLE in
+  the upstream encoder was insufficient: it chose ANS without LZ77. The next
+  generator asserts the emitted mode, using repeated runs across mixed values.
+- [ ] Decode AC-global pass orders/histograms and connect groups to frame
+  orchestration. Apply DC smoothing after assembling the whole DC image.
 - [ ] Extend that working path to progressive/reference semantics and remaining
   dequant forms, then patches and remaining render stages. Each subfeature
   needs a known-good upstream fixture and malformed/truncated counterparts.
