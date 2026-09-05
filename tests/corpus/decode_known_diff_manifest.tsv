@@ -8,3 +8,6 @@
 # The runner asserts this file MUST differ, by at most +/-1, with identical
 # PAM dimensions and payload size -- it is characterized, not excluded.
 testdata/jxl/splines.jxl
+# The 201x251 YCbCr transcode differs at two payload bytes, each by one level.
+# Complete public RGB comparisons also enforce the one-level bound.
+src/lib/testdata/small_test_codestream.jxl

@@ -163,8 +163,10 @@ Current coverage and remaining work (2026-09-05 08:15 EDT):
   cover partial edges, multiple AC/DC groups, progressive AC, extra channels,
   16-bit alpha and custom opsin matrices, including explicit zeros. Long
   Huffman tables now match upstream for every 15-bit lookahead across nine
-  trees. Chroma-subsampled frame rendering and
-  floating-point extra channels still need completion.
+  trees. Chroma reconstruction now matches 24 complete upstream streams,
+  including JPEG transcodes, modular YCbCr, subsampled luma, asymmetric
+  sampling and group boundaries. The full repository suite and build pass.
+  Floating-point extra channels still need completion.
 - Patch dictionaries now decode into owned state and apply all eight modes in
   Fixed. Independent tests cover 24 dictionaries, signed offsets, overlap,
   alpha association, clamping, reference-slot sets, truncation and allocation

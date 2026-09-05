@@ -493,9 +493,24 @@ test "decode lossless 600x300 multi-group rgb fixture" {
     }
 }
 
-test "decodeFrame rejects unsupported VarDCT codestream instead of producing zeroed output" {
+fn checkSmallVarDct(prepared: *const PreparedFrame) !void {
+	var session = @import("decode_session.zig").Session.init(testing.allocator);
+	defer session.deinit();
+	var decoded = try session.decode(&prepared.codec_meta, prepared.frame_data);
+	defer decoded.deinit();
+	const image = decoded.rendered_image orelse return error.TestUnexpectedResult;
+	const fixture = @import("existing_chroma_fixture.zig");
+	try testing.expectEqual(fixture.width_0, image.xsize);
+	try testing.expectEqual(fixture.height_0, image.ysize);
+	try testing.expect(decoded.rendered_in_output_space);
+	for (0..image.ysize) |y| for (0..image.xsize) |x| for (0..3) |c| {
+		const actual: i32 = @intFromFloat(@round(std.math.clamp(image.rowConst(y, c)[x], 0, 1) * 255));
+		try testing.expect(@abs(actual - @as(i32, fixture.pixels_0[(y * image.xsize + x) * 3 + c])) <= 1);
+	};
+}
+
+test "decodeFrame reconstructs former unsupported VarDCT fixture pixels" {
 	const data = @embedFile("../testdata/small_test_codestream.jxl");
-	const allocator = testing.allocator;
 	const prepared = try prepareFrame(data);
 
 	var br = BitReader.init(prepared.frame_data);
@@ -503,12 +518,10 @@ test "decodeFrame rejects unsupported VarDCT codestream instead of producing zer
 	const fh = try frame_header_mod.FrameHeader.readFromBitStream(&br, &prepared.codec_meta, false);
 	try testing.expectEqual(frame_header_mod.FrameEncoding.var_dct, fh.encoding);
 
-	var frame_dec = dec_frame.FrameDecoder.init(allocator, &prepared.codec_meta);
-	defer frame_dec.deinit();
-	try testing.expectError(error.Unsupported, frame_dec.decodeFrame(prepared.frame_data));
+	try checkSmallVarDct(&prepared);
 }
 
-test "metadata container wrapping VarDCT codestream stays explicitly unsupported" {
+test "metadata container wrapping VarDCT codestream preserves upstream pixels" {
 	const allocator = testing.allocator;
 	const codestream = @embedFile("../testdata/small_test_codestream.jxl");
 	const boxes = [_]container.Box{
@@ -526,12 +539,10 @@ test "metadata container wrapping VarDCT codestream stays explicitly unsupported
 	const fh = try frame_header_mod.FrameHeader.readFromBitStream(&br, &prepared.codec_meta, false);
 	try testing.expectEqual(frame_header_mod.FrameEncoding.var_dct, fh.encoding);
 
-	var frame_dec = dec_frame.FrameDecoder.init(allocator, &prepared.codec_meta);
-	defer frame_dec.deinit();
-	try testing.expectError(error.Unsupported, frame_dec.decodeFrame(prepared.frame_data));
+	try checkSmallVarDct(&prepared);
 }
 
-test "extended-size container wrapping VarDCT codestream stays explicitly unsupported" {
+test "extended-size container wrapping VarDCT codestream preserves upstream pixels" {
 	const allocator = testing.allocator;
 	const codestream = @embedFile("../testdata/small_test_codestream.jxl");
 	var wrapped: std.ArrayListUnmanaged(u8) = .empty;
@@ -557,9 +568,7 @@ test "extended-size container wrapping VarDCT codestream stays explicitly unsupp
 	const fh = try frame_header_mod.FrameHeader.readFromBitStream(&br, &prepared.codec_meta, false);
 	try testing.expectEqual(frame_header_mod.FrameEncoding.var_dct, fh.encoding);
 
-	var frame_dec = dec_frame.FrameDecoder.init(allocator, &prepared.codec_meta);
-	defer frame_dec.deinit();
-	try testing.expectError(error.Unsupported, frame_dec.decodeFrame(prepared.frame_data));
+	try checkSmallVarDct(&prepared);
 }
 
 test "reference and specialized reader strategies decode identical lossless corpus" {

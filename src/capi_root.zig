@@ -5920,3 +5920,67 @@ test "noise public frames match upstream after rewind reset and skip" {
 		try @call(.never_inline, checkNoisePublic, .{ &@field(fixture, "bytes_" ++ key), &expected, @as(u32, 3 + (id % 10) / 5) });
 	}
 }
+fn checkChromaPublic(data: []const u8, expected: []const u8) !void {
+	const testing = std.testing;
+	var validation: JxlValidationResult = undefined;
+	try testing.expectEqual(JxlValidationVerdict.JXL_VALIDATION_VALID, JxlValidate(data.ptr, data.len, null, &validation));
+	try testing.expectEqual(@as(u32, 1), validation.frames_validated);
+	const decoder = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlDecoderDestroy(decoder);
+	const output = try testing.allocator.alloc(u8, expected.len);
+	defer testing.allocator.free(output);
+	const format = JxlPixelFormat{ .num_channels = 3, .data_type = .JXL_TYPE_UINT8, .endianness = .JXL_NATIVE_ENDIAN, .@"align" = 0 };
+	for (0..3) |attempt| {
+		if (attempt == 1) JxlDecoderRewind(decoder);
+		if (attempt == 2) {
+			JxlDecoderReset(decoder);
+			try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetCoalescing(decoder, 0));
+		}
+		try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSubscribeEvents(decoder, @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)));
+		try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(decoder, data.ptr, data.len));
+		JxlDecoderCloseInput(decoder);
+		var frames: usize = 0;
+		while (true) {
+			switch (JxlDecoderProcessInput(decoder)) {
+				.JXL_DEC_NEED_IMAGE_OUT_BUFFER => try testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(decoder, &format, output.ptr, output.len)),
+				.JXL_DEC_FULL_IMAGE => {
+					frames += 1;
+					for (output, expected, 0..) |actual, wanted, index| if (@abs(@as(i32, actual) - @as(i32, wanted)) > 1) {
+						std.debug.print("chroma public attempt={d} index={d} actual={d} expected={d}\n", .{ attempt, index, actual, wanted });
+						return error.TestUnexpectedResult;
+					};
+				},
+				.JXL_DEC_SUCCESS => break,
+				else => return error.TestUnexpectedResult,
+			}
+		}
+		try testing.expectEqual(1, frames);
+	}
+}
+test "chroma public modular and JPEG frames match upstream with reset rewind and uncoalesced output" {
+	@setEvalBranchQuota(50000);
+	inline for (.{ @import("lib/codec/chroma_frame_fixture.zig"), @import("lib/codec/modular_chroma_fixture.zig") }) |fixture| {
+		inline for (0..12) |id| {
+			const key = std.fmt.comptimePrint("{d}", .{id});
+			try @call(.never_inline, checkChromaPublic, .{ &@field(fixture, "bytes_" ++ key), &@field(fixture, "pixels_" ++ key) });
+		}
+	}
+}
+test "chroma public truncated frames never validate" {
+	@setEvalBranchQuota(50000);
+	inline for (.{ @import("lib/codec/chroma_frame_fixture.zig"), @import("lib/codec/modular_chroma_fixture.zig") }) |fixture| {
+		inline for (0..6) |id| {
+			const data = @field(fixture, "bytes_" ++ std.fmt.comptimePrint("{d}", .{id}));
+			for (0..data.len) |len| {
+				var result: JxlValidationResult = undefined;
+				try std.testing.expect(JxlValidate(data[0..].ptr, len, null, &result) != .JXL_VALIDATION_VALID);
+			}
+		}
+	}
+}
+
+test "chroma public existing transcode fixtures match upstream" {
+	const fixture = @import("lib/codec/existing_chroma_fixture.zig");
+	try checkChromaPublic(@embedFile("lib/testdata/small_test_codestream.jxl"), &fixture.pixels_0);
+	try checkChromaPublic(&fixture.bytes_1, &fixture.pixels_1);
+}

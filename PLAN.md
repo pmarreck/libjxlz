@@ -256,10 +256,39 @@ below; pause for decisions only when they prevent safe implementation.
   tests passed again afterward. Run the complete repository suite — 08:18 EDT.
   Nix unit checks, all 94 CLI suites and all 264 required mutation detections
   passed; production build passed — 08:35 EDT.
-- [ ] Complete chroma-subsampled reconstruction and YCbCr conversion, reusing
+  Pushed as `caaa4d24`; independently fetched origin matched HEAD. Mechatron
+  passed in 755 seconds, finishing 08:47:37 EDT.
+- [x] Complete chroma-subsampled reconstruction and YCbCr conversion, reusing
   existing DC/AC sampling. Six JPEG transcodes and six modular YCbCr fixtures
   now match upstream in `/tmp/libjxlz-chroma-src`. Expand geometry and public
   API tests before integration; check unusual sampling and padded group edges.
+  Integrated 12 JPEG transcodes and 12 modular YCbCr streams, including
+  subsampled luma, asymmetric sampling, partial edges and AC/DC group borders.
+  Public comparisons pass after reset, rewind and disabling coalescing;
+  every truncated prefix of the twelve small streams fails validation.
+  The baseline regression run found three stale rejection tests for the
+  existing 201x251 transcode. Replaced them with upstream pixel assertions;
+  those and public checks for both old unsupported transcodes pass.
+  Run the full repository suite and production build — 08:39 EDT.
+  Nix unit checks and production build pass. A targeted CLI comparison found
+  two one-level differences in the 201x251 transcode. Move it to the bounded
+  difference manifest; retain the new full-image public comparisons. Stopped
+  the first full run after its unit check and restart with this measured
+  classification — 08:46 EDT.
+  The complete rerun passed Nix unit checks, all 94 CLI suites and all 264
+  required mutation detections. Production build passed — 09:00 EDT.
+- [ ] Connect existing splines to the shared render stages for VarDCT and
+  modular filtering/sampling/noise combinations. Verify actual upstream
+  headers and pixels before changing the current spline gates.
+  Prototype `/tmp/libjxlz-spline-src` matches 32 upstream streams with all
+  filter settings, 2x/8x sampling, optional noise, cropped layers and animation.
+  Public reset/rewind/skip and allocation sweeps pass; all 715 baseline-target
+  regression tests pass. Integrate after the chroma slice ships.
+- [ ] Decode floating-point color and extra-channel samples. Prototype
+  `/tmp/libjxlz-float-src` has exact upstream conversion results for all 154
+  exponent/mantissa layouts and 20 complete finite-sample images. A witnessed
+  frame panic exposed weighted-predictor error narrowing and unsigned wrap
+  semantics; a separate 64-sample upstream state oracle reproduces it.
 - [x] Mechatron passed Huffman correction `6a92234b` in 672 seconds,
   finishing 06:31:13 EDT.
 - [ ] Extend that working path to progressive/reference semantics and remaining

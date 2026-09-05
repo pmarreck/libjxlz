@@ -54,3 +54,21 @@ all five blend modes, RGB/RGBA, 2x/8x upsampling and four-frame animations.
 The generator inserts the 80-bit noise payload into otherwise upstream-encoded
 frames, then reads their headers back and decodes every displayed frame with
 upstream libjxl. Public tests compare all frames after rewind, reset and skip.
+
+`chroma_frame_oracle.cc` transcodes twelve JPEG inputs and asserts the actual
+YCbCr mode and each component's sampling shifts before recording upstream RGB.
+The six layouts are 4:4:4, 4:2:0, 4:2:2, 4:4:0, subsampled luma and asymmetric
+chroma. The first six inputs are 13x9; the next are 257x17, 273x33, 2056x9,
+17x273, 519x17 and 17x1. Inputs were encoded with ImageMagick 7.1.2-29 Q16-HDRI
+(b919b37fd:20260727), JPEG quality 85. The pattern is `(13*x+3*y, 2*x+17*y,
+7*x+11*y) mod 256`; sampling factors in JPEG component order are respectively
+`1x1,1x1,1x1`, `2x2,1x1,1x1`, `2x1,1x1,1x1`, `1x2,1x1,1x1`,
+`1x1,2x2,2x2`, `2x2,2x1,1x2`. Pass all twelve JPEG paths in order to the oracle.
+It also emits an independently rejected subsampling/adaptive-DC-smoothing case.
+
+`modular_chroma_oracle.cc` constructs the same six sampling layouts, explicitly
+encodes their modular groups and reads back the emitted headers. Its final
+geometry is 1x1. Both generators compare complete decoded output, with public
+reset/rewind/uncoalesced checks, truncated prefixes and allocation sweeps.
+`existing_chroma_oracle.cc` takes the existing small transcode and 1x1 metadata
+container paths and records their upstream pixels for regression tests.

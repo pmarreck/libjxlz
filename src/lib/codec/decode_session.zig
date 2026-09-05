@@ -67,15 +67,16 @@ pub const Session = struct {
 			slot.* = .{ .width = rendered.xsize, .height = rendered.ysize, .channels = 3, .data = values };
 			return;
 		}
-		if (!fh.canBeReferenced() and !fh.needsBlending(metadata.m.num_extra_channels)) return;
+		const ycbcr = fh.color_transform == .ycbcr;
+		if (!fh.canBeReferenced() and !fh.needsBlending(metadata.m.num_extra_channels) and !ycbcr) return;
 		const rendered = dec.rendered_image orelse return error.GenericError;
 		const xyb = metadata.m.xyb_encoded or fh.color_transform == .xyb;
-		if (!xyb and fh.color_transform != .none) return error.Unsupported;
+		if (!xyb and !ycbcr and fh.color_transform != .none) return error.Unsupported;
 		const input = patch.Image{ .width = rendered.xsize, .height = rendered.ysize, .channels = rendered.channels, .data = try self.allocator.alloc(sf.Fixed, rendered.data.len) };
 		defer self.allocator.free(input.data);
 		for (rendered.data, input.data) |value, *dest| dest.* = try jxl.base.float16.loadFloat32Fixed(value);
 		const regular = fh.frame_type == .regular_frame or fh.frame_type == .skip_progressive;
-		const post_color = xyb and self.coalescing and (!fh.save_before_color_transform or (regular and fh.needsBlending(metadata.m.num_extra_channels)));
+		const post_color = (xyb and self.coalescing and (!fh.save_before_color_transform or (regular and fh.needsBlending(metadata.m.num_extra_channels)))) or (ycbcr and (regular or !fh.save_before_color_transform));
 		var converted: ?patch.Image = null;
 		defer if (converted) |image| self.allocator.free(image.data);
 		if (post_color) {
@@ -84,8 +85,15 @@ pub const Session = struct {
 			converted.?.data = owned;
 			const params = jxl.codec.xyb.opsinParams(&metadata.m, &metadata.transform_data);
 			for (0..input.height) |y| for (0..input.width) |x| {
-				const rgb = try jxl.codec.xyb.toOutputRgb(rendered.rowConst(y, 0)[x], rendered.rowConst(y, 1)[x], rendered.rowConst(y, 2)[x], &params, &metadata.m);
-				for (rgb, 0..) |value, c| converted.?.data[(c * input.height + y) * input.width + x] = try jxl.base.float16.loadFloat32Fixed(value);
+				if (ycbcr) {
+					const area = input.width * input.height;
+					const offset = y * input.width + x;
+					const rgb = @import("chroma.zig").toRgb(input.data[offset], input.data[area + offset], input.data[2 * area + offset]);
+					for (rgb, 0..) |value, c| converted.?.data[c * area + offset] = value;
+				} else {
+					const rgb = try jxl.codec.xyb.toOutputRgb(rendered.rowConst(y, 0)[x], rendered.rowConst(y, 1)[x], rendered.rowConst(y, 2)[x], &params, &metadata.m);
+					for (rgb, 0..) |value, c| converted.?.data[(c * input.height + y) * input.width + x] = try jxl.base.float16.loadFloat32Fixed(value);
+				}
 			};
 		}
 		const pixels = converted orelse input;

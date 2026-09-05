@@ -6,3 +6,4 @@ testdata/jxl/pq_gradient.jxl
 testdata/jxl/spline_on_first_frame.jxl
 testdata/jxl/boxes/square-extended-size-container.jxl
 testdata/jxl/blending/cropped_traffic_light.jxl
+testdata/jxl/jpeg_reconstruction/1x1_exif_xmp.jxl

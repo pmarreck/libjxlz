@@ -38,13 +38,12 @@ pub fn decode(dec: *jxl.codec.dec_frame.FrameDecoder, data: []const u8, offset: 
 	const fh = &dec.frame_header;
 	const unsupported = @import("../base/unsupported.zig").unsupported;
 	if (fh.encoding != .var_dct) return error.GenericError;
-	if (!fh.chroma_subsampling.is444()) return unsupported(.chroma_subsampling);
+	if (!fh.chroma_subsampling.is444() and fh.flags & jxl.codec.frame_header.FrameFlags.skip_adaptive_dc_smoothing == 0) return error.GenericError;
 	const use_dc = fh.flags & jxl.codec.frame_header.FrameFlags.use_dc_frame != 0;
 	for (0..dec.metadata.m.num_extra_channels) |i| {
 		if (dec.metadata.m.extra_channel_info[i].bit_depth.floating_point_sample) return unsupported(.bit_depth);
 	}
 	if (!dec.force_render and (fh.frame_type == .reference_only or fh.needsBlending(dec.metadata.m.num_extra_channels))) return unsupported(.frame_blending);
-	if (fh.color_transform != .xyb) return unsupported(.color_encoding);
 	if (fh.flags & jxl.codec.frame_header.FrameFlags.splines != 0) return unsupported(.splines);
 	if (dec.metadata.m.color_encoding.want_icc) return unsupported(.icc_profile);
 	const readers = try dec.allocator.alloc(BitReader, dec.toc_entries.len);
@@ -65,8 +64,10 @@ pub fn decode(dec: *jxl.codec.dec_frame.FrameDecoder, data: []const u8, offset: 
 	};
 	var full_dc = jxl.codec.dc_group.DcGroup{ .allocator = dec.allocator, .width = dec.frame_dim.xsize_blocks, .height = dec.frame_dim.ysize_blocks };
 	defer full_dc.deinit();
-	for (&full_dc.planes) |*plane| {
-		plane.* = .{ .width = full_dc.width, .height = full_dc.height, .samples = try dec.allocator.alloc(sf.Fixed, full_dc.width * full_dc.height) };
+	for (&full_dc.planes, 0..) |*plane, c| {
+		const width = full_dc.width >> @intCast(fh.chroma_subsampling.hShift(c));
+		const height = full_dc.height >> @intCast(fh.chroma_subsampling.vShift(c));
+		plane.* = .{ .width = width, .height = height, .samples = try dec.allocator.alloc(sf.Fixed, width * height) };
 	}
 	if (use_dc) {
 		if (fh.dc_level >= 4) return error.GenericError;
@@ -89,8 +90,10 @@ pub fn decode(dec: *jxl.codec.dec_frame.FrameDecoder, data: []const u8, offset: 
 		const meta = try dec.modular_decoder.decodeAcMetadata(br, id, fh);
 		slot.* = .{ .dc = dc, .meta = meta };
 		used_acs |= meta.block_map.used_acs;
-		if (!use_dc) for (dc.planes, full_dc.planes) |src, dst| for (0..rect.ysize()) |y| {
-			@memcpy(dst.samples[(rect.y0() + y) * full_dc.width + rect.x0() ..][0..rect.xsize()], src.samples[y * src.width ..][0..rect.xsize()]);
+		if (!use_dc) for (dc.planes, full_dc.planes, 0..) |src, dst, c| for (0..src.height) |y| {
+			const x0 = rect.x0() >> @intCast(fh.chroma_subsampling.hShift(c));
+			const y0 = rect.y0() >> @intCast(fh.chroma_subsampling.vShift(c));
+			@memcpy(dst.samples[(y0 + y) * dst.width + x0 ..][0..src.width], src.samples[y * src.width ..][0..src.width]);
 		};
 	}
 	const global = &dec.vardct_global.?;
@@ -136,6 +139,17 @@ pub fn decode(dec: *jxl.codec.dec_frame.FrameDecoder, data: []const u8, offset: 
 		try br.close();
 	}
 	try dec.modular_decoder.finalizeDecoding();
+	for (0..3) |c| {
+		const hs = fh.chroma_subsampling.hShift(c);
+		const vs = fh.chroma_subsampling.vShift(c);
+		if (hs == 0 and vs == 0) continue;
+		const width = (output.width + hs) >> @intCast(hs);
+		const height = (output.height + vs) >> @intCast(vs);
+		const plane = output.data[c * output.width * output.height ..][0 .. output.width * output.height];
+		const sampled = try @import("chroma.zig").upsample(dec.allocator, .{ .width = width, .height = height, .data = plane[0 .. width * height] }, hs, vs, output.width, output.height);
+		defer dec.allocator.free(sampled);
+		@memcpy(plane, sampled);
+	}
 	const params = try filter.Params.fromHeader(fh.loop_filter);
 	if (fh.loop_filter.gab) try filter.gaborish(dec.allocator, output, params);
 	if (fh.loop_filter.epf_iters != 0) {
@@ -170,7 +184,7 @@ fn renderGroup(dec: *jxl.codec.dec_frame.FrameDecoder, meta: *const jxl.codec.ac
 	if (opsin.custom) for (opsin.quant_biases, &biases) |value, *dest| {
 		dest.* = try jxl.base.float16.loadFloat32Fixed(value);
 	};
-	var packed_offset: usize = 0;
+	var packed_offsets: [3]usize = @splat(0);
 	for (0..rect.ysize()) |local_y| for (0..rect.xsize()) |local_x| {
 		const bx = rect.x0() + local_x;
 		const by = rect.y0() + local_y;
@@ -184,6 +198,7 @@ fn renderGroup(dec: *jxl.codec.dec_frame.FrameDecoder, meta: *const jxl.codec.ac
 		const area = width * height;
 		const coefficients = try dec.allocator.alloc(sf.Fixed, 3 * area);
 		defer dec.allocator.free(coefficients);
+		@memset(coefficients, sf.Fixed.zero);
 		const pixels = try dec.allocator.alloc(sf.Fixed, area);
 		defer dec.allocator.free(pixels);
 		const factor_index = (my / 8) * ((meta.block_map.width + 7) / 8) + mx / 8;
@@ -191,23 +206,34 @@ fn renderGroup(dec: *jxl.codec.dec_frame.FrameDecoder, meta: *const jxl.codec.ac
 		const scale = try global.quantizer.invQuantAC(block.quant);
 		const channel_scale = [3]sf.Fixed{ sf.mul(scale, matrixScale(fh.x_qm_scale)), scale, sf.mul(scale, matrixScale(fh.b_qm_scale)) };
 		for (0..3) |c| {
+			const hs: u6 = @intCast(fh.chroma_subsampling.hShift(c));
+			const vs: u6 = @intCast(fh.chroma_subsampling.vShift(c));
+			if ((bx >> hs) << hs != bx or (by >> vs) << vs != by) continue;
 			const matrix = dec.dequant_matrices.matrix(@enumFromInt(block.strategy), c);
-			for (0..area) |i| coefficients[c * area + i] = sf.mul(adjust(group.planes[c][packed_offset + i], c, &biases), sf.mul(matrix[i], channel_scale[c]));
+			for (0..area) |i| coefficients[c * area + i] = sf.mul(adjust(group.planes[c][packed_offsets[c] + i], c, &biases), sf.mul(matrix[i], channel_scale[c]));
+			packed_offsets[c] += area;
 		}
 		for (0..area) |i| {
 			coefficients[i] = sf.add(coefficients[i], sf.mul(cfl[0], coefficients[area + i]));
 			coefficients[2 * area + i] = sf.add(coefficients[2 * area + i], sf.mul(cfl[1], coefficients[area + i]));
 		}
 		for (0..3) |c| {
+			const hs: u6 = @intCast(fh.chroma_subsampling.hShift(c));
+			const vs: u6 = @intCast(fh.chroma_subsampling.vShift(c));
+			const sbx = bx >> hs;
+			const sby = by >> vs;
+			if (sbx << hs != bx or sby << vs != by) continue;
 			const coeff = coefficients[c * area ..][0..area];
-			try jxl.codec.inverse_transform.lowestFrequencies(dec.allocator, block.strategy, dc.planes[c].samples[by * dc.width + bx ..], dc.width, coeff);
+			try jxl.codec.inverse_transform.lowestFrequencies(dec.allocator, block.strategy, dc.planes[c].samples[sby * dc.planes[c].width + sbx ..], dc.planes[c].width, coeff);
 			try jxl.codec.inverse_transform.transform(dec.allocator, block.strategy, coeff, pixels, width);
-			const copy_width = @min(width, output.width - bx * 8);
-			const copy_height = @min(height, output.height - by * 8);
+			const plane_width = (output.width + fh.chroma_subsampling.hShift(c)) >> hs;
+			const plane_height = (output.height + fh.chroma_subsampling.vShift(c)) >> vs;
+			if (sbx * 8 >= plane_width or sby * 8 >= plane_height) continue;
+			const copy_width = @min(width, plane_width - sbx * 8);
+			const copy_height = @min(height, plane_height - sby * 8);
 			for (0..copy_height) |y| for (0..copy_width) |x| {
-				output.data[(c * output.height + by * 8 + y) * output.width + bx * 8 + x] = pixels[y * width + x];
+				output.data[c * output.width * output.height + (sby * 8 + y) * plane_width + sbx * 8 + x] = pixels[y * width + x];
 			};
 		}
-		packed_offset += area;
 	};
 }
