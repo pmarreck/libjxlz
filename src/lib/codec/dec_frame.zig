@@ -35,6 +35,7 @@ const sf = @import("../base/soft_float.zig");
 pub const Quantizer = @import("quantizer.zig").Quantizer;
 const ac_metadata = @import("ac_metadata.zig");
 const vardct = @import("vardct_global.zig");
+const dc_group = @import("dc_group.zig");
 
 const VarDctGlobal = struct {
 	quantizer: Quantizer,
@@ -1574,6 +1575,31 @@ pub const FrameDecoder = struct {
         return self.processDCGlobalWithReaderStrategy(.specialized, br);
     }
 
+    /// Decode one DC group's coefficients using the parsed global parameters.
+    /// The caller owns the returned planes and block-context buckets.
+    pub fn decodeVarDctDC(self: *FrameDecoder, br: *BitReader, group_id: usize) JxlError!dc_group.DcGroup {
+        if (self.frame_header.encoding != .var_dct or !self.decoded_dc_global or
+            group_id >= self.frame_dim.num_dc_groups) return error.GenericError;
+        const global = if (self.vardct_global) |*value| value else return error.GenericError;
+        const rect = self.frame_dim.dcGroupRect(group_id);
+        const modular = &self.modular_decoder;
+        return dc_group.DcGroup.decode(self.allocator, br, .{
+            .width = rect.xsize(),
+            .height = rect.ysize(),
+            .chroma = self.frame_header.chroma_subsampling,
+            .bitdepth = modular.full_image.bitdepth,
+            .stream_id = (ModularStreamId{ .kind = .var_dct_dc, .group_id = group_id }).id(self.frame_dim),
+            .global = .{
+                .tree = if (modular.has_tree) modular.tree.items else null,
+                .code = if (modular.has_tree) &modular.code else null,
+                .context_map = if (modular.has_tree) modular.context_map else null,
+            },
+            .dc_steps = global.quantizer.dcSteps(self.dequant_matrices.dc_quant),
+            .cfl = global.color_correlation.dcRatios(),
+            .block_context = &global.block_context,
+        });
+    }
+
     /// Decode entire frame from a contiguous byte buffer.
     /// This is the simple single-pass entry point.
     pub fn decodeFrameWithReaderStrategy(
@@ -2776,7 +2802,7 @@ test "applyYCbCrChromaSubsampling shrinks chroma channels" {
     var frame_dim = FrameDimensions{};
     frame_dim.set(13, 9, 1, 0, 0, true, 1);
     const subsampling = frame_header_mod.YCbCrChromaSubsampling{
-        .channel_mode = .{ 0, 1, 1 },
+        .channel_mode = .{ 1, 0, 0 },
         .maxhs = 1,
         .maxvs = 1,
     };
@@ -2869,4 +2895,62 @@ test "VarDCT DC-global frame adapter consumes quantizer contexts CfL and modular
 
 test "VarDCT DC-global frame adapter allocation cleanup" {
 	try testing.checkAllAllocationFailures(testing.allocator, checkVarDctDCGlobal, .{});
+}
+
+fn checkVarDctDCGroupAdapter(allocator: std.mem.Allocator) !void {
+	const BitWriter = @import("../base/bit_writer.zig").BitWriter;
+	const global_fixture = @import("vardct_global_fixture.zig");
+	const dc_fixture = @import("dc_group_fixture.zig");
+	var writer = BitWriter.init(allocator);
+	defer writer.deinit();
+	try writer.write(1, 0); // Explicit DC quant weights: 32/128, 64/128, 128/128.
+	for ([_]u16{ 0x5000, 0x5400, 0x5800 }) |value| try writer.write(16, value);
+	try writer.write(2, 1); // Global scale 4096.
+	try writer.write(11, 2047);
+	try writer.write(2, 0); // Quant DC 16, so inverse DC scale is 1.
+	var context_br = BitReader.init(&global_fixture.block_context);
+	for (0..global_fixture.block_context_bits) |_| try writer.write(1, context_br.readBits(1));
+	try context_br.close();
+	try writer.write(1, 0); // Explicit CfL, factor 256, bases -0.5 and 1.25.
+	try writer.write(2, 1);
+	try writer.write(16, 0xb800);
+	try writer.write(16, 0x3d00);
+	try writer.write(16, 0x8080); // Zero signed DC factors.
+	try writer.write(1, 0); // No global modular tree.
+	const global_bits = writer.bitsWritten();
+	var dc_br = BitReader.init(&dc_fixture.stream_0);
+	for (0..dc_fixture.bits_0) |_| try writer.write(1, dc_br.readBits(1));
+	try dc_br.close();
+	try writer.write(8, 0xa5);
+	try writer.zeroPadToByte();
+	var metadata = CodecMetadata{};
+	var decoder = FrameDecoder.init(allocator, &metadata);
+	defer decoder.deinit();
+	decoder.frame_header.encoding = .var_dct;
+	decoder.frame_dim.set(32, 32, 1, 0, 0, false, 1);
+	decoder.modular_decoder.initFrame(decoder.frame_dim);
+	var br = BitReader.init(writer.bytes());
+	try testing.expectError(error.GenericError, decoder.decodeVarDctDC(&br, 0));
+	try testing.expectEqual(@as(usize, 0), br.totalBitsConsumed());
+	try decoder.processDCGlobal(&br);
+	try testing.expectEqual(global_bits, br.totalBitsConsumed());
+	try testing.expectError(error.GenericError, decoder.decodeVarDctDC(&br, 1));
+	try testing.expectEqual(global_bits, br.totalBitsConsumed());
+	var group = try decoder.decodeVarDctDC(&br, 0);
+	defer group.deinit();
+	try testing.expectEqual(global_bits + dc_fixture.bits_0, br.totalBitsConsumed());
+	var i: usize = 0;
+	for (group.planes) |plane| for (plane.samples) |value| {
+		try testing.expectEqual(sf.div(sf.fromInt(dc_fixture.samples_0[i]), sf.fromInt(64)), value);
+		i += 1;
+	};
+	try testing.expectEqual(@as(usize, 48), i);
+	try testing.expectEqualSlices(u8, &dc_fixture.buckets_0, group.buckets);
+	try testing.expectEqual(@as(u64, 0xa5), br.readBits(8));
+	try br.close();
+}
+
+test "VarDCT DC group frame adapter connects parsed quantizer CfL and block contexts" {
+	try checkVarDctDCGroupAdapter(testing.allocator);
+	try testing.checkAllAllocationFailures(testing.allocator, checkVarDctDCGroupAdapter, .{});
 }

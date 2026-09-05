@@ -735,7 +735,7 @@ pub fn decodeHistograms(
                 continue;
             }
             if (alphabet_sizes[c] > 1) {
-                const ok = huff_data[c].readFromBitStream(alphabet_sizes[c], br) catch return error.GenericError;
+                const ok = try huff_data[c].readFromBitStream(alphabet_sizes[c], br);
                 if (!ok) return error.GenericError;
             }
             // UpdateMaxNumBits for Huffman symbols

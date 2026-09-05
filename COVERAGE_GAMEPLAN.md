@@ -168,8 +168,13 @@ on 2026-09-04; component presence does not establish full-format coverage):
   all 13 order classes match upstream-encoded fixtures. DC-global block
   contexts and Fixed CfL parameters also match upstream fixtures, and the
   frame adapter reads quantizer, contexts, CfL and modular globals in order.
-  Still missing: DCT128+ dequant tables, raw table compute, VarDCT DC/AC
-  coefficient groups, and block inverse transforms.
+  DC groups now decode through modular entropy and dequantize in Fixed;
+  upstream fixtures cover full resolution and 4:2:0 at every precision value,
+  including block-context buckets. The frame adapter passes parsed quantizer
+  and CfL parameters into this path. A 64-case upstream sampling sweep also
+  corrected relative chroma shifts. Still missing: DCT128+ dequant tables,
+  raw table compute, AC coefficient groups, DC smoothing, and block inverse
+  transforms. Full-frame VarDCT dispatch still rejects until these connect.
   `splines.zig` already has color-correlation ratios and a continuous spline
   IDCT; neither is the missing VarDCT wire parser or block-transform pipeline.
 - **Patches and noise payloads.** `processDCGlobalWithReaderStrategy` rejects

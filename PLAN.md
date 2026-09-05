@@ -22,12 +22,23 @@ below; pause for decisions only when they prevent safe implementation.
 - [x] Run the full suite and production build for the order/DC-global slice.
   `./test` passed all 94 CLI suites and the Nix unit check; `./build`,
   ReleaseFast unit checks and Windows cross checks passed — 01:37 EDT.
-- [ ] Correct chroma sampling shifts before subsampled DC groups. An external
+- [x] Correct chroma sampling shifts before subsampled DC groups. An external
   test of all 64 upstream wire combinations fails; a separate upstream 4:2:0
   DC fixture also fails because the current geometry reverses sampling ratios.
-  Then integrate the DC prototype and its eight upstream fixtures, covering
-  4:4:4/4:2:0 and all four precision values. Full-resolution cases already pass
-  in the isolated prototype; no production DC-group code is committed yet.
+  All 64 combinations now pass. Integrated eight upstream DC fixtures covering
+  4:4:4/4:2:0 and all four precision values. Exact dequantized samples and
+  context buckets, truncated prefixes, borrowed global entropy and frame
+  adapter checks pass, including allocation sweeps — 01:45 EDT.
+  The sweep also exposed/fixed a swallowed Huffman allocation error in
+  `dec_ans.zig`. `./test` (all 94 CLI suites and Nix unit checks) and `./build`
+  passed — 01:58 EDT.
+- [x] Push the coefficient-order/DC-global slice as `4845b94d`; independently
+  verified `origin/yolo` equals HEAD. Mechatron passed all exact-commit targets
+  in 459 seconds, finishing 01:46:50 EDT.
+- [ ] Integrate the inverse-transform prototype: all 27 strategies currently
+  match sampled upstream outputs, including AFV and DCT256. Add complete
+  8x8 output checks, DC low-frequency reconstruction, stride/aliasing bounds
+  and allocation-failure checks before the next full-suite gate.
 - [ ] Implement VarDCT DC/AC coefficient-group processing and block inverse
   transforms, reusing modular and entropy machinery and existing XYB output.
   First end-to-end gate: a public upstream-produced VarDCT image matches libjxl.
