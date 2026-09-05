@@ -51,6 +51,7 @@ pub const codec = struct {
 	pub const coeff_order = @import("codec/coeff_order.zig");
 	pub const vardct_global = @import("codec/vardct_global.zig");
 	pub const dc_group = @import("codec/dc_group.zig");
+	pub const inverse_transform = @import("codec/inverse_transform.zig");
 	pub const quantizer = @import("codec/quantizer.zig");
 	pub const codestream_test = @import("codec/codestream_test.zig");
 	pub const decode_test = @import("codec/decode_test.zig");
@@ -126,6 +127,7 @@ test {
 	_ = @import("codec/vardct_global_test.zig");
 	_ = @import("codec/chroma_test.zig");
 	_ = @import("codec/dc_group_test.zig");
+	_ = @import("codec/inverse_transform_test.zig");
 	_ = @import("codec/quantizer.zig");
 	_ = @import("codec/codestream_test.zig");
 	_ = @import("codec/decode_test.zig");

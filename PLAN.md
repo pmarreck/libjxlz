@@ -35,10 +35,15 @@ below; pause for decisions only when they prevent safe implementation.
 - [x] Push the coefficient-order/DC-global slice as `4845b94d`; independently
   verified `origin/yolo` equals HEAD. Mechatron passed all exact-commit targets
   in 459 seconds, finishing 01:46:50 EDT.
-- [ ] Integrate the inverse-transform prototype: all 27 strategies currently
-  match sampled upstream outputs, including AFV and DCT256. Add complete
-  8x8 output checks, DC low-frequency reconstruction, stride/aliasing bounds
-  and allocation-failure checks before the next full-suite gate.
+- [x] Integrate inverse transforms for all 27 strategies, including AFV and
+  DCT256. Upstream comparisons cover every pixel in 8x8 blocks, 64 positions
+  in each larger transform and every low-frequency DC coefficient. Constant
+  DC reconstruction checks every output pixel. Stride, input preservation,
+  aliasing, invalid dimensions and allocation failures pass — 02:05 EDT.
+  `./test` passed the Nix unit check and all 94 CLI suites; `./build` passed
+  — 02:20 EDT. AC coefficients and DC smoothing remain next.
+- [x] Push DC groups as `073f1b38`; origin independently matched HEAD.
+  Mechatron passed in 460 seconds, finishing 02:05:43 EDT.
 - [ ] Implement VarDCT DC/AC coefficient-group processing and block inverse
   transforms, reusing modular and entropy machinery and existing XYB output.
   First end-to-end gate: a public upstream-produced VarDCT image matches libjxl.
