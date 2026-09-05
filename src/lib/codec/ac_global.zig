@@ -27,14 +27,14 @@ pub const Global = struct {
 		self.allocator.free(self.passes);
 		self.passes = &.{};
 	}
-	pub fn decode(allocator: std.mem.Allocator, br: *BitReader, matrices: *Matrices, used_acs: u32, num_groups: usize, num_passes: usize, model: *const Model) JxlError!Global {
-		return decodeInner(allocator, br, matrices, used_acs, num_groups, num_passes, model) catch |err| {
+	pub fn decode(allocator: std.mem.Allocator, br: *BitReader, matrices: *Matrices, used_acs: u32, num_groups: usize, num_passes: usize, model: *const Model, quant_context: Matrices.DecodeContext) JxlError!Global {
+		return decodeInner(allocator, br, matrices, used_acs, num_groups, num_passes, model, quant_context) catch |err| {
 			return if (!br.allReadsWithinBounds()) error.NotEnoughBytes else err;
 		};
 	}
-	fn decodeInner(allocator: std.mem.Allocator, br: *BitReader, matrices: *Matrices, used_acs: u32, num_groups: usize, num_passes: usize, model: *const Model) JxlError!Global {
+	fn decodeInner(allocator: std.mem.Allocator, br: *BitReader, matrices: *Matrices, used_acs: u32, num_groups: usize, num_passes: usize, model: *const Model, quant_context: Matrices.DecodeContext) JxlError!Global {
 		if (num_groups == 0 or num_passes == 0 or num_passes > 11) return error.GenericError;
-		try matrices.decode(br);
+		try matrices.decode(allocator, br, quant_context);
 		if (!br.allReadsWithinBounds()) return error.NotEnoughBytes;
 		try matrices.ensureComputed(allocator, used_acs);
 		const num_histograms = 1 + br.readBits(@import("../base/bits.zig").ceilLog2Nonzero(num_groups));

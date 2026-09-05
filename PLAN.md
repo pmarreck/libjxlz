@@ -94,6 +94,40 @@ below; pause for decisions only when they prevent safe implementation.
   passed — 03:41 EDT.
 - [x] Mechatron passed complete VarDCT frames (`ad399b1b`) in 561 seconds,
   finishing 03:18:00 EDT; origin independently matched the pushed commit.
+- [x] Integrate raw quantization payloads through modular decoding, including
+  borrowed global entropy and correct quant-table stream IDs. Prototype tests
+  pass all 17 sizes, complete AC-global matrices, invalid values, truncation,
+  allocator failures and replacement of owned tables with defaults — 03:50 EDT.
+- [x] Integrate full-resolution VarDCT extra channels and custom opsin values.
+  Prototype public RGBA and RGB comparisons pass. Preserve alpha's own bit
+  depth and actual channel index; honor explicit zero opsin matrices. Correct
+  modular DC/AC shift routing and permit upstream's unused section tails.
+  Six complete extra-channel images cover alpha, two extras, 16-bit alpha,
+  filtering and progressive AC. Three custom opsin images include explicit
+  all-zero fields. Public RGB/RGBA comparisons pass — 03:50 EDT.
+- [x] Retain new allocator regressions for partial modular images, group
+  headers, filtered trees and transform ownership. A ten-squeeze test exposed
+  converted OOM errors and a double-free during ownership transfer; both are
+  fixed. Pass routing classifies all 25 horizontal/vertical shift pairs
+  across progressive and single-pass layouts — 03:50 EDT.
+- [x] Run full tests/build for raw matrices, extra channels and custom
+  opsin support. Remaining rendering work follows the existing inventory.
+  Production build and unit check passed. The full run found one stale corpus
+  expectation: the 1024x1024 premultiplied-alpha image now decodes. Normalized
+  upstream comparisons differ by at most 0.033124 RGB8 levels in color and
+  0.007882 in alpha; the PAM writers choose different output bit depths.
+  Updated its expected verdict to accept. Full rerun passed the Nix unit
+  check, all 94 CLI suites and all 264 required mutation detections;
+  production build passed — 04:30 EDT.
+- [x] Mechatron passed filtered VarDCT and large dequantization (`5df6e49a`)
+  in 579 seconds, finishing 03:51:42 EDT.
+- [ ] Integrate the upsampling prototype after the current slice ships.
+  All 2x/4x/8x stage pixels match upstream, including custom weights, clamping,
+  mirrored and partial edges. Nine complete RGB and nine RGBA frames match
+  upstream within one RGB8 level, including unequal alpha/color sampling.
+  Allocation sweeps and truncated frames pass. Public output tests exposed
+  and fixed an alpha indexing overrun in the prototype. Upstream header probes
+  also establish inherited extra sampling in all-default frames — 04:16 EDT.
 - [ ] Extend that working path to progressive/reference semantics and remaining
   dequant forms, then patches and remaining render stages. Each subfeature
   needs a known-good upstream fixture and malformed/truncated counterparts.

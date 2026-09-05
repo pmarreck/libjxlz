@@ -183,9 +183,11 @@ on 2026-09-04; component presence does not establish full-format coverage):
   these files. Whole-image DC smoothing runs before AC reconstruction.
   Gaborish and all three EPF stages run in Fixed and match independent upstream
   stage fixtures and full frames. Dequantization covers all 27 strategies.
-  Raw table compute, chroma subsampling,
-  extra-channel integration, custom opsin parameters and reference/render
-  features remain gated in the full-frame path.
+  Raw matrices now decode through modular entropy at all 17 sizes, including
+  borrowed global tables. Six additional full-frame fixtures cover alpha,
+  two extras, 16-bit alpha and progressive groups; three cover custom opsin
+  matrices/biases, including explicit zeros. Chroma subsampling, resized or
+  floating-point extras and reference/render features remain gated.
   `splines.zig` already has color-correlation ratios and a continuous spline
   IDCT; neither is the missing VarDCT wire parser or block-transform pipeline.
 - **Patches and noise payloads.** `processDCGlobalWithReaderStrategy` rejects
@@ -337,14 +339,14 @@ machine id.
 This is the bulk of the remaining format. Ordered so each slice is testable
 against upstream rather than against itself:
 
-1. [ ] `DequantMatrices` in full (all 27 strategies compute; raw payloads remain).
+1. [x] `DequantMatrices` in full (all modes, 17 tables and 27 strategies).
 2. [x] Quantizer and the adaptive quantization field.
 3. [x] Coefficient order / natural order tables.
 4. [x] AC strategy: DCT2x2 through DCT256x256, plus Hornuss and AFV.
 5. [x] Chroma-from-luma.
 6. [x] Inverse DCT for every block variant.
 7. [x] DC group decoding for VarDCT frames (modular-coded DC).
-8. [x] Coefficient reconstruction and dequantization (raw matrices excepted).
+8. [x] Coefficient reconstruction and dequantization.
 
 **Control for every slice:** differential against upstream libjxl 0.12.0 on the
 same input. We already run a pinned oracle; extend it to per-stage

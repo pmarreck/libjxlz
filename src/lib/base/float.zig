@@ -75,6 +75,15 @@ test "float16 half (0x3800)" {
 const sf = @import("soft_float.zig");
 const JxlError = @import("status.zig").JxlError;
 
+/// Convert binary32 storage to Fixed using only bit extraction and integers.
+pub fn loadFloat32Fixed(value: f32) JxlError!sf.Fixed {
+	const bits: u32 = @bitCast(value);
+	const exponent = (bits >> 23) & 255;
+	if (exponent == 255) return error.GenericError;
+	const magnitude: i64 = (bits & 0x7fffff) | @as(u32, if (exponent == 0) 0 else 1 << 23);
+	return sf.norm(if (bits >> 31 != 0) -magnitude else magnitude, if (exponent == 0) -87 else @as(i32, @intCast(exponent)) - 88);
+}
+
 /// Reconstruct bitstream F16 as a randomz soft-float without IEEE-754 arithmetic.
 pub fn loadFloat16Fixed(bits: u16) JxlError!sf.Fixed {
 	const sign = (bits >> 15) != 0;

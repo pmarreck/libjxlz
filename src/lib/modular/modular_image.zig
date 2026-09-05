@@ -108,9 +108,11 @@ pub const Image = struct {
             .bitdepth = bitdepth,
             .allocator = allocator,
         };
+        errdefer img.deinit();
+        try img.channels.ensureTotalCapacity(allocator, nb_chans);
         for (0..nb_chans) |_| {
             const ch = try Channel.create(allocator, iw, ih, 0, 0);
-            try img.channels.append(allocator, ch);
+            img.channels.appendAssumeCapacity(ch);
         }
         return img;
     }
@@ -124,6 +126,8 @@ pub const Image = struct {
             t.deinit();
         }
         self.transforms.deinit(self.allocator);
+        self.channels = .empty;
+        self.transforms = .empty;
     }
 
     pub fn empty(self: *const Image) bool {

@@ -35,7 +35,7 @@ pub fn runDequantBenchmark(allocator: std.mem.Allocator, cfg: WorkloadConfig) !W
 	var br = BitReader.init(&data);
 	var matrices = dec_frame.DequantMatrices{};
 	defer matrices.deinit(allocator);
-	try matrices.decode(&br);
+	try matrices.decode(allocator, &br, .{});
 	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(dec_frame.AcStrategyType.dct));
 
 	var result = WorkloadResult{};
@@ -189,7 +189,7 @@ test "dequant DCT8 library EnsureComputed checksum is stable" {
 	var br = BitReader.init(&data);
 	var matrices = dec_frame.DequantMatrices{};
 	defer matrices.deinit(testing.allocator);
-	try matrices.decode(&br);
+	try matrices.decode(testing.allocator, &br, .{});
 	try matrices.ensureComputed(testing.allocator, @as(u32, 1) << @intFromEnum(dec_frame.AcStrategyType.dct));
 	try testing.expectEqual(x0, matrices.matrix(.dct, 0)[0]);
 	try testing.expectEqual(@as(u64, 0x82731ce8a23584ec), result.checksum);

@@ -226,6 +226,7 @@ pub const DctQuantWeightParams = struct {
 };
 
 pub const QuantEncoding = struct {
+	raw_weights: []sf.Fixed = &.{},
 	mode: QuantMode = .library,
 	predefined: u8 = 0,
 	idweights: [3][3]sf.Fixed = @splat(@splat(sf.Fixed.zero)),
@@ -668,6 +669,10 @@ fn decodeDctParams(br: *BitReader) JxlError!DctQuantWeightParams {
 }
 
 pub const DequantMatrices = struct {
+	pub const DecodeContext = struct {
+		global: ac_metadata.GlobalEntropy = .{},
+		first_stream_id: ?usize = null,
+	};
 	const default_dc_quant: [3]sf.Fixed = .{
 		sf.div(kOne, sf.fromInt(4096)), sf.div(kOne, sf.fromInt(512)), sf.div(kOne, sf.fromInt(256)),
 	};
@@ -700,8 +705,14 @@ pub const DequantMatrices = struct {
 	/// Read the 17 AC dequant table encodings from the AC-global section.
 	/// C++ DequantMatrices::Decode. all_default=1 installs Library<0> for every
 	/// table and consumes one bit — the path default cjxl lossy encodes take.
-	pub fn decode(self: *DequantMatrices, br: *BitReader) JxlError!void {
+	pub fn decode(self: *DequantMatrices, allocator: std.mem.Allocator, br: *BitReader, context: DecodeContext) JxlError!void {
+		for (&self.encodings) |*encoding_entry| {
+			allocator.free(encoding_entry.raw_weights);
+			encoding_entry.* = .{};
+		}
+		self.computed_mask = 0;
 		const all_default = br.readBits(1);
+		if (!br.allReadsWithinBounds()) return error.NotEnoughBytes;
 		if (all_default != 0) {
 			self.encodings = [_]QuantEncoding{.{ .mode = .library, .predefined = 0 }} ** kNumQuantTables;
 			return;
@@ -781,12 +792,23 @@ pub const DequantMatrices = struct {
 						.dct_params_afv_4x4 = try decodeDctParams(br),
 					};
 				},
-				.raw => return unsupported_mod.unsupported(.vardct_frame),
+				.raw => {
+					self.encodings[i] = .{ .mode = .raw, .raw_weights = try @import("raw_quant.zig").decode(allocator, br, .{
+						.width = 8 * @as(usize, kRequiredSizeX[i]),
+						.height = 8 * @as(usize, kRequiredSizeY[i]),
+						.stream_id = if (context.first_stream_id) |base| base + i else 0,
+						.global = context.global,
+					}) };
+				},
 			}
 		}
 	}
 
 	pub fn deinit(self: *DequantMatrices, allocator: std.mem.Allocator) void {
+		for (&self.encodings) |*encoding_entry| {
+			allocator.free(encoding_entry.raw_weights);
+			encoding_entry.raw_weights = &.{};
+		}
 		if (self.storage.len != 0) {
 			allocator.free(self.storage);
 			self.storage = &.{};
@@ -851,6 +873,7 @@ pub const DequantMatrices = struct {
 				.dct4x8 => try computeDct4x8Table(self, table_idx, quant_enc),
 				.afv => try computeAfvTable(self, table_idx, quant_enc),
 				.dct => try computeDctTable(self, allocator, table_idx, quant_enc),
+				.raw => try invertAndStore(self, table_idx, quant_enc.raw_weights),
 				else => return unsupported_mod.unsupported(.vardct_frame),
 			}
 		}
@@ -1201,6 +1224,7 @@ fn groupChannelExtent(
 
 pub const ModularFrameDecoder = struct {
     frame_dim: FrameDimensions = .{},
+    passes: frame_header_mod.Passes = .{},
     full_image: Image,
     global_header: GroupHeader = .{},
     tree: dec_ma.Tree,
@@ -1248,6 +1272,7 @@ pub const ModularFrameDecoder = struct {
         metadata: *const CodecMetadata,
     ) JxlError!void {
         const decode_color = frame_header.encoding == .modular;
+        self.passes = frame_header.passes;
         const is_gray = metadata.m.color_encoding.color_space == .gray;
         var nb_chans: usize = 3;
         if (is_gray and frame_header.color_transform == .none) {
@@ -1385,13 +1410,16 @@ pub const ModularFrameDecoder = struct {
         else
             ModularStreamId.modularAC(group_id, pass_id);
 
-        const gx = group_id % self.frame_dim.xsize_groups;
-        const gy = group_id / self.frame_dim.xsize_groups;
-        const x0 = gx * self.frame_dim.grp_dim;
-        const y0 = gy * self.frame_dim.grp_dim;
+        const groups_width = if (is_dc) self.frame_dim.xsize_dc_groups else self.frame_dim.xsize_groups;
+        const group_dim = self.frame_dim.grp_dim * @as(usize, if (is_dc) 8 else 1);
+        const gx = group_id % groups_width;
+        const gy = group_id / groups_width;
+        const x0 = gx * group_dim;
+        const y0 = gy * group_dim;
         if (x0 >= self.frame_dim.xsize or y0 >= self.frame_dim.ysize) return;
-        const xsize = self.frame_dim.grp_dim;
-        const ysize = self.frame_dim.grp_dim;
+        const xsize = group_dim;
+        const ysize = group_dim;
+        const range = if (is_dc) frame_header_mod.Passes.ShiftRange{ .min = 3, .max = 1000 } else try self.passes.shiftRange(pass_id);
 
         if (xsize == 0 or ysize == 0) return;
 
@@ -1413,6 +1441,7 @@ pub const ModularFrameDecoder = struct {
 
 		while (c < self.full_image.channels.items.len) : (c += 1) {
 			const fch = &self.full_image.channels.items[c];
+			if (!range.contains(fch.hshift, fch.vshift)) continue;
 			const rw = groupChannelExtent(fch.w, x0, xsize, fch.hshift);
 			const rh = groupChannelExtent(fch.h, y0, ysize, fch.vshift);
 			if (rw == 0 or rh == 0) continue;
@@ -1445,6 +1474,7 @@ pub const ModularFrameDecoder = struct {
         c = beginc;
         while (c < self.full_image.channels.items.len and gi_c < gi.channels.items.len) : (c += 1) {
             const fch = &self.full_image.channels.items[c];
+            if (!range.contains(fch.hshift, fch.vshift)) continue;
             const gch = &gi.channels.items[gi_c];
             const rx0 = if (fch.hshift >= 0) x0 >> @intCast(fch.hshift) else x0;
             const ry0 = if (fch.vshift >= 0) y0 >> @intCast(fch.vshift) else y0;
@@ -1966,7 +1996,7 @@ test "DequantMatrices.decode all_default consumes one bit and uses library encod
 	var data = [_]u8{0x01};
 	var br = BitReader.init(&data);
 	var matrices = DequantMatrices{};
-	try matrices.decode(&br);
+	try matrices.decode(testing.allocator, &br, .{});
 	try testing.expectEqual(@as(usize, 1), br.totalBitsConsumed());
 	try testing.expectEqual(@as(usize, kNumQuantTables), matrices.encodings.len);
 	for (matrices.encodings) |enc| {
@@ -1981,7 +2011,7 @@ test "DequantMatrices.decode custom-flag library tables consume 3 bits each" {
 	var data = [_]u8{0} ** 8;
 	var br = BitReader.init(&data);
 	var matrices = DequantMatrices{};
-	try matrices.decode(&br);
+	try matrices.decode(testing.allocator, &br, .{});
 	try testing.expectEqual(@as(usize, 1 + 3 * kNumQuantTables), br.totalBitsConsumed());
 	for (matrices.encodings) |enc| {
 		try testing.expectEqual(QuantMode.library, enc.mode);
@@ -2005,7 +2035,7 @@ test "DequantMatrices.decode identity table scales F16 weights by 64" {
 	try writer.zeroPadToByte();
 	var br = BitReader.init(writer.bytes());
 	var matrices = DequantMatrices{};
-	try matrices.decode(&br);
+	try matrices.decode(testing.allocator, &br, .{});
 	try testing.expectEqual(QuantMode.identity, matrices.encodings[0].mode);
 	for (matrices.encodings[0].idweights) |row| {
 		for (row) |weight| {
@@ -2031,7 +2061,7 @@ test "DequantMatrices.decode rejects identity mode on a table that is not 1x1" {
 	try writer.zeroPadToByte();
 	var br = BitReader.init(writer.bytes());
 	var matrices = DequantMatrices{};
-	try testing.expectError(error.GenericError, matrices.decode(&br));
+	try testing.expectError(error.GenericError, matrices.decode(testing.allocator, &br, .{}));
 }
 
 test "DequantMatrices.decode dct2 table scales F16 weights by 64" {
@@ -2050,7 +2080,7 @@ test "DequantMatrices.decode dct2 table scales F16 weights by 64" {
 	try writer.zeroPadToByte();
 	var br = BitReader.init(writer.bytes());
 	var matrices = DequantMatrices{};
-	try matrices.decode(&br);
+	try matrices.decode(testing.allocator, &br, .{});
 	try testing.expectEqual(QuantMode.dct2, matrices.encodings[0].mode);
 	for (matrices.encodings[0].dct2weights) |row| {
 		for (row) |weight| {
@@ -2076,7 +2106,7 @@ test "DequantMatrices.decode dct params scale the seed band by 64" {
 	try writer.zeroPadToByte();
 	var br = BitReader.init(writer.bytes());
 	var matrices = DequantMatrices{};
-	try matrices.decode(&br);
+	try matrices.decode(testing.allocator, &br, .{});
 	try testing.expectEqual(QuantMode.dct, matrices.encodings[0].mode);
 	try testing.expectEqual(@as(u8, 1), matrices.encodings[0].dct_params.num_distance_bands);
 	for (0..3) |c| {
@@ -2104,7 +2134,7 @@ test "DequantMatrices.decode dct4 multipliers stay unscaled" {
 	try writer.zeroPadToByte();
 	var br = BitReader.init(writer.bytes());
 	var matrices = DequantMatrices{};
-	try matrices.decode(&br);
+	try matrices.decode(testing.allocator, &br, .{});
 	try testing.expectEqual(QuantMode.dct4, matrices.encodings[0].mode);
 	for (matrices.encodings[0].dct4multipliers) |row| {
 		for (row) |mul| {
@@ -2134,7 +2164,7 @@ test "DequantMatrices.decode dct4x8 multipliers stay unscaled" {
 	try writer.zeroPadToByte();
 	var br = BitReader.init(writer.bytes());
 	var matrices = DequantMatrices{};
-	try matrices.decode(&br);
+	try matrices.decode(testing.allocator, &br, .{});
 	try testing.expectEqual(QuantMode.dct4x8, matrices.encodings[0].mode);
 	for (matrices.encodings[0].dct4x8multipliers) |mul| {
 		try testing.expectEqual(kOne, mul);
@@ -2163,7 +2193,7 @@ test "DequantMatrices.decode afv scales the first six weights of each channel" {
 	try writer.zeroPadToByte();
 	var br = BitReader.init(writer.bytes());
 	var matrices = DequantMatrices{};
-	try matrices.decode(&br);
+	try matrices.decode(testing.allocator, &br, .{});
 	try testing.expectEqual(QuantMode.afv, matrices.encodings[0].mode);
 	for (0..3) |c| {
 		for (0..6) |j| {
@@ -2177,7 +2207,7 @@ test "DequantMatrices.decode afv scales the first six weights of each channel" {
 	try testing.expectEqual(@as(u8, 1), matrices.encodings[0].dct_params_afv_4x4.num_distance_bands);
 }
 
-test "DequantMatrices.decode raw tables stay unsupported until modular quant tables exist" {
+test "DequantMatrices.decode raw tables reject missing modular payloads" {
 	const BitWriter = @import("../base/bit_writer.zig").BitWriter;
 	const allocator = testing.allocator;
 	var writer = BitWriter.init(allocator);
@@ -2187,7 +2217,7 @@ test "DequantMatrices.decode raw tables stay unsupported until modular quant tab
 	try writer.zeroPadToByte();
 	var br = BitReader.init(writer.bytes());
 	var matrices = DequantMatrices{};
-	try testing.expectError(error.Unsupported, matrices.decode(&br));
+	try testing.expectError(error.NotEnoughBytes, matrices.decode(testing.allocator, &br, .{}));
 }
 
 test "ensureComputed identity library table inverts the known weights" {
@@ -2196,7 +2226,7 @@ test "ensureComputed identity library table inverts the known weights" {
 	var br = BitReader.init(&data);
 	var matrices = DequantMatrices{};
 	defer matrices.deinit(allocator);
-	try matrices.decode(&br);
+	try matrices.decode(testing.allocator, &br, .{});
 	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.identity));
 	const x = matrices.matrix(.identity, 0);
 	try testing.expectEqual(sf.div(kOne, sf.fromInt(280)), x[0]);
@@ -2227,7 +2257,7 @@ test "ensureComputed dct2 library table inverts the known weights" {
 	var br = BitReader.init(&data);
 	var matrices = DequantMatrices{};
 	defer matrices.deinit(allocator);
-	try matrices.decode(&br);
+	try matrices.decode(testing.allocator, &br, .{});
 	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.dct2x2));
 	const x = matrices.matrix(.dct2x2, 0);
 	try testing.expectEqual(sf.div(kOne, sf.fromInt(3840)), x[1]);
@@ -2245,7 +2275,7 @@ test "ensureComputed dct library table inverts the DC weights" {
 	var br = BitReader.init(&data);
 	var matrices = DequantMatrices{};
 	defer matrices.deinit(allocator);
-	try matrices.decode(&br);
+	try matrices.decode(testing.allocator, &br, .{});
 	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.dct));
 	const x = matrices.matrix(.dct, 0);
 	try testing.expectEqual(sf.div(kOne, sf.fromInt(3150)), x[0]);
@@ -2296,7 +2326,7 @@ test "ensureComputed dct16 library table inverts the DC weights" {
 	var br = BitReader.init(&data);
 	var matrices = DequantMatrices{};
 	defer matrices.deinit(allocator);
-	try matrices.decode(&br);
+	try matrices.decode(testing.allocator, &br, .{});
 	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.dct16x16));
 	const x = matrices.matrix(.dct16x16, 0);
 	try testing.expectEqual(@as(usize, 256), x.len);
@@ -2333,7 +2363,7 @@ test "ensureComputed dct32 library table inverts the DC weights" {
 	var br = BitReader.init(&data);
 	var matrices = DequantMatrices{};
 	defer matrices.deinit(allocator);
-	try matrices.decode(&br);
+	try matrices.decode(testing.allocator, &br, .{});
 	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.dct32x32));
 	const x = matrices.matrix(.dct32x32, 0);
 	try testing.expectEqual(@as(usize, 1024), x.len);
@@ -2370,7 +2400,7 @@ test "ensureComputed dct8x16 library table inverts the DC weights" {
 	var br = BitReader.init(&data);
 	var matrices = DequantMatrices{};
 	defer matrices.deinit(allocator);
-	try matrices.decode(&br);
+	try matrices.decode(testing.allocator, &br, .{});
 	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.dct8x16));
 	const x = matrices.matrix(.dct8x16, 0);
 	try testing.expectEqual(@as(usize, 128), x.len);
@@ -2387,7 +2417,7 @@ test "ensureComputed dct8x32 library table inverts the DC weights" {
 	var br = BitReader.init(&data);
 	var matrices = DequantMatrices{};
 	defer matrices.deinit(allocator);
-	try matrices.decode(&br);
+	try matrices.decode(testing.allocator, &br, .{});
 	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.dct8x32));
 	const x = matrices.matrix(.dct8x32, 0);
 	try testing.expectEqual(@as(usize, 256), x.len);
@@ -2400,7 +2430,7 @@ test "ensureComputed dct16x32 library table inverts the DC weights" {
 	var br = BitReader.init(&data);
 	var matrices = DequantMatrices{};
 	defer matrices.deinit(allocator);
-	try matrices.decode(&br);
+	try matrices.decode(testing.allocator, &br, .{});
 	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.dct16x32));
 	const x = matrices.matrix(.dct16x32, 0);
 	try testing.expectEqual(@as(usize, 512), x.len);
@@ -2432,7 +2462,7 @@ test "ensureComputed dct64 library table inverts the DC weights" {
 	var br = BitReader.init(&data);
 	var matrices = DequantMatrices{};
 	defer matrices.deinit(allocator);
-	try matrices.decode(&br);
+	try matrices.decode(testing.allocator, &br, .{});
 	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.dct64x64));
 	const x = matrices.matrix(.dct64x64, 0);
 	try testing.expectEqual(@as(usize, 4096), x.len);
@@ -2470,7 +2500,7 @@ test "ensureComputed dct32x64 library table inverts the DC weights" {
 	var br = BitReader.init(&data);
 	var matrices = DequantMatrices{};
 	defer matrices.deinit(allocator);
-	try matrices.decode(&br);
+	try matrices.decode(testing.allocator, &br, .{});
 	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.dct32x64));
 	const x = matrices.matrix(.dct32x64, 0);
 	try testing.expectEqual(@as(usize, 2048), x.len);
@@ -2484,7 +2514,7 @@ test "ensureComputed dct4 library table inverts the DC weights" {
 	var br = BitReader.init(&data);
 	var matrices = DequantMatrices{};
 	defer matrices.deinit(allocator);
-	try matrices.decode(&br);
+	try matrices.decode(testing.allocator, &br, .{});
 	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.dct4x4));
 	const x = matrices.matrix(.dct4x4, 0);
 	try testing.expectEqual(@as(usize, 64), x.len);
@@ -2529,7 +2559,7 @@ test "ensureComputed dct4x8 library table inverts the DC weights" {
 	var br = BitReader.init(&data);
 	var matrices = DequantMatrices{};
 	defer matrices.deinit(allocator);
-	try matrices.decode(&br);
+	try matrices.decode(testing.allocator, &br, .{});
 	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.dct4x8));
 	const x = matrices.matrix(.dct4x8, 0);
 	try testing.expectEqual(@as(usize, 64), x.len);
@@ -2542,7 +2572,7 @@ test "ensureComputed afv library table inverts the special-position weights" {
 	var br = BitReader.init(&data);
 	var matrices = DequantMatrices{};
 	defer matrices.deinit(allocator);
-	try matrices.decode(&br);
+	try matrices.decode(testing.allocator, &br, .{});
 	try matrices.ensureComputed(allocator, @as(u32, 1) << @intFromEnum(AcStrategyType.afv0));
 	const x = matrices.matrix(.afv0, 0);
 	try testing.expectEqual(@as(usize, 64), x.len);

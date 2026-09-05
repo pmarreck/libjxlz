@@ -653,12 +653,13 @@ fn checkMetaSqueezeParams(param: SqueezeParams, num_channels: usize) JxlError!vo
 pub fn metaSqueeze(image: *Image, squeezes: *[]SqueezeParams, allocator: std.mem.Allocator) JxlError!void {
     // If no squeeze params provided, generate defaults
     if (squeezes.len == 0) {
-        const defaults = defaultSqueezeParameters(allocator, image) catch return error.GenericError;
+        const defaults = try defaultSqueezeParameters(allocator, image);
         squeezes.* = defaults;
     }
 
     for (squeezes.*) |param| {
         checkMetaSqueezeParams(param, image.channels.items.len) catch return error.GenericError;
+        try image.channels.ensureUnusedCapacity(allocator, param.num_c);
         const horizontal = param.horizontal;
         const in_place = param.in_place;
         const beginc = param.begin_c;
@@ -689,11 +690,11 @@ pub fn metaSqueeze(image: *Image, squeezes: *[]SqueezeParams, allocator: std.mem
                 if (ch.vshift >= 0) ch.vshift += 1;
                 h = h - (h + 1) / 2;
             }
-            ch.shrink() catch return error.GenericError;
+            try ch.shrink();
 
-            var placeholder = Channel.create(allocator, w, h, ch.hshift, ch.vshift) catch return error.GenericError;
+            var placeholder = try Channel.create(allocator, w, h, ch.hshift, ch.vshift);
             placeholder.component = ch.component;
-            image.channels.insert(allocator, offset + (c - beginc), placeholder) catch return error.GenericError;
+            image.channels.insertAssumeCapacity(offset + (c - beginc), placeholder);
         }
     }
 }

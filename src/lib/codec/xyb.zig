@@ -45,7 +45,7 @@ pub fn opsinParams(metadata: *const image_metadata.ImageMetadata, transform_data
 		default_intensity_target;
 	const scale = default_intensity_target / intensity_target;
 	const src = &transform_data.opsin_inverse_matrix;
-	const use_default = zeroOpsinMatrix(src);
+	const use_default = !src.custom and zeroOpsinMatrix(src);
 
 	var params = OpsinParams{
 		.inverse_matrix = undefined,

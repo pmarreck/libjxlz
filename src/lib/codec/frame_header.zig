@@ -166,6 +166,31 @@ pub const Passes = struct {
     last_pass: [kMaxNumPasses]u32 = [_]u32{0} ** kMaxNumPasses,
     shift: [kMaxNumPasses]u32 = [_]u32{0} ** kMaxNumPasses,
 
+    pub const ShiftRange = struct {
+        min: i32,
+        max: i32,
+        pub fn contains(self: ShiftRange, hshift: i32, vshift: i32) bool {
+            const shift = @min(hshift, vshift);
+            return shift >= self.min and shift <= self.max;
+        }
+    };
+
+    /// Modular channels are assigned once, at their downsampling pass.
+    pub fn shiftRange(self: Passes, pass_id: usize) JxlError!ShiftRange {
+        if (pass_id >= self.num_passes or self.num_passes > kMaxNumPasses or self.num_downsample > 4) return error.GenericError;
+        var range = ShiftRange{ .min = 3, .max = 2 };
+        for (0..pass_id + 1) |pass| {
+            for (0..self.num_downsample) |i| {
+                if (pass == self.last_pass[i]) range.min = switch (self.downsample[i]) {
+                    8 => 3, 4 => 2, 2 => 1, 1 => 0, else => return error.GenericError,
+                };
+            }
+            if (pass == self.num_passes - 1) range.min = 0;
+            if (pass != pass_id) range.max = range.min - 1;
+        }
+        return range;
+    }
+
     pub fn readFromBitStream(br: *BitReader) JxlError!Passes {
         var p = Passes{};
 
@@ -716,4 +741,26 @@ test "pack_signed roundtrip" {
     try testing.expectEqual(@as(i32, 0), pack_signed.unpackSigned(pack_signed.packSigned(0)));
     try testing.expectEqual(@as(i32, -42), pack_signed.unpackSigned(pack_signed.packSigned(-42)));
     try testing.expectEqual(@as(i32, 42), pack_signed.unpackSigned(pack_signed.packSigned(42)));
+}
+
+test "modular pass classifier partitions channel shift pairs" {
+    var passes = Passes{ .num_passes = 5, .num_downsample = 3 };
+    passes.downsample[0..3].* = .{ 8, 4, 2 };
+    passes.last_pass[0..3].* = .{ 0, 2, 3 };
+    const expected = [_]u32{ 0, 0, 0x427000, 0x210bc0, 0x10843f };
+    for (expected, 0..) |mask, pass| {
+        const range = try passes.shiftRange(pass);
+        var actual: u32 = 0;
+        for (0..5) |h| for (0..5) |v| {
+            if (range.contains(@intCast(h), @intCast(v))) actual |= @as(u32, 1) << @intCast(h * 5 + v);
+        };
+        try testing.expectEqual(mask, actual);
+    }
+    const single = try (Passes{}).shiftRange(0);
+    var actual: u32 = 0;
+    for (0..5) |h| for (0..5) |v| {
+        if (single.contains(@intCast(h), @intCast(v))) actual |= @as(u32, 1) << @intCast(h * 5 + v);
+    };
+    try testing.expectEqual(@as(u32, 0x427000 | 0x210bc0 | 0x10843f), actual);
+    try testing.expectError(error.GenericError, passes.shiftRange(5));
 }

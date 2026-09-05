@@ -8,7 +8,7 @@ fn check(allocator: std.mem.Allocator, bytes: []const u8) !void {
 	defer matrices.deinit(allocator);
 	var br = BitReader.init(bytes);
 	const model = jxl.codec.vardct_global.BlockContextMap{ .allocator = allocator };
-	var global = try ac.Global.decode(allocator, &br, &matrices, 1, 5, 2, &model);
+	var global = try ac.Global.decode(allocator, &br, &matrices, 1, 5, 2, &model, .{});
 	defer global.deinit();
 	try std.testing.expectEqual(fixture.bits, br.totalBitsConsumed());
 	try std.testing.expectEqual(@as(usize, 3), global.num_histograms);

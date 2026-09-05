@@ -39,13 +39,7 @@ pub const Params = struct {
 	}
 };
 
-fn fromF32(value: f32) JxlError!sf.Fixed {
-	const bits: u32 = @bitCast(value);
-	const exponent = (bits >> 23) & 255;
-	if (exponent == 255) return error.GenericError;
-	const magnitude: i64 = (bits & 0x7fffff) | @as(u32, if (exponent == 0) 0 else 1 << 23);
-	return sf.norm(if (bits >> 31 != 0) -magnitude else magnitude, if (exponent == 0) -87 else @as(i32, @intCast(exponent)) - 88);
-}
+const fromF32 = @import("../base/float.zig").loadFloat32Fixed;
 
 pub fn inverseSigma(quant_scale: sf.Fixed, quant: u32, sharp: sf.Fixed, quant_mul: sf.Fixed) JxlError!sf.Fixed {
 	if (quant_scale.m <= 0 or quant == 0) return error.GenericError;

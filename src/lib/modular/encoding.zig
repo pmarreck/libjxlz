@@ -45,8 +45,12 @@ pub const GroupHeader = struct {
 
         if (num_transforms > 0) {
             const transforms = try allocator.alloc(Transform, num_transforms);
+            errdefer allocator.free(transforms);
+            var initialized: usize = 0;
+            errdefer for (transforms[0..initialized]) |*t| t.deinit();
             for (transforms) |*t| {
                 t.* = try Transform.readFromBitStream(br, allocator);
+                initialized += 1;
             }
             h.transforms = transforms;
         }
@@ -841,9 +845,8 @@ pub fn modularDecodeWithReaderStrategy(
     }
 
     // Move transforms to image for later undo (header gives up ownership)
-    for (header.transforms) |t| {
-        try image.transforms.append(image.allocator, t);
-    }
+    try image.transforms.ensureUnusedCapacity(image.allocator, header.transforms.len);
+    image.transforms.appendSliceAssumeCapacity(header.transforms);
     // Clear header's transform slice so it doesn't double-free squeeze params
     if (header.allocator) |alloc| {
         if (header.transforms.len > 0) {

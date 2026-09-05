@@ -137,6 +137,11 @@ test {
 	_ = @import("codec/vardct_frame_test.zig");
 	_ = @import("codec/vardct_filters_test.zig");
 	_ = @import("codec/large_quant_test.zig");
+	_ = @import("codec/raw_quant_test.zig");
+	_ = @import("codec/raw_matrices_test.zig");
+	_ = @import("codec/vardct_extra_test.zig");
+	_ = @import("codec/vardct_opsin_test.zig");
+	_ = @import("modular/ownership_test.zig");
 	_ = @import("codec/dc_smoothing_test.zig");
 	_ = @import("codec/quantizer.zig");
 	_ = @import("codec/codestream_test.zig");

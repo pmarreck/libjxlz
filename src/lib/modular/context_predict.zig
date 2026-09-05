@@ -207,6 +207,7 @@ pub fn filterTree(
     property_use.* = .{};
 
     var output: FlatTree = .empty;
+    errdefer output.deinit(allocator);
 
     // BFS queue
     var queue: std.ArrayList(usize) = .empty;

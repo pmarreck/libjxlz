@@ -19,8 +19,8 @@ const DcSection = struct {
 	}
 };
 
-fn adjust(value: i32, c: usize) sf.Fixed {
-	const biases = [4]sf.Fixed{ sf.parse("0.94534992669284599").?, sf.parse("0.92994550108251407").?, sf.parse("0.950064896662656345").?, sf.parse("0.145").? };
+const default_biases = [4]sf.Fixed{ sf.parse("0.94534992669284599").?, sf.parse("0.92994550108251407").?, sf.parse("0.950064896662656345").?, sf.parse("0.145").? };
+fn adjust(value: i32, c: usize, biases: *const [4]sf.Fixed) sf.Fixed {
 	return switch (value) {
 		0 => sf.Fixed.zero,
 		1 => biases[c],
@@ -39,19 +39,18 @@ pub fn decode(dec: *jxl.codec.dec_frame.FrameDecoder, data: []const u8, offset: 
 	const unsupported = @import("../base/unsupported.zig").unsupported;
 	if (fh.encoding != .var_dct) return error.GenericError;
 	if (!fh.chroma_subsampling.is444()) return unsupported(.chroma_subsampling);
-	if (dec.metadata.m.num_extra_channels != 0) return unsupported(.extra_channel_type);
 	if (fh.flags & jxl.codec.frame_header.FrameFlags.use_dc_frame != 0) return unsupported(.progressive_dc_frame);
 	if (fh.upsampling != 1) return unsupported(.upsampling);
+	for (0..dec.metadata.m.num_extra_channels) |i| {
+		if (fh.extra_channel_upsampling[i] != 1 or dec.metadata.m.extra_channel_info[i].dim_shift != 0) return unsupported(.upsampling);
+		if (dec.metadata.m.extra_channel_info[i].bit_depth.floating_point_sample) return unsupported(.bit_depth);
+	}
 	if (fh.frame_type == .dc_frame) return unsupported(.progressive_dc_frame);
 	if (fh.frame_type == .reference_only) return unsupported(.reference_frame);
 	if (fh.blending_info.mode != .replace or fh.custom_size_or_origin) return unsupported(.frame_blending);
 	if (fh.color_transform != .xyb) return unsupported(.color_encoding);
 	if (fh.flags & jxl.codec.frame_header.FrameFlags.splines != 0) return unsupported(.splines);
 	if (dec.metadata.m.color_encoding.want_icc) return unsupported(.icc_profile);
-	if (dec.metadata.transform_data.opsin_inverse_matrix.custom) return unsupported(.color_encoding);
-	for (dec.metadata.transform_data.opsin_inverse_matrix.inverse_matrix) |row| for (row) |value| {
-		if (@as(u32, @bitCast(value)) != 0) return unsupported(.color_encoding);
-	};
 	const readers = try dec.allocator.alloc(BitReader, dec.toc_entries.len);
 	defer dec.allocator.free(readers);
 	var physical = offset;
@@ -92,7 +91,15 @@ pub fn decode(dec: *jxl.codec.dec_frame.FrameDecoder, data: []const u8, offset: 
 	if (fh.flags & jxl.codec.frame_header.FrameFlags.skip_adaptive_dc_smoothing == 0)
 		try jxl.codec.dc_smoothing.smooth(dec.allocator, full_dc.planes, global.quantizer.dcSteps(dec.dequant_matrices.dc_quant));
 	const ac_global_id = 1 + dec.frame_dim.num_dc_groups;
-	var acg = try ac_global.Global.decode(dec.allocator, section(readers, ac_global_id), &dec.dequant_matrices, used_acs, dec.frame_dim.num_groups, fh.passes.num_passes, &global.block_context);
+	const modular = &dec.modular_decoder;
+	var acg = try ac_global.Global.decode(dec.allocator, section(readers, ac_global_id), &dec.dequant_matrices, used_acs, dec.frame_dim.num_groups, fh.passes.num_passes, &global.block_context, .{
+		.first_stream_id = (jxl.codec.dec_frame.ModularStreamId{ .kind = .quant_table }).id(dec.frame_dim),
+		.global = .{
+			.tree = if (modular.has_tree) modular.tree.items else null,
+			.code = if (modular.has_tree) &modular.code else null,
+			.context_map = if (modular.has_tree) modular.context_map else null,
+		},
+	});
 	defer acg.deinit();
 	var output = filter.Image{
 		.width = dec.frame_dim.xsize,
@@ -117,8 +124,8 @@ pub fn decode(dec: *jxl.codec.dec_frame.FrameDecoder, data: []const u8, offset: 
 	}
 	for (dec.toc_entries) |entry| {
 		const br = &readers[entry.id];
-		try br.jumpToByteBoundary();
-		if (br.totalBitsConsumed() != entry.size * 8) return error.GenericError;
+		// Upstream permits unused tail bytes, including empty modular ANS states.
+		if (!br.allReadsWithinBounds()) return error.NotEnoughBytes;
 		try br.close();
 	}
 	try dec.modular_decoder.finalizeDecoding();
@@ -154,6 +161,11 @@ pub fn decode(dec: *jxl.codec.dec_frame.FrameDecoder, data: []const u8, offset: 
 fn renderGroup(dec: *jxl.codec.dec_frame.FrameDecoder, meta: *const jxl.codec.ac_metadata.AcMetadata, dc: *const jxl.codec.dc_group.DcGroup, group: *const jxl.codec.ac_group.Group, rect: jxl.base.rect.Rect, output: *filter.Image) !void {
 	const fh = &dec.frame_header;
 	const global = &dec.vardct_global.?;
+	var biases = default_biases;
+	const opsin = dec.metadata.transform_data.opsin_inverse_matrix;
+	if (opsin.custom) for (opsin.quant_biases, &biases) |value, *dest| {
+		dest.* = try jxl.base.float16.loadFloat32Fixed(value);
+	};
 	var packed_offset: usize = 0;
 	for (0..rect.ysize()) |local_y| for (0..rect.xsize()) |local_x| {
 		const bx = rect.x0() + local_x;
@@ -176,7 +188,7 @@ fn renderGroup(dec: *jxl.codec.dec_frame.FrameDecoder, meta: *const jxl.codec.ac
 		const channel_scale = [3]sf.Fixed{ sf.mul(scale, matrixScale(fh.x_qm_scale)), scale, sf.mul(scale, matrixScale(fh.b_qm_scale)) };
 		for (0..3) |c| {
 			const matrix = dec.dequant_matrices.matrix(@enumFromInt(block.strategy), c);
-			for (0..area) |i| coefficients[c * area + i] = sf.mul(adjust(group.planes[c][packed_offset + i], c), sf.mul(matrix[i], channel_scale[c]));
+			for (0..area) |i| coefficients[c * area + i] = sf.mul(adjust(group.planes[c][packed_offset + i], c, &biases), sf.mul(matrix[i], channel_scale[c]));
 		}
 		for (0..area) |i| {
 			coefficients[i] = sf.add(coefficients[i], sf.mul(cfl[0], coefficients[area + i]));

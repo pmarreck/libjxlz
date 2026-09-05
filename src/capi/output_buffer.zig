@@ -58,18 +58,15 @@ fn outputValue(img: *const Image, metadata: *const image_metadata.ImageMetadata,
 
 fn renderedOutputValue(rendered: *const render_mod.FloatImage, alpha_img: ?*const Image, metadata: *const image_metadata.ImageMetadata, x: usize, y: usize, requested_channel: usize) f32 {
 	if (requested_channel < 3) return rendered.rowConst(y, requested_channel)[x];
-	if (alpha_img) |img| {
-		if (alphaChannelIndex(metadata)) |idx| {
-			return normalizedFloat(img.channels.items[3 + idx].rowConst(y)[x], bitDepthMax(metadata.bit_depth.bits_per_sample));
-		}
-	}
-	return 1.0;
+	return normalizedAlphaOutputValue(alpha_img, metadata, x, y);
 }
 
 fn normalizedAlphaOutputValue(alpha_img: ?*const Image, metadata: *const image_metadata.ImageMetadata, x: usize, y: usize) f32 {
 	if (alpha_img) |img| {
 		if (alphaChannelIndex(metadata)) |idx| {
-			return normalizedFloat(img.channels.items[3 + idx].rowConst(y)[x], bitDepthMax(metadata.bit_depth.bits_per_sample));
+			const color_channels = img.channels.items.len - metadata.num_extra_channels;
+			const extra = metadata.extra_channel_info[idx];
+			return normalizedFloat(img.channels.items[color_channels + idx].rowConst(y)[x], bitDepthMax(extra.bit_depth.bits_per_sample));
 		}
 	}
 	return 1.0;
