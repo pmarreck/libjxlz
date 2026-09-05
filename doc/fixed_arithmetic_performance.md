@@ -81,3 +81,12 @@ Public API CPU/wall history also records the numeric-kernel SHA-256 so a run
 with uncommitted arithmetic changes is distinguishable from its parent commit.
 The earlier April macOS results describe older modular-only coverage and should
 not be read as a current VarDCT performance claim.
+
+The first integrated run completed successfully at 10:30 EDT on
+`04ee5c359d97c4f287de269d84ac109ed4ea9574`. VarDCT measured 5.52 ms per decode
+versus upstream 0.358 ms (15.4×); large modular measured 26.84 ms versus
+23.64 ms. This VarDCT result is about 9.4% below the earlier 6.09 ms baseline.
+The packaged arithmetic benchmark uses the baseline x86_64 CPU target, so its
+kernel numbers should not be treated as paired comparisons with the native
+target table above. Raw CPU and wall times are in `arithmetic_history.jsonl`
+and `public_api_cpu_history.jsonl`; the dequantization history remains unseeded.

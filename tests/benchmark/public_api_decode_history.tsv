@@ -162,3 +162,6 @@ timestamp_est	scenario	repeat	our_mean_s	ref_mean_s	ref_over_our	build_mode	mach
 2026-04-14 12:07:20 PM EST	large_multigroup_rgb	96	1.067387562625	1.149778494625	1.077189	ReleaseFast	unknown
 2026-04-15 03:40:54 PM EST	full_corpus	4	0.07057799487500001	0.075331927	1.067357	ReleaseFast	unknown
 2026-04-15 03:41:16 PM EST	large_multigroup_rgb	96	1.07337706225	1.145877197875	1.067544	ReleaseFast	unknown
+2026-09-05 10:28:56 AM EDT	full_corpus	4	0.158033572125	0.14850587325	0.939711	ReleaseFast	82bbb9f01c00
+2026-09-05 10:29:44 AM EDT	large_multigroup_rgb	96	2.5765936275000003	2.2696710247499996	0.880880	ReleaseFast	82bbb9f01c00
+2026-09-05 10:29:59 AM EDT	vardct_272x19	256	1.4125930507500002	0.09160768487500001	0.064851	ReleaseFast	82bbb9f01c00

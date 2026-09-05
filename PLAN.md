@@ -23,6 +23,15 @@ below; pause for decisions only when they prevent safe implementation.
   Full Nix unit checks, all 97 CLI suites, 264 required mutation detections and
   the production build passed — 10:26 EDT. Record the first integrated `./bm`
   run after committing so its source revision names the measured code.
+  Integrated `./bm` passed at 10:30 EDT for `04ee5c359d97`: VarDCT
+  5.52 ms/decode versus upstream 0.358 ms, large modular 26.84 ms versus
+  23.64 ms. CPU/wall measurements are retained in benchmark history.
+  Exact-commit Mechatron passed at 10:40:14 EDT. Continue measurements as
+  coverage grows; the whole-decoder ratio does not isolate arithmetic cost.
+- [ ] Finish grayscale/ICC output semantics, then audit remaining color
+  transforms, nonfinite sample effects and JPEG reconstruction. Peter requested
+  a status check at 13:46 EDT; arithmetic is shipped and CI is green, while
+  grayscale profile/pixel tests currently pass only in the isolated prototype.
 
 - [x] Extract a shared-reader permutation path from `toc.zig` without changing
   TOC decoding. Prove shared ANS state, skipped LLF coefficients, discarded
