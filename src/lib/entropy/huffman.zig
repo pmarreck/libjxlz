@@ -137,8 +137,7 @@ pub fn buildHuffmanTable(
         len += 1;
         step <<= 1;
     }) {
-        while (count[@intCast(len)] != 0) {
-            count[@intCast(len)] -= 1;
+        while (count[@intCast(len)] != 0) : (count[@intCast(len)] -= 1) {
             if (@as(i32, @intCast(key & mask)) != low) {
                 table = root_table + total_size;
                 table_bits = nextTableBitSize(count, len, root_bits);
@@ -199,7 +198,7 @@ pub const HuffmanDecodingData = struct {
         if (n_bits > huffman_table_bits) {
             br.consume(huffman_table_bits);
             n_bits -= huffman_table_bits;
-            t = table_ptr + t[0].value;
+            t = t + t[0].value;
             t = t + br.peekBits(n_bits);
         }
         br.consume(t[0].bits);

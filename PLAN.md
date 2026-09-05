@@ -155,12 +155,35 @@ below; pause for decisions only when they prevent safe implementation.
   header assertions. All 667 public/root Debug tests now pass — 05:10 EDT.
   Full rerun passed the Nix unit check, all 94 CLI suites and all 264 required
   mutation detections; production build passed — 05:25 EDT.
-- [ ] Verify exact-commit CI for shared modular rendering and the lossless
-  encoder filter correction.
+- [x] Push modular rendering and the lossless filter correction as `a7413d71`;
+  independently fetched origin and verified the full commit. Mechatron passed
+  in 665 seconds, finishing 05:37:02 EDT.
 - [ ] Complete shared Fixed blending, then reference-frame state and patches.
   A separate prototype matches 64 upstream blending configurations across all
   eight modes, alpha selection, clamping and alpha association. Inputs remain
   unchanged; invalid output aliasing and alpha indexes fail before writes.
+  Unintegrated prototypes now cover 24 upstream patch dictionaries, every
+  truncated prefix and missing-reference set, ten complete cropped layer
+  streams, and 32 complete modular patch streams with sampling. Public decode,
+  rewind and allocation sweeps pass. Palette allocation errors are preserved.
+  VarDCT patch fixtures exposed a base-frame Huffman bug. Correcting its
+  relative secondary-table offset makes all 32 VarDCT patch streams match
+  upstream within one RGB8 level. Working files remain under
+  `/tmp/libjxlz-reference-src` and `/tmp/libjxlz-*-oracle.cc` — 06:02 EDT.
+- [x] Reproduce and fix long Huffman decoding independently. Nine upstream
+  tables cover depths 9–15 and uniform 512/1024-symbol alphabets. Before the
+  fix, table size was 384 instead of 258 and decoded symbols differed. The
+  builder decremented the symbol count before choosing the secondary-table
+  width; the reader used the wrong base for its relative offset. Every table
+  entry and all 294,912 lookahead cases now match upstream — 06:02 EDT.
+- [x] Run the full suite/build for the Huffman correction. The Nix unit check,
+  all 94 CLI suites and all 264 required mutation detections passed; production
+  build passed — 06:19 EDT. Ship before merging the reference/patch slice.
+- [ ] Finish reference/patch integration. Padded destinations, unequal sampling
+  rejection and all 20 uncoalesced layer outputs now pass upstream comparisons.
+  The latter exposed a stale caller-buffer pointer; request a fresh buffer for
+  each displayed frame. Existing 671 public/core Debug tests pass in the
+  prototype. Finish the extra-only blending check before integrating.
 - [ ] Extend that working path to progressive/reference semantics and remaining
   dequant forms, then patches and remaining render stages. Each subfeature
   needs a known-good upstream fixture and malformed/truncated counterparts.

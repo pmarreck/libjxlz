@@ -98,6 +98,7 @@ test {
 	_ = @import("entropy/ans_params.zig");
 	_ = @import("entropy/ans_common.zig");
 	_ = @import("entropy/huffman.zig");
+	_ = @import("entropy/huffman_secondary_test.zig");
 	_ = @import("entropy/hybrid_uint.zig");
 	_ = @import("entropy/inverse_mtf.zig");
 	_ = @import("entropy/dec_ans.zig");
