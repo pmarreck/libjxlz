@@ -28,6 +28,20 @@ below; pause for decisions only when they prevent safe implementation.
   23.64 ms. CPU/wall measurements are retained in benchmark history.
   Exact-commit Mechatron passed at 10:40:14 EDT. Continue measurements as
   coverage grows; the whole-decoder ratio does not isolate arithmetic cost.
+- [x] Repair benchmark reference-library discovery, then finish the baseline.
+  The post-Modular arithmetic run passed its guards, but `./bm` could not find
+  the shared library it built under `build-cpp-bm/lib`: `fd` ignored the build
+  directory and its file-only search missed canonical shared-library symlinks.
+  A persistent classifier test failed for Linux/macOS symlinks, static archives
+  and mixed sets. Direct checks of CMake's linker names now pass those sets and
+  reject directories, broken links and unrelated libraries. Re-run `./bm`, then
+  the full suite and build before committing — 17:19 EDT.
+  The complete baseline passed: VarDCT 5.704 ms/decode versus upstream
+  0.361 ms, large Modular 26.599 ms versus 23.831 ms. Arithmetic, decode,
+  encode and scaling guards passed. Core revision is `0010b5f5`; the runner
+  discovery fix was present during measurement. Full Nix unit checks, all 99
+  CLI suites, 264 required mutation detections, Windows cross-compilation and
+  the production build pass — 2026-09-05 17:43 EDT.
 - [x] Finish grayscale/ICC default output semantics. Arithmetic measurements
   were committed as `b5fb9964`; Mechatron passed at 14:05:24 EDT.
   Integrated default linear output for embedded ICC XYB, grayscale luminance

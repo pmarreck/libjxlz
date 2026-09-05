@@ -241,6 +241,7 @@ annotate=[
 	tests/cli/arithmetic_bench_smoke.sh = Fixed arithmetic measurement, exact optimization control, or benchmark regression check
 	tests/cli/arithmetic_history_smoke.sh = Fixed arithmetic measurement, exact optimization control, or benchmark regression check
 	tests/cli/benchmark_mode_smoke.sh = Fixed arithmetic measurement, exact optimization control, or benchmark regression check
+	tests/cli/benchmark_reference_smoke.sh = Classify usable benchmark libraries inside ignored directories
 	tests/cli/capi_bench_smoke.sh = checksum smoke test proving the checked-in public-API benchmark harness compiles against the flake-built libjxlz_capi.a and decodes deterministically
 	tests/cli/capi_compressed_icc.c = external C smoke for the standalone compressed_icc.h utility surface
 	tests/cli/capi_compressed_icc.sh = external C smoke for the standalone compressed_icc.h utility surface

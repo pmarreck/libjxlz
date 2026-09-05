@@ -101,15 +101,24 @@ compile_ours() {
 }
 
 compile_ref() {
-	REF_LIB="$(fd '^libjxl(\..*)?\.(dylib|so|a)$' "${REF_BUILD_DIR}/lib" -t f 2>/dev/null | head -n 1)"
+	local attempt library
+	REF_LIB=""
+	for attempt in 0 1; do
+		# CMake creates these linker names, often as symlinks in ignored directories.
+		for library in libjxl.so libjxl.dylib libjxl.a; do
+			if [ -f "${REF_BUILD_DIR}/lib/${library}" ]; then
+				REF_LIB="${REF_BUILD_DIR}/lib/${library}"
+				break
+			fi
+		done
+		if [ -n "${REF_LIB}" ]; then break; fi
+		if [ "$attempt" -eq 0 ]; then
+			cmake -S . -B "${REF_BUILD_DIR}" -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF >/dev/null
+			cmake --build "${REF_BUILD_DIR}" >/dev/null
+		fi
+	done
 	if [ -z "${REF_LIB}" ]; then
-		cmake -S . -B "${REF_BUILD_DIR}" -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF >/dev/null
-		cmake --build "${REF_BUILD_DIR}" >/dev/null
-	fi
-
-	REF_LIB="$(fd '^libjxl(\..*)?\.(dylib|so|a)$' "${REF_BUILD_DIR}/lib" -t f 2>/dev/null | head -n 1)"
-	if [ -z "${REF_LIB}" ]; then
-		echo "reference libjxl build not found under build-cpp/lib" >&2
+		echo "reference libjxl build not found under ${REF_BUILD_DIR}/lib" >&2
 		exit 1
 	fi
 	REF_LIB_DIR="$(cd "$(dirname "${REF_LIB}")" && pwd)"
