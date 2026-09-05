@@ -55,6 +55,14 @@ below; pause for decisions only when they prevent safe implementation.
   Record performance after committing the transfer code. The primaries work
   remains isolated in `/tmp/libjxlz-primary-src`: 48 complete upstream image
   comparisons pass; malformed-profile and negative-primary cases are next.
+  Transfer commit `0e289b32` is pushed with matching remote SHA. Its second
+  `./bm` run passes: VarDCT 5.710 ms/decode versus upstream 0.352 ms, large
+  modular 26.622 ms versus 23.653 ms. The first run stopped on an 8.9% faster
+  Fixed multiply; the repeat passed the same 5% CPU/wall guards. Arithmetic
+  code is unchanged, so this is not attributed to the transfer implementation.
+  Fifty isolated primaries images now pass complete UINT8/FLOAT and independent
+  linear-output comparisons. Upstream rejects all five malformed-profile
+  mutations; strict-validator coverage is being checked — 15:11 EDT.
 
 - [x] Extract a shared-reader permutation path from `toc.zig` without changing
   TOC decoding. Prove shared ANS state, skipped LLF coefficients, discarded
