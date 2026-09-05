@@ -6272,3 +6272,47 @@ test "gray ICC floating output matches upstream linear values" {
 	try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderProcessInput(dec));
 	for (output, &fixture.pixels_1) |actual, bits| try std.testing.expectApproxEqAbs(@as(f32, @bitCast(bits)), actual, 0.0001);
 }
+
+fn checkTransferPublic(data: []const u8, pixels: []const u8, float_bits: []const u32, id: usize) !void {
+	const dec = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlDecoderDestroy(dec);
+	try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSubscribeEvents(dec, @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)));
+	const output = try std.testing.allocator.alloc(u8, pixels.len * 4);
+	defer std.testing.allocator.free(output);
+	for (0..2) |kind| {
+		if (kind != 0) JxlDecoderRewind(dec);
+		try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(dec, data.ptr, data.len));
+		JxlDecoderCloseInput(dec);
+		const format = JxlPixelFormat{ .num_channels = if (id >= 14) 1 else 3, .data_type = if (kind == 0) .JXL_TYPE_UINT8 else .JXL_TYPE_FLOAT, .endianness = .JXL_LITTLE_ENDIAN, .@"align" = 0 };
+		try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_NEED_IMAGE_OUT_BUFFER, JxlDecoderProcessInput(dec));
+		try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(dec, &format, output.ptr, output.len));
+		const status = JxlDecoderProcessInput(dec);
+		if (status != .JXL_DEC_FULL_IMAGE) {
+			std.debug.print("transfer id={d} status={any}\n", .{ id, status });
+			return error.TestUnexpectedResult;
+		}
+		try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderProcessInput(dec));
+		for (pixels, float_bits, 0..) |wanted, bits, i| {
+			if (kind == 0) {
+				if (@abs(@as(i32, output[i]) - wanted) > 1) {
+					std.debug.print("transfer id={d} pixel={d} actual={d} expected={d}\n", .{ id, i, output[i], wanted });
+					return error.TestUnexpectedResult;
+				}
+			} else {
+				const actual: f32 = @bitCast(std.mem.readInt(u32, output[i * 4 ..][0..4], .little));
+				const expected: f32 = @bitCast(bits);
+				// PQ/HLG magnify small differences near black. Linear reconstruction
+				// and transfer-only accuracy have separate, tighter oracle checks.
+				if (!std.math.isFinite(actual) or @abs(actual - expected) > (if ((id % 14) / 2 == 3 or (id % 14) / 2 == 5) @as(f32, 1.0 / 255.0) else @as(f32, 0.0002))) {
+					std.debug.print("transfer id={d} pixel={d} float={d} expected={d}\n", .{ id, i, actual, expected });
+					return error.TestUnexpectedResult;
+				}
+			}
+		}
+	}
+}
+test "transfer frames match upstream RGB and gray float output" {
+	@setEvalBranchQuota(20000);
+	const fixture = @import("lib/codec/transfer_frame_fixture.zig");
+	inline for (0..28) |id| try @call(.never_inline, checkTransferPublic, .{ &@field(fixture, std.fmt.comptimePrint("bytes_{d}", .{id})), &@field(fixture, std.fmt.comptimePrint("pixels_{d}", .{id})), &@field(fixture, std.fmt.comptimePrint("float_bits_{d}", .{id})), id });
+}

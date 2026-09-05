@@ -46,6 +46,15 @@ below; pause for decisions only when they prevent safe implementation.
   oracle; HLG requires the upstream power sequence for signed luminance.
   Exact black and signed-zero tests pass. A separate primaries prototype
   passes 40 upstream matrix/coordinate cases; complete-image coverage is next.
+  Integrated the transfer slice with 2,016 stage component checks across four
+  intensity targets, including exact zeros and PQ's low-intensity transition.
+  Integrated targeted checks, including the existing linear-XYB regression,
+  passed at 14:40 EDT. Full Nix unit checks, all 97 CLI suites, all 264 required
+  mutation detections and `./build` pass — 2026-09-05 14:57 EDT.
+  Mechatron passed the grayscale/ICC commit `47ae3b42` at 14:47:48 EDT.
+  Record performance after committing the transfer code. The primaries work
+  remains isolated in `/tmp/libjxlz-primary-src`: 48 complete upstream image
+  comparisons pass; malformed-profile and negative-primary cases are next.
 
 - [x] Extract a shared-reader permutation path from `toc.zig` without changing
   TOC decoding. Prove shared ANS state, skipped LLF coefficients, discarded

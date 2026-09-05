@@ -12,19 +12,9 @@ pub fn outputEncoding(metadata: *const image_metadata.ImageMetadata) @import("co
 
 /// Output color boundary shared by frame compositing and the C adapter.
 pub fn toOutputRgb(x: f32, y: f32, b: f32, params: *const OpsinParams, metadata: *const image_metadata.ImageMetadata) @import("../base/status.zig").JxlError![3]f32 {
-	var rgb = xybToLinearRgb(x, y, b, params);
-	const tf = outputEncoding(metadata).tf;
-	if (tf.have_gamma) return @import("../base/unsupported.zig").unsupported(.color_encoding);
-	switch (tf.transfer_function) {
-		.linear => {},
-		.srgb => for (&rgb) |*value| {
-			const magnitude = @abs(value.*);
-			const encoded = if (magnitude <= 0.0031308) magnitude * 12.92 else 1.055 * std.math.pow(f32, magnitude, 1.0 / 2.4) - 0.055;
-			value.* = if (value.* < 0) -encoded else encoded;
-		},
-		else => return @import("../base/unsupported.zig").unsupported(.color_encoding),
-	}
-	return rgb;
+	const rgb = xybToLinearRgb(x, y, b, params);
+	const intensity = if (metadata.tone_mapping.intensity_target > 0) metadata.tone_mapping.intensity_target else default_intensity_target;
+	return @import("output_transfer.zig").fromLinear(rgb, outputEncoding(metadata).tf, intensity, .{ 0.2126, 0.7152, 0.0722 });
 }
 
 const default_intensity_target: f32 = 255.0;
