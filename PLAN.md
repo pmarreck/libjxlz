@@ -145,6 +145,11 @@ below; pause for decisions only when they prevent safe implementation.
   Full Nix unit checks, all 99 CLI suites, all 264 required mutation detections,
   Windows cross-compilation and the production build pass — 18:22 EDT.
   Commit this slice, then measure its whole-decoder performance before sampling.
+  Commit `bcc885dd` is pushed with matching remote SHA. Its complete `./bm`
+  run passes all guards: VarDCT 5.666 ms/decode versus upstream 0.356 ms;
+  large Modular 26.626 ms versus 23.704 ms. The previous corresponding
+  measurements were 5.704 ms and 26.599 ms, so no material regression is
+  apparent. CPU/wall histories retain the exact revision — 18:29 EDT.
 - [ ] Integrate floating upsampling, then subsampled YCbCr, from the saved
   `/tmp/libjxlz-sampling-integration` and `/tmp/libjxlz-chroma-integration`
   snapshots. Combined upstream image/stage and allocation controls pass all
