@@ -18,7 +18,7 @@ fn check(data: []const u8, linear_bits: []const u32, encoded_bits: []const u32, 
 	defer dec.deinit();
 	const image = dec.rendered_image orelse return error.TestUnexpectedResult;
 	try std.testing.expect(!dec.rendered_in_output_space);
-	const params = jxl.codec.xyb.opsinParams(&metadata.m, &metadata.transform_data);
+	const params = try jxl.codec.xyb.opsinParams(&metadata.m, &metadata.transform_data);
 	const channels: usize = if (id >= 14) 1 else 3;
 	for (0..image.ysize) |y| for (0..image.xsize) |x| {
 		const rgb = jxl.codec.xyb.xybToLinearRgb(image.rowConst(y, 0)[x], image.rowConst(y, 1)[x], image.rowConst(y, 2)[x], &params);

@@ -140,6 +140,28 @@ pub const ColorEncoding = struct {
     tf: CustomTransferFunction = .{},
     rendering_intent: RenderingIntent = .relative,
 
+    pub fn whitePointXY(self: ColorEncoding) [2]f64 {
+        return switch (self.white_point) {
+            .d65 => .{ 0.3127, 0.3290 },
+            .e => .{ 1.0 / 3.0, 1.0 / 3.0 },
+            .dci => .{ 0.314, 0.351 },
+            .custom => .{ @as(f64, @floatFromInt(self.white.x)) / 1000000.0, @as(f64, @floatFromInt(self.white.y)) / 1000000.0 },
+        };
+    }
+
+    pub fn primariesXY(self: ColorEncoding) [3][2]f64 {
+        return switch (self.primaries) {
+            .srgb => .{ .{ 0.639998686, 0.330010138 }, .{ 0.300003784, 0.600003357 }, .{ 0.150002046, 0.059997204 } },
+            .p3 => .{ .{ 0.680, 0.320 }, .{ 0.265, 0.690 }, .{ 0.150, 0.060 } },
+            .bt2100 => .{ .{ 0.708, 0.292 }, .{ 0.170, 0.797 }, .{ 0.131, 0.046 } },
+            .custom => .{
+                .{ @as(f64, @floatFromInt(self.red.x)) / 1000000.0, @as(f64, @floatFromInt(self.red.y)) / 1000000.0 },
+                .{ @as(f64, @floatFromInt(self.green.x)) / 1000000.0, @as(f64, @floatFromInt(self.green.y)) / 1000000.0 },
+                .{ @as(f64, @floatFromInt(self.blue.x)) / 1000000.0, @as(f64, @floatFromInt(self.blue.y)) / 1000000.0 },
+            },
+        };
+    }
+
     pub fn readFromBitStream(br: *BitReader) JxlError!ColorEncoding {
         // AllDefault check
         if (fc.readAllDefault(br)) {
@@ -199,6 +221,7 @@ pub const ColorEncoding = struct {
             }
         }
 
+        try @import("color_matrix.zig").validateRgb(ce);
         return ce;
     }
 

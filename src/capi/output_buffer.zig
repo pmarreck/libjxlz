@@ -242,7 +242,7 @@ pub fn writeXYBRenderedImageToOutput(rendered: *const render_mod.FloatImage, alp
 
 	const bytes_per_channel = bytesPerChannel(format.data_type) orelse return error.Unsupported;
 	const num_channels: usize = @intCast(format.num_channels);
-	const params = xyb_mod.opsinParams(metadata, &codec_meta.transform_data);
+	const params = try xyb_mod.opsinParams(metadata, &codec_meta.transform_data);
 
 	if (format.data_type == .JXL_TYPE_UINT8 and format.num_channels == 3) {
 		for (0..rendered.ysize) |y| {

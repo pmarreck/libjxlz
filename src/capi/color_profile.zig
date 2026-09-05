@@ -76,13 +76,6 @@ pub fn defaultPrimariesBlueXY() [2]f64 {
 	return .{ 0.150002046, 0.059997204 };
 }
 
-pub fn customXYToF64Pair(xy: color_encoding_mod.Customxy) [2]f64 {
-	return .{
-		@as(f64, @floatFromInt(xy.x)) / 1000000.0,
-		@as(f64, @floatFromInt(xy.y)) / 1000000.0,
-	};
-}
-
 pub fn customXYFromF64Pair(pair: [2]f64) !color_encoding_mod.Customxy {
 	for (pair) |coord| {
 		if (!std.math.isFinite(coord)) return error.Unsupported;
@@ -230,10 +223,11 @@ pub fn populateColorEncoding(dst: *JxlColorEncoding, color: *const color_encodin
 	dst.color_space = fromInternalColorSpace(color.color_space);
 	dst.white_point = fromInternalWhitePoint(color.white_point);
 	dst.primaries = fromInternalPrimaries(color.primaries);
-	dst.white_point_xy = if (color.white_point == .custom) customXYToF64Pair(color.white) else defaultWhitePointXY();
-	dst.primaries_red_xy = if (color.primaries == .custom) customXYToF64Pair(color.red) else defaultPrimariesRedXY();
-	dst.primaries_green_xy = if (color.primaries == .custom) customXYToF64Pair(color.green) else defaultPrimariesGreenXY();
-	dst.primaries_blue_xy = if (color.primaries == .custom) customXYToF64Pair(color.blue) else defaultPrimariesBlueXY();
+	dst.white_point_xy = color.whitePointXY();
+	const primaries = color.primariesXY();
+	dst.primaries_red_xy = primaries[0];
+	dst.primaries_green_xy = primaries[1];
+	dst.primaries_blue_xy = primaries[2];
 	dst.transfer_function = fromInternalTransferFunction(&color.tf, &dst.gamma);
 	dst.rendering_intent = fromInternalRenderingIntent(color.rendering_intent);
 }

@@ -39,3 +39,32 @@ These conversions run at the existing floating output boundary. Frame
 reconstruction, filters and compositing continue to use `sf.Fixed`. The tests
 retain both scalar and SIMD upstream results so future optimizations can be
 checked against their actual numerical behavior.
+
+`color_matrix_oracle.cc` supplies 40 upstream matrices and public coordinates:
+sRGB, P3, BT.2100 and custom primaries; D65, equal-energy, DCI and custom white
+points; gray; and default/custom opsin matrices at 255/1000 nits. Matrix entries
+use an absolute bound of 0.00001 plus relative 0.000001. Luminances use 0.000001,
+and exported coordinates use 0.000000001. The conversion composes Bradford
+adaptation and primary matrices once per frame at the existing output boundary.
+
+`primary_frame_oracle.cc` adds 50 complete 19x13 images with both coding modes.
+The first 40 cover the primary/white-point combinations and gray fallback.
+Eight cover PQ/HLG in P3 and BT.2100. Two use custom negative-blue-y primaries
+(blue y = -0.077), with green x = 0.000001 because upstream's public encoder
+rejects zero primary coordinates. Actual frame modes, disabled filters and
+original/data profiles are checked before retaining each file. Complete UINT8
+output allows one level; FLOAT allows 0.0002 plus relative 0.00001, or 1/255 for
+PQ/HLG. Independently requested linear output retains the tighter 0.0001 plus
+relative 0.00001 bound for every image. Public tests also exercise rewind.
+
+`src/invalid_primary_generate.zig` rewrites only the metadata of the first
+upstream primaries image. It preserves its transform bits and frame payload.
+The five mutations are white y = 0, white x below zero, white x above one,
+identical primaries, and nearly singular primaries. Compile this standalone
+utility with `nix develop -c zig build-exe src/invalid_primary_generate.zig
+-O ReleaseSafe -lc`; its stdout reproduces `invalid_primary_fixture.zig`.
+`invalid_primary_oracle.cc`, linked against upstream, takes that fixture path
+and requires a public decoder error for every mutation. Our pixel decoder and
+strict validator must agree; the latter reports malformed metadata rather than
+an unclassified error. The nearly singular case also exercises upstream's
+signed 15.16 ICC matrix range limit.

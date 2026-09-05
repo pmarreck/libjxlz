@@ -23,7 +23,7 @@ fn check(allocator: std.mem.Allocator, comptime first: usize, comptime end: usiz
 		}
 		const image = &decoder.rendered_image.?;
 		try std.testing.expectEqual(rgb.len, image.data.len);
-		const params = jxl.codec.xyb.opsinParams(&metadata.m, &metadata.transform_data);
+		const params = try jxl.codec.xyb.opsinParams(&metadata.m, &metadata.transform_data);
 		for (0..image.ysize) |y| for (0..image.xsize) |x| {
 			const linear = jxl.codec.xyb.xybToLinearRgb(image.rowConst(y, 0)[x], image.rowConst(y, 1)[x], image.rowConst(y, 2)[x], &params);
 			for (linear, 0..) |value, c| {

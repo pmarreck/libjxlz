@@ -17,7 +17,7 @@ fn check(allocator: std.mem.Allocator, data: []const u8, expected: []const u32, 
 	defer dec.deinit();
 	const image = dec.rendered_image orelse return error.TestUnexpectedResult;
 	const xyb = metadata.m.xyb_encoded and !dec.rendered_in_output_space;
-	const params = jxl.codec.xyb.opsinParams(&metadata.m, &metadata.transform_data);
+	const params = try jxl.codec.xyb.opsinParams(&metadata.m, &metadata.transform_data);
 	const channels = colors + metadata.m.num_extra_channels;
 	for (0..image.ysize) |y| for (0..image.xsize) |x| {
 		const rgb = if (xyb and linear) jxl.codec.xyb.xybToLinearRgb(image.rowConst(y, 0)[x], image.rowConst(y, 1)[x], image.rowConst(y, 2)[x], &params) else if (xyb) try jxl.codec.xyb.toOutputRgb(image.rowConst(y, 0)[x], image.rowConst(y, 1)[x], image.rowConst(y, 2)[x], &params, &metadata.m) else [3]f32{ image.rowConst(y, 0)[x], image.rowConst(y, 1)[x], image.rowConst(y, 2)[x] };

@@ -63,6 +63,32 @@ below; pause for decisions only when they prevent safe implementation.
   Fifty isolated primaries images now pass complete UINT8/FLOAT and independent
   linear-output comparisons. Upstream rejects all five malformed-profile
   mutations; strict-validator coverage is being checked — 15:11 EDT.
+  Transfer commit Mechatron passed at 15:12:30 EDT. Integrated primaries,
+  chromatic adaptation and actual profile coordinates; all 30 targeted tests
+  pass, including existing transfer/gray tests. New failures proved that strict
+  validation accepted malformed RGB profiles and that near-collinear primaries
+  exceeded upstream ICC matrix limits. Both now report malformed color metadata.
+  Run the full suite and production build before keeping this slice.
+  The production build and Nix unit tests passed. Full CLI testing found one
+  Windows cross-build failure: a core test imported a C API adapter outside its
+  module root. Core coordinate checks now use the pure metadata accessors;
+  public coordinate export remains covered by all 50 C API image cases.
+  Re-run the cross-build check and full suite before committing — 15:35 EDT.
+  Full Nix unit checks, all 97 CLI suites, all 264 required mutation detections,
+  the Windows cross-build check and production build pass — 15:52 EDT.
+- [ ] Fix Modular property narrowing for wide signed sample values. Eight valid
+  upstream floating-sample/filter files exposed an integer-cast panic in the
+  unfiltered case. Match upstream's signed 32-bit property storage, including
+  absolute values, neighbor differences and previous-gradient history; retain
+  independent property controls before proceeding with floating effects.
+  An isolated integer IEEE binary32 reference-compositing prototype passes ten
+  complete upstream files, 4,352 blending components and allocation-failure
+  checks. Integration still needs replay, mixed-reference and platform checks.
+- [ ] Fix redirected benchmark diagnostics overwriting earlier log records.
+  `bench_dequant_ensure_computed` uses positional stdout/stderr writers; the
+  scaling diagnostic overwrote the start of the combined `./bm` log. Retained
+  arithmetic JSONL and CPU/wall histories are intact. Reproduce with a persistent
+  shared-descriptor test, then use streaming writers, as in the arithmetic tool.
 
 - [x] Extract a shared-reader permutation path from `toc.zig` without changing
   TOC decoding. Prove shared ANS state, skipped LLF coefficients, discarded

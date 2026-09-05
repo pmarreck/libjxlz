@@ -19,7 +19,7 @@ fn check(allocator: std.mem.Allocator, comptime count: usize) !void {
 		try dec.decodeFrame(framedata);
 		const image = dec.rendered_image.?;
 		const alpha = &dec.getDecodedImage().channels.items[if (id == 3) 1 else 0];
-		const params = jxl.codec.xyb.opsinParams(&metadata.m, &metadata.transform_data);
+		const params = try jxl.codec.xyb.opsinParams(&metadata.m, &metadata.transform_data);
 		try std.testing.expectEqual(@as(u32, if (id == 3) 2 else 1), metadata.m.num_extra_channels);
 		try std.testing.expectEqual(@as(usize, if (id == 3) 2 else 1), dec.getDecodedImage().channels.items.len);
 		if (id == 5) try std.testing.expect(dec.frame_header.passes.num_passes > 1);

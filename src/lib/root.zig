@@ -168,6 +168,8 @@ test {
 	_ = @import("codec/vardct_opsin_test.zig");
 	_ = @import("codec/output_transfer_test.zig");
 	_ = @import("codec/transfer_linear_test.zig");
+	_ = @import("codec/color_matrix_test.zig");
+	_ = @import("codec/primary_linear_test.zig");
 	_ = @import("modular/ownership_test.zig");
 	_ = @import("codec/dc_smoothing_test.zig");
 	_ = @import("codec/quantizer.zig");

@@ -26,7 +26,7 @@ fn check(allocator: std.mem.Allocator, comptime count: usize) !void {
 		try std.testing.expectEqual(19, image.xsize);
 		try std.testing.expectEqual(13, image.ysize);
 		try std.testing.expectEqual(4, image.channels);
-		const params = jxl.codec.xyb.opsinParams(&metadata.m, &metadata.transform_data);
+		const params = try jxl.codec.xyb.opsinParams(&metadata.m, &metadata.transform_data);
 		for (0..image.ysize) |y| for (0..image.xsize) |x| {
 			const linear = jxl.codec.xyb.xybToLinearRgb(image.rowConst(y, 0)[x], image.rowConst(y, 1)[x], image.rowConst(y, 2)[x], &params);
 			var rgba: [4]f32 = undefined;

@@ -83,7 +83,7 @@ pub const Session = struct {
 			const owned = try self.allocator.dupe(sf.Fixed, input.data);
 			converted = input;
 			converted.?.data = owned;
-			const params = jxl.codec.xyb.opsinParams(&metadata.m, &metadata.transform_data);
+			const params = if (ycbcr) null else try jxl.codec.xyb.opsinParams(&metadata.m, &metadata.transform_data);
 			for (0..input.height) |y| for (0..input.width) |x| {
 				if (ycbcr) {
 					const area = input.width * input.height;
@@ -91,7 +91,7 @@ pub const Session = struct {
 					const rgb = @import("chroma.zig").toRgb(input.data[offset], input.data[area + offset], input.data[2 * area + offset]);
 					for (rgb, 0..) |value, c| converted.?.data[c * area + offset] = value;
 				} else {
-					const rgb = try jxl.codec.xyb.toOutputRgb(rendered.rowConst(y, 0)[x], rendered.rowConst(y, 1)[x], rendered.rowConst(y, 2)[x], &params, &metadata.m);
+					const rgb = try jxl.codec.xyb.toOutputRgb(rendered.rowConst(y, 0)[x], rendered.rowConst(y, 1)[x], rendered.rowConst(y, 2)[x], &params.?, &metadata.m);
 					for (rgb, 0..) |value, c| converted.?.data[(c * input.height + y) * input.width + x] = try jxl.base.float16.loadFloat32Fixed(value);
 				}
 			};

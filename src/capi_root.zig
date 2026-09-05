@@ -1289,6 +1289,7 @@ fn validationFailure(
 	frames_validated: u32,
 ) JxlValidationVerdict {
 	return switch (err orelse error.GenericError) {
+		error.InvalidColorEncoding => setValidationResult(result, .JXL_VALIDATION_CORRUPT, .JXL_VALIDATION_FINDING_MALFORMED, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
 		error.Unsupported => setValidationResult(result, .JXL_VALIDATION_UNSUPPORTED, .JXL_VALIDATION_FINDING_UNSUPPORTED_FEATURE, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
 		error.NotEnoughBytes => setValidationResult(result, .JXL_VALIDATION_CORRUPT, .JXL_VALIDATION_FINDING_TRUNCATED, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
 		error.OutOfMemory => setValidationResult(result, .JXL_VALIDATION_INDETERMINATE, .JXL_VALIDATION_FINDING_OUT_OF_MEMORY, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
@@ -6315,4 +6316,106 @@ test "transfer frames match upstream RGB and gray float output" {
 	@setEvalBranchQuota(20000);
 	const fixture = @import("lib/codec/transfer_frame_fixture.zig");
 	inline for (0..28) |id| try @call(.never_inline, checkTransferPublic, .{ &@field(fixture, std.fmt.comptimePrint("bytes_{d}", .{id})), &@field(fixture, std.fmt.comptimePrint("pixels_{d}", .{id})), &@field(fixture, std.fmt.comptimePrint("float_bits_{d}", .{id})), id });
+}
+fn checkPrimaryPublic(data: []const u8, pixels: []const u8, float_bits: []const u32, original_xy: []const f64, data_xy: []const f64, enums: []const u32, id: usize) !void {
+	const gray = id >= 32 and id < 40;
+	const dec = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlDecoderDestroy(dec);
+	try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSubscribeEvents(dec, @intFromEnum(JxlDecoderStatus.JXL_DEC_COLOR_ENCODING) | @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)));
+	const output = try std.testing.allocator.alloc(u8, pixels.len * 4);
+	defer std.testing.allocator.free(output);
+	for (0..2) |kind| {
+		if (kind != 0) JxlDecoderRewind(dec);
+		try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(dec, data.ptr, data.len));
+		JxlDecoderCloseInput(dec);
+		const format = JxlPixelFormat{ .num_channels = if (gray) 1 else 3, .data_type = if (kind == 0) .JXL_TYPE_UINT8 else .JXL_TYPE_FLOAT, .endianness = .JXL_LITTLE_ENDIAN, .@"align" = 0 };
+		try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_COLOR_ENCODING, JxlDecoderProcessInput(dec));
+		inline for (.{ JxlColorProfileTarget.JXL_COLOR_PROFILE_TARGET_ORIGINAL, JxlColorProfileTarget.JXL_COLOR_PROFILE_TARGET_DATA }) |target| {
+			var color: JxlColorEncoding = undefined;
+			try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderGetColorAsEncodedProfile(dec, target, &color));
+			const expected = if (target == .JXL_COLOR_PROFILE_TARGET_DATA) data_xy else original_xy;
+			for (color.white_point_xy, expected[0..2]) |actual, wanted| try std.testing.expectApproxEqAbs(wanted, actual, 0.000000001);
+			if (!gray) {
+				for (color.primaries_red_xy, expected[2..4]) |actual, wanted| try std.testing.expectApproxEqAbs(wanted, actual, 0.000000001);
+				for (color.primaries_green_xy, expected[4..6]) |actual, wanted| try std.testing.expectApproxEqAbs(wanted, actual, 0.000000001);
+				for (color.primaries_blue_xy, expected[6..8]) |actual, wanted| try std.testing.expectApproxEqAbs(wanted, actual, 0.000000001);
+			}
+			if (target == .JXL_COLOR_PROFILE_TARGET_DATA) {
+				try std.testing.expectEqual(enums[0], @as(u32, @intCast(@intFromEnum(color.color_space))));
+				try std.testing.expectEqual(enums[1], @as(u32, @intCast(@intFromEnum(color.white_point))));
+				if (!gray) try std.testing.expectEqual(enums[2], @as(u32, @intCast(@intFromEnum(color.primaries))));
+				try std.testing.expectEqual(enums[3], @as(u32, @intCast(@intFromEnum(color.transfer_function))));
+			}
+		}
+		try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_NEED_IMAGE_OUT_BUFFER, JxlDecoderProcessInput(dec));
+		try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(dec, &format, output.ptr, output.len));
+		const status = JxlDecoderProcessInput(dec);
+		if (status != .JXL_DEC_FULL_IMAGE) {
+			std.debug.print("primary id={d} status={any}\n", .{ id, status });
+			return error.TestUnexpectedResult;
+		}
+		try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderProcessInput(dec));
+		for (pixels, float_bits, 0..) |wanted, bits, i| {
+			if (kind == 0) {
+				if (@abs(@as(i32, output[i]) - wanted) > 1) {
+					std.debug.print("primary id={d} pixel={d} actual={d} expected={d}\n", .{ id, i, output[i], wanted });
+					return error.TestUnexpectedResult;
+				}
+			} else {
+				const actual: f32 = @bitCast(std.mem.readInt(u32, output[i * 4 ..][0..4], .little));
+				const expected: f32 = @bitCast(bits);
+				const tolerance: f32 = if (id >= 40 and id < 48) 1.0 / 255.0 else 0.0002 + 0.00001 * @abs(expected);
+				if (!std.math.isFinite(actual) or @abs(actual - expected) > tolerance) {
+					std.debug.print("primary id={d} pixel={d} float={d}\n", .{ id, i, actual });
+					return error.TestUnexpectedResult;
+				}
+			}
+		}
+	}
+}
+test "primary frames match upstream pixels and original data profiles" {
+	@setEvalBranchQuota(20000);
+	const fixture = @import("lib/codec/primary_frame_fixture.zig");
+	inline for (0..50) |id| {
+		const key = std.fmt.comptimePrint("{d}", .{id});
+		try @call(.never_inline, checkPrimaryPublic, .{ &@field(fixture, "bytes_" ++ key), &@field(fixture, "pixels_" ++ key), &@field(fixture, "float_bits_" ++ key), &@field(fixture, "original_xy_" ++ key), &@field(fixture, "data_xy_" ++ key), &@field(fixture, "data_enums_" ++ key), id });
+	}
+}
+
+fn checkInvalidPrimary(data: []const u8, validate: bool, id: usize) !void {
+	if (validate) {
+		var result: JxlValidationResult = undefined;
+		const verdict = JxlValidate(data.ptr, data.len, null, &result);
+		if (verdict != .JXL_VALIDATION_CORRUPT) {
+			std.debug.print("invalid primary id={d} verdict={any}\n", .{ id, verdict });
+			return error.TestUnexpectedResult;
+		}
+		try std.testing.expectEqual(JxlValidationFindingCode.JXL_VALIDATION_FINDING_MALFORMED, result.code);
+		return;
+	}
+	const dec = JxlDecoderCreate(null) orelse return error.OutOfMemory;
+	defer JxlDecoderDestroy(dec);
+	try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSubscribeEvents(dec, @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)));
+	try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetInput(dec, data.ptr, data.len));
+	JxlDecoderCloseInput(dec);
+	var status = JxlDecoderProcessInput(dec);
+	const output = try std.testing.allocator.alloc(u8, 19 * 13 * 3);
+	defer std.testing.allocator.free(output);
+	const format = JxlPixelFormat{ .num_channels = 3, .data_type = .JXL_TYPE_UINT8, .endianness = .JXL_NATIVE_ENDIAN, .@"align" = 0 };
+	if (status == .JXL_DEC_NEED_IMAGE_OUT_BUFFER) {
+		try std.testing.expectEqual(JxlDecoderStatus.JXL_DEC_SUCCESS, JxlDecoderSetImageOutBuffer(dec, &format, output.ptr, output.len));
+		status = JxlDecoderProcessInput(dec);
+	}
+	if (status != .JXL_DEC_ERROR) {
+		std.debug.print("invalid primary id={d} status={any}\n", .{ id, status });
+		return error.TestUnexpectedResult;
+	}
+}
+test "invalid primary profiles fail public decoding and strict validation" {
+	const fixture = @import("lib/codec/invalid_primary_fixture.zig");
+	inline for (0..5) |id| {
+		const data = &@field(fixture, std.fmt.comptimePrint("invalid_{d}", .{id}));
+		try @call(.never_inline, checkInvalidPrimary, .{ data, false, id });
+		try @call(.never_inline, checkInvalidPrimary, .{ data, true, id });
+	}
 }

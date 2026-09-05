@@ -26,7 +26,7 @@ fn check(allocator: std.mem.Allocator, comptime count: usize) !void {
 		if (id >= 9) try std.testing.expect(dec.frame_dim.num_groups > 1);
 		if (id == 10) try std.testing.expect(dec.frame_dim.num_dc_groups > 1);
 		if (id == 11) try std.testing.expect(dec.frame_header.passes.num_passes > 1);
-		const params = jxl.codec.xyb.opsinParams(&metadata.m, &metadata.transform_data);
+		const params = try jxl.codec.xyb.opsinParams(&metadata.m, &metadata.transform_data);
 		for (0..image.ysize) |y| for (0..image.xsize) |x| {
 			const linear = jxl.codec.xyb.xybToLinearRgb(image.rowConst(y, 0)[x], image.rowConst(y, 1)[x], image.rowConst(y, 2)[x], &params);
 			var rgba: [4]f32 = undefined;

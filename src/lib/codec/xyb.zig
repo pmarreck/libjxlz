@@ -14,7 +14,7 @@ pub fn outputEncoding(metadata: *const image_metadata.ImageMetadata) @import("co
 pub fn toOutputRgb(x: f32, y: f32, b: f32, params: *const OpsinParams, metadata: *const image_metadata.ImageMetadata) @import("../base/status.zig").JxlError![3]f32 {
 	const rgb = xybToLinearRgb(x, y, b, params);
 	const intensity = if (metadata.tone_mapping.intensity_target > 0) metadata.tone_mapping.intensity_target else default_intensity_target;
-	return @import("output_transfer.zig").fromLinear(rgb, outputEncoding(metadata).tf, intensity, .{ 0.2126, 0.7152, 0.0722 });
+	return @import("output_transfer.zig").fromLinear(rgb, outputEncoding(metadata).tf, intensity, params.luminances);
 }
 
 const default_intensity_target: f32 = 255.0;
@@ -31,6 +31,7 @@ const default_inverse_matrix = [3][3]f32{
 };
 
 pub const OpsinParams = struct {
+	luminances: [3]f32 = .{ 0.2126, 0.7152, 0.0722 },
 	inverse_matrix: [3][3]f32,
 	neg_opsin_biases: [3]f32,
 	neg_opsin_biases_cbrt: [3]f32,
@@ -54,7 +55,7 @@ fn zeroOpsinMatrix(matrix: *const image_metadata.OpsinInverseMatrix) bool {
 
 /// Builds the upstream XYB inverse opsin parameters, scaling the inverse matrix
 /// by tone-mapping intensity so scalar decode matches libjxl's OpsinParams.
-pub fn opsinParams(metadata: *const image_metadata.ImageMetadata, transform_data: *const image_metadata.CustomTransformData) OpsinParams {
+pub fn opsinParams(metadata: *const image_metadata.ImageMetadata, transform_data: *const image_metadata.CustomTransformData) @import("../base/status.zig").JxlError!OpsinParams {
 	const intensity_target = if (metadata.tone_mapping.intensity_target > 0.0)
 		metadata.tone_mapping.intensity_target
 	else
@@ -72,16 +73,15 @@ pub fn opsinParams(metadata: *const image_metadata.ImageMetadata, transform_data
 	for (0..3) |row| {
 		for (0..3) |col| {
 			const value = if (use_default) default_inverse_matrix[row][col] else src.inverse_matrix[row][col];
-			params.inverse_matrix[row][col] = value * scale;
+			params.inverse_matrix[row][col] = value;
 		}
 		params.neg_opsin_biases_cbrt[row] = signedCubeRoot(params.neg_opsin_biases[row]);
 	}
 
-	if (metadata.color_encoding.isGray()) {
-		var row: [3]f32 = undefined;
-		for (0..3) |c| row[c] = 0.2126 * params.inverse_matrix[0][c] + 0.7152 * params.inverse_matrix[1][c] + 0.0722 * params.inverse_matrix[2][c];
-		params.inverse_matrix = .{ row, row, row };
-	}
+	const output = try @import("color_matrix.zig").convert(params.inverse_matrix, outputEncoding(metadata));
+	params.inverse_matrix = output.matrix;
+	params.luminances = output.luminances;
+	for (&params.inverse_matrix) |*row| for (row) |*value| { value.* *= scale; };
 	return params;
 }
 
@@ -109,7 +109,7 @@ test "xybToLinearRgb maps default XYB black to linear RGB black" {
 	var metadata = image_metadata.ImageMetadata{};
 	metadata.xyb_encoded = true;
 	var transform_data = image_metadata.CustomTransformData{};
-	const params = opsinParams(&metadata, &transform_data);
+	const params = try opsinParams(&metadata, &transform_data);
 
 	const rgb = xybToLinearRgb(0.0, 0.0, 0.0, &params);
 	try testing.expectApproxEqAbs(@as(f32, 0.0), rgb[0], 1.0e-6);
@@ -121,7 +121,7 @@ test "xybToLinearRgb keeps neutral default opsin white near normalized RGB white
 	var metadata = image_metadata.ImageMetadata{};
 	metadata.xyb_encoded = true;
 	var transform_data = image_metadata.CustomTransformData{};
-	const params = opsinParams(&metadata, &transform_data);
+	const params = try opsinParams(&metadata, &transform_data);
 
 	const gamma = signedCubeRoot(1.0 + default_opsin_bias);
 	const neutral = gamma + params.neg_opsin_biases_cbrt[0];
