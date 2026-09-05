@@ -48,6 +48,15 @@ pub fn finish(dec: *jxl.codec.dec_frame.FrameDecoder, output: jxl.codec.vardct_f
 			@memcpy(plane.data[y * plane.width ..][0..output.width], values[(c * output.height + y) * output.width ..][0..output.width]);
 		};
 	}
+	if (dec.splines.hasAny()) {
+		const cfl = if (dec.vardct_global) |global| global.color_correlation.base else [2]sf.Fixed{ sf.Fixed.zero, sf.fromInt(1) };
+		try dec.splines.initializeDrawCache(width, height, .{ .base_correlation_x = @bitCast(display.bits(cfl[0])), .base_correlation_b = @bitCast(display.bits(cfl[1])) });
+		var overlay = try jxl.codec.render.FloatImage.init(dec.allocator, output.width, output.height, 3);
+		defer overlay.deinit();
+		for (output.data, overlay.data) |value, *dest| dest.* = @bitCast(display.bits(value));
+		try overlay.applySplines(&dec.splines);
+		for (overlay.data, output.data) |value, *dest| dest.* = try jxl.base.float16.loadFloat32Fixed(value);
+	}
 	var rendered = try jxl.codec.render.FloatImage.init(dec.allocator, width, height, channels);
 	errdefer rendered.deinit();
 	const noise_pixels = if (dec.noise.hasAny()) try dec.allocator.alloc(sf.Fixed, 3 * width * height) else null;

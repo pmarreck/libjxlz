@@ -178,8 +178,11 @@ Current coverage and remaining work (2026-09-05 08:15 EDT):
 - Shared rendering supports modular RGB, XYB and grayscale with Gaborish,
   EPF and 2x/4x/8x upsampling. Existing tests cover default/custom weights,
   mirrored edges, clamping and unequal color/alpha factors. The existing
-  plain spline renderer remains; spline combinations with filtering/sampling,
-  floating-point rendering and the remaining color-profile cases are unfinished.
+  spline drawing code now also runs between shared patching and upsampling.
+  Thirty-two upstream streams cover VarDCT/modular filtering, sampling, noise,
+  cropped layers and animation; public rewind/reset/skip checks pass. The
+  integrated spline slice passed its full repository suite and build. Floating-point
+  rendering and the remaining color-profile cases are unfinished.
 - A decode session now owns four reference slots. Original-profile modular
   layers compose in Fixed with all five frame modes, positive/negative crop
   origins and extra-only blending. XYB references saved before color conversion

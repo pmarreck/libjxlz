@@ -72,3 +72,11 @@ geometry is 1x1. Both generators compare complete decoded output, with public
 reset/rewind/uncoalesced checks, truncated prefixes and allocation sweeps.
 `existing_chroma_oracle.cc` takes the existing small transcode and 1x1 metadata
 container paths and records their upstream pixels for regression tests.
+
+`spline_frame_oracle.cc` adds an upstream-encoded spline payload to independent
+modular/VarDCT frames, preserving TOC permutation and byte alignment. The
+generator reads back and asserts encoding, Gaborish, EPF, upsampling, spline
+and noise flags, blend mode, crop origin and animation duration. It compares
+all displayed pixels in 32 streams, including 2x/8x sampling and four-frame
+animations. The 8x case uses a 65x65 canvas so both layers satisfy the spline
+control-point limit after downsampling.

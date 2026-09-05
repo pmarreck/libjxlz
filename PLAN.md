@@ -277,13 +277,19 @@ below; pause for decisions only when they prevent safe implementation.
   classification — 08:46 EDT.
   The complete rerun passed Nix unit checks, all 94 CLI suites and all 264
   required mutation detections. Production build passed — 09:00 EDT.
-- [ ] Connect existing splines to the shared render stages for VarDCT and
+  Pushed as `345f9fbe`; independently fetched origin matched HEAD. Mechatron
+  passed in 782 seconds, finishing 09:13:50 EDT.
+- [x] Connect existing splines to the shared render stages for VarDCT and
   modular filtering/sampling/noise combinations. Verify actual upstream
   headers and pixels before changing the current spline gates.
   Prototype `/tmp/libjxlz-spline-src` matches 32 upstream streams with all
   filter settings, 2x/8x sampling, optional noise, cropped layers and animation.
   Public reset/rewind/skip and allocation sweeps pass; all 715 baseline-target
   regression tests pass. Integrate after the chroma slice ships.
+  Integrated the shared spline stage between patching and upsampling. Run the
+  full repository suite and build before committing — 09:01 EDT.
+  Nix unit checks, all 94 CLI suites and all 264 required mutation detections
+  passed; production build passed — 09:18 EDT.
 - [ ] Decode floating-point color and extra-channel samples. Prototype
   `/tmp/libjxlz-float-src` has exact upstream conversion results for all 154
   exponent/mantissa layouts and 20 complete finite-sample images. A witnessed

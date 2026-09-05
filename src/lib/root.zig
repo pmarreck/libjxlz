@@ -108,6 +108,7 @@ test {
 	_ = @import("codec/decode_session_test.zig");
 	_ = @import("codec/postcolor_test.zig");
 	_ = @import("codec/noise_frame_test.zig");
+	_ = @import("codec/spline_frame_test.zig");
 	_ = @import("codec/chroma_frame_test.zig");
 	_ = @import("codec/modular_chroma_test.zig");
 	_ = @import("codec/progressive_dc_test.zig");
