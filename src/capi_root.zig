@@ -6439,3 +6439,11 @@ test "wide floating Modular samples preserve upstream bits on decode and rewind"
 		JxlDecoderRewind(dec);
 	}
 }
+
+test {
+	_ = @import("capi/float_reference_test.zig");
+	_ = @import("capi/float_mixed_reference_test.zig");
+	_ = @import("capi/float_alpha_test.zig");
+	_ = @import("capi/float_patch_test.zig");
+	_ = @import("capi/float_filter_test.zig");
+}

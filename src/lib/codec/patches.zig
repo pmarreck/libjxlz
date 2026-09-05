@@ -1,4 +1,4 @@
-//! Entropy-decoded patch dictionaries and ordered Fixed pixel application.
+//! Entropy-decoded patch dictionaries and ordered Fixed/binary32 application.
 const std = @import("std");
 const jxl = @import("../root.zig");
 const sf = jxl.base.soft_float;
@@ -6,8 +6,12 @@ const ans = jxl.entropy.dec_ans;
 const BitReader = jxl.base.bit_reader.BitReader;
 const Error = jxl.base.status.JxlError;
 pub const blend = @import("blending.zig");
-pub const Image = struct { width: usize, height: usize, channels: usize, data: []sf.Fixed };
-pub const Reference = struct { image: ?Image = null, pre_color: bool = false };
+fn ImageOf(comptime Pixel: type) type {
+	return struct { width: usize, height: usize, channels: usize, data: []Pixel };
+}
+pub const Image = ImageOf(sf.Fixed);
+pub const Binary32Image = ImageOf(u32);
+pub const Reference = struct { image: ?Image = null, float_image: ?jxl.codec.render.FloatImage = null, pre_color: bool = false };
 pub const Patch = struct { ref: u2, sx: usize, sy: usize, width: usize, height: usize, x: usize, y: usize };
 fn add(a: usize, b: usize) Error!usize {
 	return std.math.add(usize, a, b) catch error.GenericError;
@@ -23,14 +27,30 @@ fn offset(base: usize, encoded: usize) Error!usize {
 	const delta = jxl.base.pack_signed.unpackSigned(@intCast(encoded));
 	return if (delta >= 0) add(base, @intCast(delta)) else std.math.sub(usize, base, @abs(delta)) catch error.GenericError;
 }
-fn validImage(image: Image) Error!void {
+fn validImage(image: anytype) Error!void {
 	if (image.width == 0 or image.height == 0 or image.channels < 3 or image.channels > 259 or image.data.len != try mul(try mul(image.width, image.height), image.channels)) return error.GenericError;
 }
-fn overlaps(a: []const sf.Fixed, b: []const sf.Fixed) bool {
+fn overlaps(a: []const u8, b: []const u8) bool {
 	if (a.len == 0 or b.len == 0) return false;
 	const x = @intFromPtr(a.ptr);
 	const y = @intFromPtr(b.ptr);
-	return if (x <= y) y - x < a.len * @sizeOf(sf.Fixed) else x - y < b.len * @sizeOf(sf.Fixed);
+	return if (x <= y) y - x < a.len else x - y < b.len;
+}
+const ReferenceShape = struct { width: usize, height: usize, channels: usize, bytes: []const u8 };
+fn referenceShape(ref: Reference) Error!ReferenceShape {
+	if (ref.float_image) |image| {
+		if (ref.image != null) return error.GenericError;
+		try validImage(.{ .width = image.xsize, .height = image.ysize, .channels = image.channels, .data = image.data });
+		return .{ .width = image.xsize, .height = image.ysize, .channels = image.channels, .bytes = std.mem.sliceAsBytes(image.data) };
+	}
+	const image = ref.image orelse return error.GenericError;
+	try validImage(image);
+	return .{ .width = image.width, .height = image.height, .channels = image.channels, .bytes = std.mem.sliceAsBytes(image.data) };
+}
+fn referencePixel(comptime Pixel: type, ref: Reference, index: usize) Error!Pixel {
+	if (ref.float_image) |image| return if (comptime Pixel == u32) @bitCast(image.data[index]) else try jxl.base.float16.loadFloat32Fixed(image.data[index]);
+	const value = ref.image.?.data[index];
+	return if (comptime Pixel == sf.Fixed) value else @import("../base/fixed_display.zig").bits(value);
 }
 pub const Dictionary = struct {
 	allocator: std.mem.Allocator,
@@ -76,9 +96,8 @@ pub const Dictionary = struct {
 		if (count > max_refs) return error.GenericError;
 		for (0..count) |_| {
 			const ref = reader.readHybridUint(1, br, contexts);
-			if (ref >= 4 or references[ref].image == null or !references[ref].pre_color) return error.GenericError;
-			const image = references[ref].image.?;
-			try validImage(image);
+			if (ref >= 4 or !references[ref].pre_color) return error.GenericError;
+			const image = try referenceShape(references[ref]);
 			if (image.channels != extras + 3) return error.GenericError;
 			const sx = reader.readHybridUint(3, br, contexts);
 			const sy = reader.readHybridUint(3, br, contexts);
@@ -114,16 +133,21 @@ pub const Dictionary = struct {
 		return result;
 	}
 	pub fn apply(self: *const Dictionary, output: Image, references: *const [4]Reference, extras: []const blend.Extra) Error!void {
+		return self.applyImpl(sf.Fixed, output, references, extras);
+	}
+	pub fn applyBinary32(self: *const Dictionary, output: Binary32Image, references: *const [4]Reference, extras: []const blend.Extra) Error!void {
+		return self.applyImpl(u32, output, references, extras);
+	}
+	fn applyImpl(self: *const Dictionary, comptime Pixel: type, output: ImageOf(Pixel), references: *const [4]Reference, extras: []const blend.Extra) Error!void {
 		try validImage(output);
 		if (output.width > self.width or output.height > self.height or extras.len != self.extra_count or output.channels != extras.len + 3) return error.GenericError;
 		if (self.blendings.items.len != try mul(self.positions.items.len, extras.len + 1)) return error.GenericError;
 		for (self.positions.items) |p| {
 			const reference = references[p.ref];
-			const image = reference.image orelse return error.GenericError;
-			try validImage(image);
-			if (!reference.pre_color or image.channels != output.channels or overlaps(image.data, output.data) or !fits(p.sx, p.width, image.width) or !fits(p.sy, p.height, image.height) or !fits(p.x, p.width, self.width) or !fits(p.y, p.height, self.height)) return error.GenericError;
+			const image = try referenceShape(reference);
+			if (!reference.pre_color or image.channels != output.channels or overlaps(image.bytes, std.mem.sliceAsBytes(output.data)) or !fits(p.sx, p.width, image.width) or !fits(p.sy, p.height, image.height) or !fits(p.x, p.width, self.width) or !fits(p.y, p.height, self.height)) return error.GenericError;
 		}
-		const storage = try self.allocator.alloc(sf.Fixed, output.channels * 3);
+		const storage = try self.allocator.alloc(Pixel, output.channels * 3);
 		defer self.allocator.free(storage);
 		const bg = storage[0..output.channels];
 		const fg = storage[output.channels..][0..output.channels];
@@ -131,15 +155,16 @@ pub const Dictionary = struct {
 		const info = try self.allocator.dupe(blend.Extra, extras);
 		defer self.allocator.free(info);
 		for (self.positions.items, 0..) |p, index| {
-			const image = references[p.ref].image.?;
+			const reference = references[p.ref];
+			const image = try referenceShape(reference);
 			const modes = self.blendings.items[index * (extras.len + 1) ..][0 .. extras.len + 1];
 			for (info, 0..) |*item, e| item.blend = modes[e + 1];
 			for (0..@min(p.height, output.height -| p.y)) |y| for (0..@min(p.width, output.width -| p.x)) |x| {
 				for (0..output.channels) |c| {
 					bg[c] = output.data[(c * output.height + p.y + y) * output.width + p.x + x];
-					fg[c] = image.data[(c * image.height + p.sy + y) * image.width + p.sx + x];
+					fg[c] = try referencePixel(Pixel, reference, (c * image.height + p.sy + y) * image.width + p.sx + x);
 				}
-				try blend.pixel(bg, fg, value, modes[0], info);
+				if (comptime Pixel == sf.Fixed) try blend.pixel(bg, fg, value, modes[0], info) else try blend.pixelBinary32(bg, fg, value, modes[0], info);
 				for (value, 0..) |v, c| output.data[(c * output.height + p.y + y) * output.width + p.x + x] = v;
 			};
 		}

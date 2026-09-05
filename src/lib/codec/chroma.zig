@@ -57,3 +57,15 @@ fn allocationCase(allocator: std.mem.Allocator) !void {
 test "chroma allocation failures release horizontal temporary" {
 	try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationCase, .{});
 }
+
+// Match the binary32 coefficients used by upstream's YCbCr render stage.
+pub fn toRgbBinary32(cb: u32, y: u32, cr: u32) [3]u32 {
+	const bits = @import("../base/binary32.zig");
+	const offset = comptime bits.div(bits.fromInt(128), bits.fromInt(255));
+	const crcr = comptime bits.parse("1.402").?;
+	const cbcb = comptime bits.parse("1.772").?;
+	const cgcb = comptime bits.div(bits.mul(bits.parse("-0.114").?, cbcb), bits.parse("0.587").?);
+	const cgcr = comptime bits.div(bits.mul(bits.parse("-0.299").?, crcr), bits.parse("0.587").?);
+	const center = bits.add(y, offset);
+	return .{ bits.add(bits.mul(crcr, cr), center), bits.add(bits.mul(cgcr, cr), bits.add(bits.mul(cgcb, cb), center)), bits.add(bits.mul(cbcb, cb), center) };
+}

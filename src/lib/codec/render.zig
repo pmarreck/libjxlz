@@ -18,7 +18,9 @@ pub const FloatImage = struct {
 	allocator: std.mem.Allocator,
 
 	pub fn init(allocator: std.mem.Allocator, xsize: usize, ysize: usize, channels: usize) !FloatImage {
-		const data = try allocator.alloc(f32, xsize * ysize * channels);
+		const area = std.math.mul(usize, xsize, ysize) catch return error.GenericError;
+		const count = std.math.mul(usize, area, channels) catch return error.GenericError;
+		const data = try allocator.alloc(f32, count);
 		@memset(data, 0.0);
 		return .{
 			.data = data,

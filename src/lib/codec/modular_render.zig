@@ -17,6 +17,14 @@ pub fn render(dec: *jxl.codec.dec_frame.FrameDecoder) !void {
 	const colors = image.channels.items.len - metadata.num_extra_channels;
 	if (colors != 3 and (colors != 1 or xyb)) return @import("../base/unsupported.zig").unsupported(.color_channel_count);
 	if (has_float and !effects and !xyb) return renderDirect(dec, colors);
+	var binary32_effects = fh.upsampling == 1 and !dec.noise.hasAny() and !dec.splines.hasAny() and (fh.color_transform == .none or (fh.color_transform == .ycbcr and fh.chroma_subsampling.is444()));
+	for (fh.extra_channel_upsampling[0..metadata.num_extra_channels]) |factor| binary32_effects = binary32_effects and factor == 1;
+	if (has_float and !xyb and binary32_effects) {
+		try renderDirect(dec, colors);
+		try @import("float_render.zig").apply(dec);
+		return;
+	}
+
 	const width = dec.frame_dim.xsize;
 	const height = dec.frame_dim.ysize;
 	const output = filter.Image{ .width = width, .height = height, .data = try dec.allocator.alloc(sf.Fixed, 3 * width * height) };

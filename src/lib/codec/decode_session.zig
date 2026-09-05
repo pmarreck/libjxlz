@@ -35,6 +35,7 @@ pub const Session = struct {
 		}
 		for (&self.refs) |*ref| {
 			if (ref.image) |image| self.allocator.free(image.data);
+			if (ref.float_image) |*image| image.deinit();
 			ref.* = .{};
 		}
 	}
@@ -69,6 +70,9 @@ pub const Session = struct {
 		}
 		const ycbcr = fh.color_transform == .ycbcr;
 		if (!fh.canBeReferenced() and !fh.needsBlending(metadata.m.num_extra_channels) and !ycbcr) return;
+		var has_float = metadata.m.bit_depth.floating_point_sample;
+		for (metadata.m.extra_channel_info[0..metadata.m.num_extra_channels]) |extra| has_float = has_float or extra.bit_depth.floating_point_sample;
+		if (has_float and !metadata.m.xyb_encoded and (fh.color_transform == .none or fh.color_transform == .ycbcr)) return @import("float_reference.zig").finish(dec, &self.refs, self.coalescing);
 		const rendered = dec.rendered_image orelse return error.GenericError;
 		const xyb = metadata.m.xyb_encoded or fh.color_transform == .xyb;
 		if (!xyb and !ycbcr and fh.color_transform != .none) return error.Unsupported;
@@ -108,6 +112,7 @@ pub const Session = struct {
 			const owned = try self.allocator.dupe(sf.Fixed, saved.data);
 			const slot = &self.refs[fh.save_as_reference];
 			if (slot.image) |old| self.allocator.free(old.data);
+			if (slot.float_image) |*old| old.deinit();
 			slot.* = .{ .image = .{ .width = saved.width, .height = saved.height, .channels = saved.channels, .data = owned }, .pre_color = fh.save_before_color_transform };
 		}
 		dec.rendered_image.?.deinit();

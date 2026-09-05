@@ -113,7 +113,7 @@ below; pause for decisions only when they prevent safe implementation.
   Run the full suite and build before committing — 16:36 EDT.
   Full Nix unit checks, all 97 CLI suites, all 264 required mutation detections,
   Windows cross-compilation and the production build pass — 16:54 EDT.
-- [ ] Integrate integer binary32 reference storage, blending and floating filters
+- [x] Integrate integer binary32 reference storage, blending and floating filters
   from the isolated prototype after retaining its controls and checking symbols.
   Ten upstream files pass coalesced output and both layers without coalescing,
   including rewind in both modes. All eight nonfinite Gaborish/EPF files pass;
@@ -123,6 +123,38 @@ below; pause for decisions only when they prevent safe implementation.
   The arithmetic ABI probe builds as a static library for all five platforms;
   these cross-builds do not establish execution on those platforms. Mixed
   references, allocation cleanup and whole-image performance still need checks.
+  Integrated the retained reference/filter/patch slice and split its C API
+  controls into `src/capi/`. Twenty mixed RGB/YCbCr reference files, ten
+  integer-color/floating-alpha files and sixteen floating-patch files pass
+  isolated comparisons and rewind. Reference/filter/patch allocation-failure
+  checks pass. A new dimension-set test reproduced an allocation-size overflow
+  panic; checked products now reject it. Run integrated checks and full builds
+  before keeping this slice — 17:43 EDT.
+  All 95 integrated targeted tests pass. Rebuilt the five retained upstream
+  generators; each reproduces its fixture byte for byte. Run the full suite,
+  production build and ReleaseFast floating checks — 17:46 EDT.
+  Production build and all 95 ReleaseFast checks pass. The full suite passed
+  its units and 98 CLI suites but caught a Windows standalone-core build error:
+  naming libc in compiler-runtime declarations unnecessarily required `-lc`.
+  Keep the C calling convention while leaving symbol resolution to the compiler
+  runtime; rerun cross-build and full checks before committing — 18:04 EDT.
+  The complete Windows cross-build check passes with the corrected declarations.
+  All five arithmetic probes build without `-lc`, with all seven helper
+  definitions present. Selected x86_64 helper disassembly still contains no
+  native floating arithmetic. Rerun the full suite and build — 18:07 EDT.
+  Full Nix unit checks, all 99 CLI suites, all 264 required mutation detections,
+  Windows cross-compilation and the production build pass — 18:22 EDT.
+  Commit this slice, then measure its whole-decoder performance before sampling.
+- [ ] Integrate floating upsampling, then subsampled YCbCr, from the saved
+  `/tmp/libjxlz-sampling-integration` and `/tmp/libjxlz-chroma-integration`
+  snapshots. Combined upstream image/stage and allocation controls pass all
+  124 selected tests. Reuse shared frame/chroma sampling; keep native spline
+  arithmetic explicit against the original integer-ALU policy while covering
+  remaining noise/spline and VarDCT/XYB floating extra-channel behavior.
+  The next isolated upsampling slice passes 102,144 upstream stage components
+  and nine complete files with 2x/4x/8x sampling, custom weights, filters,
+  cropped output and rewind. Its NaN clamp regression requires upstream's
+  reduction order. Keep this separate until the reference/filter slice ships.
 - [x] Fix redirected benchmark diagnostics overwriting earlier log records.
   `bench_dequant_ensure_computed` uses positional stdout/stderr writers; the
   scaling diagnostic overwrote the start of the combined `./bm` log. Retained

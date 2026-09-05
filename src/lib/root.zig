@@ -176,6 +176,15 @@ test {
 	_ = @import("codec/codestream_test.zig");
 	_ = @import("codec/decode_test.zig");
 
+	// Floating sample arithmetic and effects
+	_ = @import("base/binary32_test.zig");
+	_ = @import("codec/float_reference_test.zig");
+	_ = @import("codec/float_blending_test.zig");
+	_ = @import("codec/float_filter_allocation_test.zig");
+	_ = @import("codec/float_patch_test.zig");
+	_ = @import("codec/float_patch_allocation_test.zig");
+	_ = @import("codec/float_image_dimensions_test.zig");
+
 	// Modular
 	_ = @import("modular/ma_common.zig");
 	_ = @import("modular/options.zig");
