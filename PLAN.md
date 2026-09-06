@@ -2,6 +2,11 @@
 
 ## Active continuation (2026-09-06 10:24 EDT)
 
+- [x] Preserve the audit findings after an automated content filter stopped
+  the memory-review worker (Peter, 2026-09-06 12:57 EDT). Continue authorized
+  parser work; the filter notice supplied no specific technical explanation.
+  Completed reports/probes and the interrupted worker's progress log are backed
+  up under the persistent September 6 continuation directory (12:59 EDT).
 - [ ] Tell Peter when the upstream oracle can be removed (requested 10:43 EDT).
   Audit production linkage separately from fixture generation and differential
   tests. Establish which remaining coverage or independent controls require it
@@ -21,13 +26,40 @@
   including 80 upstream coefficient cases, OOM and bounded allocation. Retain
   the generator and performance records. Full Nix unit checks, 101 CLI suites,
   264 required mutation detections, Windows cross-build and production build pass.
-- [ ] Ship coefficient recovery and verify exact-commit CI and benchmarks.
-- [ ] Integrate JPEG writing and public buffers. The isolated writer passes 176
+- [x] Ship coefficient recovery and verify exact-commit CI and benchmarks.
+  Pushed `d3ebb07c779283b5524d2f643d152bab830292c5`; origin matches. The third
+  pinned benchmark passed at 11:25 EDT: VarDCT 5.832 ms, encode 20.434 ms,
+  scaling 2.04x. Earlier runs stopped on large Modular timing shifts of +14.64%
+  and -9.29%; preserve both in history. Mechatron passed at 11:46:39 EDT,
+  taking 2293 seconds; verified at 12:58 EDT.
+- [x] Integrate JPEG writing and public buffers. The isolated writer passes 176
   byte-exact upstream cases, including sequential/progressive scans, restarts,
   refinement, padding and extra zero runs. ICC/Exif/XMP insertion passes original
   JPEG comparisons. The public API passes three natural JPEGs, native event order,
   small buffers, rewind and missing/duplicate/mismatched metadata rejection.
   Retain generators, add the C ABI integration check and audit remaining edges.
+  Integrated at 11:26 EDT after 178 synthetic writer cases, payload allocation
+  controls and public API checks passed in isolation. The C test reconstructs
+  the retained Exif/XMP JPEG through installed symbols, rewind and reset.
+  All generators reproduce their fixtures byte for byte. Upstream clears its
+  progressive-DC flag for JPEG input; enabling that option produced identical
+  files and does not add a coverage case. Run selected checks, full suite/build.
+  All 33 selected integrated checks, full Nix unit tests, 102 CLI suites,
+  264 required mutation detections, Windows cross-build and production build
+  passed; completion verified at 12:58 EDT. Commit this slice before changes.
+- [ ] Check strict validation of reconstruction metadata against codestream and
+  external payloads after the JPEG API slice. Pixel decoding currently does not
+  exercise those reconstruction checks; malformed/missing metadata controls must
+  also run through JxlValidate before full-coverage claims.
+  The isolated regression returned VALID for missing Exif. Payload checks now
+  pass the valid control and reject four missing/duplicate/mismatched cases as
+  CORRUPT. Keep this follow-up isolated until the writer slice ships.
+- [ ] Address verified audit gaps in sequence after strict JPEG metadata:
+  checked extended-box sizes and input custody; ftyp/codestream box ordering
+  and final-frame completion; preview decoding; orientation, associated-alpha
+  and spot-color output; structured ICC export. Reuse the retained probes in
+  `/tmp/libjxlz-coverage-probes/` and current upstream generators. Review reports
+  are in `/tmp/dispatch-log/libjxlz-*-final.md`; confirm each with TDD.
 
 ## Resume checkpoint (2026-09-05 22:10 EDT)
 

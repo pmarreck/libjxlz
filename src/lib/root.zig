@@ -40,6 +40,8 @@ pub const codec = struct {
 	pub const icc_profiles = @import("codec/icc_profiles.zig");
 	pub const container = @import("codec/container.zig");
 	pub const jpeg_reconstruction = @import("codec/jpeg_reconstruction.zig");
+	pub const jpeg_writer = @import("codec/jpeg_writer.zig");
+	pub const jpeg_payloads = @import("codec/jpeg_payloads.zig");
 	pub const frame_header = @import("codec/frame_header.zig");
 	pub const toc = @import("codec/toc.zig");
 	pub const enc_toc = @import("codec/enc_toc.zig");
@@ -199,6 +201,8 @@ test {
 	_ = @import("codec/jpeg_coefficients_test.zig");
 	_ = @import("codec/jpeg_coefficients_synthetic_test.zig");
 	_ = @import("codec/jpeg_coefficients_invalid_test.zig");
+	_ = @import("codec/jpeg_writer_test.zig");
+	_ = @import("codec/jpeg_payloads_test.zig");
 	_ = @import("base/brotli_bounded_test.zig");
 
 	// Modular

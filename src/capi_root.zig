@@ -206,6 +206,7 @@ pub const JxlDecoderStatus = enum(c_int) {
 	JXL_DEC_PREVIEW_IMAGE = 0x200,
 	JXL_DEC_FRAME = 0x400,
 	JXL_DEC_FULL_IMAGE = 0x1000,
+	JXL_DEC_JPEG_RECONSTRUCTION = 0x2000,
 	JXL_DEC_BOX = 0x4000,
 	JXL_DEC_BOX_COMPLETE = 0x10000,
 };
@@ -267,6 +268,13 @@ const DecoderImpl = struct {
 	box_buffer: ?[*]u8 = null,
 	box_buffer_size: usize = 0,
 	box_buffer_written: usize = 0,
+	jpeg_event_emitted: bool = false,
+	jpeg_requested: bool = false,
+	jpeg_bytes: []u8 = &.{},
+	jpeg_offset: usize = 0,
+	jpeg_buffer: ?[*]u8 = null,
+	jpeg_buffer_size: usize = 0,
+	jpeg_buffer_written: usize = 0,
 	codec_meta: image_metadata.CodecMetadata = .{},
 	frame_data: []const u8 = &.{},
 	frame_offset: usize = 0,
@@ -401,6 +409,7 @@ fn allocDecoder(mm: ?*const JxlMemoryManager) ?*DecoderImpl {
 }
 
 fn freeDecoder(dec: *DecoderImpl) void {
+	std.heap.c_allocator.free(dec.jpeg_bytes);
 	clearDecodedFrame(dec);
 	dec.decode_session.deinit();
 	if (dec.owned_codestream.len != 0) {
@@ -1436,6 +1445,7 @@ pub export fn JxlDecoderReset(dec_ptr: ?*JxlDecoder) void {
 	const dec = dec_ptr orelse return;
 	const impl: *DecoderImpl = @ptrCast(@alignCast(dec));
 	const mm = impl.memory_manager;
+	std.heap.c_allocator.free(impl.jpeg_bytes);
 	clearDecodedFrame(impl);
 	impl.decode_session.deinit();
 	if (impl.owned_codestream.len != 0) std.heap.c_allocator.free(impl.owned_codestream);
@@ -1464,6 +1474,12 @@ pub export fn JxlDecoderRewind(dec_ptr: ?*JxlDecoder) void {
 	impl.started_processing = false;
 	impl.basic_info_emitted = false;
 	impl.color_encoding_emitted = false;
+	impl.jpeg_event_emitted = false;
+	impl.jpeg_requested = false;
+	impl.jpeg_offset = 0;
+	impl.jpeg_buffer = null;
+	impl.jpeg_buffer_size = 0;
+	impl.jpeg_buffer_written = 0;
 	resetFrameIteration(impl);
 }
 
@@ -1582,6 +1598,56 @@ pub export fn JxlDecoderReleaseBoxBuffer(dec_ptr: ?*JxlDecoder) usize {
 	impl.box_buffer_size = 0;
 	impl.box_buffer_written = 0;
 	return remaining;
+}
+
+pub export fn JxlDecoderSetJPEGBuffer(dec_ptr: ?*JxlDecoder, data: ?[*]u8, size: usize) JxlDecoderStatus {
+	const dec = dec_ptr orelse return .JXL_DEC_ERROR;
+	const impl: *DecoderImpl = @ptrCast(@alignCast(dec));
+	if (impl.jpeg_buffer != null or (data == null and size != 0)) return .JXL_DEC_ERROR;
+	impl.jpeg_buffer = data;
+	impl.jpeg_buffer_size = size;
+	impl.jpeg_buffer_written = 0;
+	impl.jpeg_requested = impl.jpeg_requested or data != null;
+	return .JXL_DEC_SUCCESS;
+}
+pub export fn JxlDecoderReleaseJPEGBuffer(dec_ptr: ?*JxlDecoder) usize {
+	const dec = dec_ptr orelse return 0;
+	const impl: *DecoderImpl = @ptrCast(@alignCast(dec));
+	const remaining = impl.jpeg_buffer_size - impl.jpeg_buffer_written;
+	impl.jpeg_buffer = null;
+	impl.jpeg_buffer_size = 0;
+	impl.jpeg_buffer_written = 0;
+	return remaining;
+}
+
+fn jpegData(impl: *DecoderImpl) JxlError!?*@import("lib/codec/jpeg_reconstruction.zig").Data {
+	var found: ?*@import("lib/codec/jpeg_reconstruction.zig").Data = null;
+	for (impl.owned_boxes) |*box| if (box.reconstruction) |*data| {
+		if (found != null) return error.GenericError;
+		found = data;
+	};
+	return found;
+}
+
+fn outputJPEG(impl: *DecoderImpl) JxlError!JxlDecoderStatus {
+	if (impl.jpeg_bytes.len == 0) {
+		const data = (try jpegData(impl)) orelse return error.GenericError;
+		try @import("lib/codec/jpeg_payloads.zig").populate(std.heap.c_allocator, data, impl.owned_icc, impl.owned_boxes);
+		var frame = dec_frame.FrameDecoder.init(std.heap.c_allocator, &impl.codec_meta);
+		defer frame.deinit();
+		frame.jpeg_output = data;
+		frame.references = &impl.decode_session.refs;
+		frame.dc_references = &impl.decode_session.dc_refs;
+		try frame.decodeFrame(impl.frame_data[impl.frame_offset .. impl.frame_offset + impl.frame_size]);
+		impl.jpeg_bytes = try @import("lib/codec/jpeg_writer.zig").write(std.heap.c_allocator, data);
+	}
+	if (impl.jpeg_offset == impl.jpeg_bytes.len) return .JXL_DEC_SUCCESS;
+	const buffer = impl.jpeg_buffer orelse return .JXL_DEC_JPEG_NEED_MORE_OUTPUT;
+	const count = @min(impl.jpeg_bytes.len - impl.jpeg_offset, impl.jpeg_buffer_size - impl.jpeg_buffer_written);
+	@memcpy(buffer[impl.jpeg_buffer_written..][0..count], impl.jpeg_bytes[impl.jpeg_offset..][0..count]);
+	impl.jpeg_offset += count;
+	impl.jpeg_buffer_written += count;
+	return if (impl.jpeg_offset == impl.jpeg_bytes.len) .JXL_DEC_SUCCESS else .JXL_DEC_JPEG_NEED_MORE_OUTPUT;
 }
 
 pub export fn JxlDecoderSetDecompressBoxes(dec_ptr: ?*JxlDecoder, decompress: JXL_BOOL) JxlDecoderStatus {
@@ -1844,6 +1910,10 @@ pub export fn JxlDecoderProcessInput(dec_ptr: ?*JxlDecoder) JxlDecoderStatus {
 			impl.color_encoding_emitted = true;
 			return .JXL_DEC_COLOR_ENCODING;
 		}
+		if ((impl.subscribed_events & @intFromEnum(JxlDecoderStatus.JXL_DEC_JPEG_RECONSTRUCTION)) != 0 and !impl.jpeg_event_emitted) {
+			impl.jpeg_event_emitted = true;
+			if ((jpegData(impl) catch |err| return decoderStatusFromError(impl, err)) != null) return .JXL_DEC_JPEG_RECONSTRUCTION;
+		}
 
 		const frame_status = ensureCurrentFrameParsed(impl);
 		if (frame_status != .JXL_DEC_SUCCESS) return frame_status;
@@ -1865,6 +1935,16 @@ pub export fn JxlDecoderProcessInput(dec_ptr: ?*JxlDecoder) JxlDecoderStatus {
 			return .JXL_DEC_FRAME;
 		}
 
+		if (impl.jpeg_requested and (jpegData(impl) catch |err| return decoderStatusFromError(impl, err)) != null) {
+			const jpeg_status = outputJPEG(impl) catch |err| return decoderStatusFromError(impl, err);
+			if (jpeg_status != .JXL_DEC_SUCCESS) return jpeg_status;
+			if ((impl.subscribed_events & @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)) != 0 and !impl.full_image_emitted) {
+				impl.full_image_emitted = true;
+				return .JXL_DEC_FULL_IMAGE;
+			}
+			advanceCurrentFrame(impl);
+			continue;
+		}
 		if (impl.output_buffer == null) {
 			if ((impl.subscribed_events & @intFromEnum(JxlDecoderStatus.JXL_DEC_FULL_IMAGE)) == 0) {
 				advanceCurrentFrame(impl);
@@ -6454,4 +6534,5 @@ test {
 	_ = @import("capi/float_xyb_extra_test.zig");
 	_ = @import("capi/float_xyb_extra_patch_test.zig");
 	_ = @import("capi/jpeg_reconstruction_metadata_test.zig");
+	_ = @import("capi/jpeg_output_test.zig");
 }
