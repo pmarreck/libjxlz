@@ -137,3 +137,23 @@ The integrated implementation, including integer comparison barriers, measures
 the native baseline byte for byte. The barriers produced no material change
 in this paired measurement. These final records are `spline_integer_frame.jsonl`
 and `spline_fma.jsonl` in the same dated benchmark directory.
+
+## JPEG coefficient recovery (2026-09-05)
+
+Skipping pixel-weight computation for coefficient-only output avoids a
+12.046875 MiB allocation. Five alternating ReleaseFast runs of 32 decodes,
+after two warmups and pinned to CPU 44 on the Threadripper 3990X, reduced median
+CPU time from 12.388212 to 8.672398 ms and wall time from 12.483001 to 8.746078 ms.
+Both versions use integer/Fixed arithmetic; this measures unused computation
+and allocation, not the cost of the numeric representation. Every decode
+recovers 983040 coefficients with checksum 4147906486, matching native ParseJPG.
+
+Raw records are `tests/benchmark/20260905/jpeg_coefficients{,_materialized}.jsonl`.
+The retained `src/bench_jpeg_coefficients.zig` accepts a JXL path and repeat count;
+build with `nix develop -c bash -c 'zig build-exe src/bench_jpeg_coefficients.zig
+-O ReleaseFast -lc $(pkg-config --cflags --libs libbrotlidec libbrotlienc
+libbrotlicommon) -femit-bin=/tmp/libjxlz-bench-jpeg-coefficients'` on one line.
+Generate its input from `testdata/jxl/jpeg_reconstruction/bicycles_restarts.jpg`
+using pinned `cjxl --lossless_jpeg=1 --effort=7`. Timing includes metadata/Brotli
+parsing, coefficient recovery, checksum and cleanup; reading the file is outside
+timing. The comparison version differs by materializing AC-global pixel weights.

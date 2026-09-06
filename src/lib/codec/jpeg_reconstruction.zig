@@ -7,7 +7,12 @@ const brotli = @import("../base/brotli.zig");
 const Kind = enum(u2) { unknown, icc, exif, xmp };
 pub const Marker = struct { kind: Kind = .unknown, length: usize, data: []u8 = &.{} };
 pub const Quant = struct { precision: u1, index: u2, is_last: bool, values: [64]i32 = @splat(0) };
-pub const Component = struct { id: u8, quant_index: u2 };
+pub const Component = struct {
+	id: u8, quant_index: u2,
+	h_sampling: u8 = 1, v_sampling: u8 = 1,
+	width_blocks: usize = 0, height_blocks: usize = 0,
+	coefficients: []i16 = &.{},
+};
 pub const Huffman = struct { slot_id: u8, is_last: bool, counts: [17]u32 = @splat(0), values: [257]u32 = @splat(0) };
 pub const ScanComponent = struct { component: u2, ac_table: u2, dc_table: u2 };
 pub const ZeroRun = struct { block: u32, count: u32 };
@@ -23,6 +28,8 @@ pub const Scan = struct {
 };
 pub const Data = struct {
 	arena: std.heap.ArenaAllocator,
+	width: usize = 0,
+	height: usize = 0,
 	markers: []u8 = &.{},
 	components: []Component = &.{},
 	quant: []Quant = &.{},

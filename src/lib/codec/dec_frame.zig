@@ -231,6 +231,7 @@ pub const DctQuantWeightParams = struct {
 
 pub const QuantEncoding = struct {
 	raw_weights: []sf.Fixed = &.{},
+	raw: @import("raw_quant.zig").Record = .{},
 	mode: QuantMode = .library,
 	predefined: u8 = 0,
 	idweights: [3][3]sf.Fixed = @splat(@splat(sf.Fixed.zero)),
@@ -676,6 +677,7 @@ pub const DequantMatrices = struct {
 	pub const DecodeContext = struct {
 		global: ac_metadata.GlobalEntropy = .{},
 		first_stream_id: ?usize = null,
+		materialize_weights: bool = true,
 	};
 	const default_dc_quant: [3]sf.Fixed = .{
 		sf.div(kOne, sf.fromInt(4096)), sf.div(kOne, sf.fromInt(512)), sf.div(kOne, sf.fromInt(256)),
@@ -712,6 +714,7 @@ pub const DequantMatrices = struct {
 	pub fn decode(self: *DequantMatrices, allocator: std.mem.Allocator, br: *BitReader, context: DecodeContext) JxlError!void {
 		for (&self.encodings) |*encoding_entry| {
 			allocator.free(encoding_entry.raw_weights);
+			allocator.free(encoding_entry.raw.values);
 			encoding_entry.* = .{};
 		}
 		self.computed_mask = 0;
@@ -797,12 +800,15 @@ pub const DequantMatrices = struct {
 					};
 				},
 				.raw => {
-					self.encodings[i] = .{ .mode = .raw, .raw_weights = try @import("raw_quant.zig").decode(allocator, br, .{
+					var raw = @import("raw_quant.zig").Record{};
+					const weights = try @import("raw_quant.zig").decode(allocator, br, .{
 						.width = 8 * @as(usize, kRequiredSizeX[i]),
 						.height = 8 * @as(usize, kRequiredSizeY[i]),
 						.stream_id = if (context.first_stream_id) |base| base + i else 0,
 						.global = context.global,
-					}) };
+						.record = if (i == 0) &raw else null,
+					});
+					self.encodings[i] = .{ .mode = .raw, .raw_weights = weights, .raw = raw };
 				},
 			}
 		}
@@ -811,6 +817,8 @@ pub const DequantMatrices = struct {
 	pub fn deinit(self: *DequantMatrices, allocator: std.mem.Allocator) void {
 		for (&self.encodings) |*encoding_entry| {
 			allocator.free(encoding_entry.raw_weights);
+			allocator.free(encoding_entry.raw.values);
+			encoding_entry.raw = .{};
 			encoding_entry.raw_weights = &.{};
 		}
 		if (self.storage.len != 0) {
@@ -1516,6 +1524,7 @@ pub const FrameDecoder = struct {
     dequant_matrices: DequantMatrices = .{},
     vardct_global: ?VarDctGlobal = null,
     rendered_image: ?render_mod.FloatImage = null,
+    jpeg_output: ?*@import("jpeg_reconstruction.zig").Data = null,
     rendered_in_output_space: bool = false,
     force_render: bool = false,
     noise: @import("noise.zig").Params = .{},
@@ -1653,7 +1662,7 @@ pub const FrameDecoder = struct {
                 .code = if (modular.has_tree) &modular.code else null,
                 .context_map = if (modular.has_tree) modular.context_map else null,
             },
-            .dc_steps = global.quantizer.dcSteps(self.dequant_matrices.dc_quant),
+            .dc_steps = if (self.jpeg_output != null) @splat(sf.fromInt(1)) else global.quantizer.dcSteps(self.dequant_matrices.dc_quant),
             .cfl = global.color_correlation.dcRatios(),
             .block_context = &global.block_context,
         });
@@ -1684,6 +1693,7 @@ pub const FrameDecoder = struct {
             if (refs[self.frame_header.dc_level] == null) return error.GenericError;
         }
 
+        if (self.jpeg_output != null and self.frame_header.encoding == .modular) return error.GenericError;
         if (self.frame_header.encoding != .modular) {
             return @import("vardct_frame.zig").decode(self, data, header_byte_offset);
         }

@@ -196,6 +196,9 @@ test {
 	_ = @import("codec/float_xyb_extra_allocation_test.zig");
 	_ = @import("codec/jpeg_reconstruction_test.zig");
 	_ = @import("codec/jpeg_reconstruction_container_test.zig");
+	_ = @import("codec/jpeg_coefficients_test.zig");
+	_ = @import("codec/jpeg_coefficients_synthetic_test.zig");
+	_ = @import("codec/jpeg_coefficients_invalid_test.zig");
 	_ = @import("base/brotli_bounded_test.zig");
 
 	// Modular

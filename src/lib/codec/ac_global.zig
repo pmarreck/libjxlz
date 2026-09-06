@@ -36,7 +36,7 @@ pub const Global = struct {
 		if (num_groups == 0 or num_passes == 0 or num_passes > 11) return error.GenericError;
 		try matrices.decode(allocator, br, quant_context);
 		if (!br.allReadsWithinBounds()) return error.NotEnoughBytes;
-		try matrices.ensureComputed(allocator, used_acs);
+		if (quant_context.materialize_weights) try matrices.ensureComputed(allocator, used_acs);
 		const num_histograms = 1 + br.readBits(@import("../base/bits.zig").ceilLog2Nonzero(num_groups));
 		if (!br.allReadsWithinBounds()) return error.NotEnoughBytes;
 		const num_contexts = std.math.mul(usize, num_histograms, model.numACContexts()) catch return error.GenericError;

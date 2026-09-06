@@ -1,5 +1,66 @@
 # libjxlz Plan
 
+## Active continuation (2026-09-06 10:24 EDT)
+
+- [ ] Tell Peter when the upstream oracle can be removed (requested 10:43 EDT).
+  Audit production linkage separately from fixture generation and differential
+  tests. Establish which remaining coverage or independent controls require it
+  before declaring it removable; this follows JPEG reconstruction and the
+  full-coverage audit. Do not remove it prematurely.
+  Production already has no upstream libjxl dependency; the oracle remains a
+  development reference for generated fixtures, differential tests and timing.
+- [ ] Continue through coefficient integration, JPEG writing/public buffers,
+  and the remaining full-coverage audit. Peter reaffirmed continuation; bedtime
+  reminders apply to Peter and do not revoke authorization for overnight work.
+- [x] Verify metadata commit CI: `2c3c7b34842883839ba0c5055c65938c0f8ebb50`
+  passed Mechatron at 2026-09-05 22:19:46 EDT (2102 seconds).
+- [x] Finish the pinned metadata benchmark before changing tracked codec source.
+  All guards passed at 10:28 EDT: VarDCT 5.637 ms versus upstream 0.350 ms,
+  large Modular 26.508 ms versus 23.474 ms, encode 20.030 ms; scaling 2.03x.
+- [x] Finish coefficient integration checks (2026-09-06 11:07 EDT). All 17 targeted JPEG tests pass,
+  including 80 upstream coefficient cases, OOM and bounded allocation. Retain
+  the generator and performance records. Full Nix unit checks, 101 CLI suites,
+  264 required mutation detections, Windows cross-build and production build pass.
+- [ ] Ship coefficient recovery and verify exact-commit CI and benchmarks.
+- [ ] Integrate JPEG writing and public buffers. The isolated writer passes 176
+  byte-exact upstream cases, including sequential/progressive scans, restarts,
+  refinement, padding and extra zero runs. ICC/Exif/XMP insertion passes original
+  JPEG comparisons. The public API passes three natural JPEGs, native event order,
+  small buffers, rewind and missing/duplicate/mismatched metadata rejection.
+  Retain generators, add the C ABI integration check and audit remaining edges.
+
+## Resume checkpoint (2026-09-05 22:10 EDT)
+
+- [x] Ship JPEG reconstruction metadata as
+  `2c3c7b34842883839ba0c5055c65938c0f8ebb50`; origin matches. Full Nix unit
+  checks, 101 CLI suites, 264 required mutation detections, Windows cross-build
+  and production build pass. Exact-commit Mechatron was still running at 22:02.
+- [x] Finish the post-metadata benchmark and verify exact-commit CI. Four
+  benchmark attempts passed arithmetic/decode guards, then stopped at the
+  encoder timing guard: 22.161, 21.011, 22.235 and 20.156 ms. The last run was
+  pinned to CPU 44 and had a tight 20.0–20.4 ms range; its 9.35% improvement
+  still exceeded the guard. The next pinned run passed at 2026-09-06 10:28 EDT.
+  Preserve all benchmark histories. Logs are `/tmp/libjxlz-jpeg-metadata-bm*.log`,
+  also backed up.
+- [x] Preserve the coefficient prototype and controls on persistent storage at
+  `/mnt/devcache/projects/libjxlz-0d943c99bed2/in-progress-20260905-jpeg/`.
+  Both optimized and materialized-weight source copies are retained alongside
+  generators, red/green logs and raw timing records in `artifacts/`.
+- [x] Integrate coefficient recovery after the metadata checks finish. The
+  isolated source passes 80 upstream-generated cases covering all 64 YCbCr
+  sampling combinations, RGB, grayscale, multiple AC passes and quantization
+  values through 65535. OOM, one-MiB allocation-budget and invalid-mode controls
+  pass. The integrated full suite/build passed at 2026-09-06 11:07 EDT.
+  Five ReleaseFast runs of 32 decodes, pinned to CPU 44, measured median CPU
+  12.388212 to 8.672398 ms and wall 12.483001 to 8.746078 ms after skipping
+  unused pixel weights. All runs recover 983040 coefficients per image with
+  checksum 4147906486, matching upstream ParseJPG. Timing includes metadata,
+  coefficient decode, checksum and cleanup; it does not isolate Fixed cost.
+- [ ] Implement byte-exact JPEG writing, external ICC/Exif/XMP payload insertion,
+  and public reconstruction events/buffers, then audit remaining conformance
+  and whole-project builds on all five target platforms. Full parsing/decode
+  remains the goal; the metadata milestone does not complete reconstruction.
+
 ## Overnight implementation sequence (2026-09-05)
 
 Peter explicitly authorized overnight work at 01:02 EDT. Reuse the inventory

@@ -93,11 +93,12 @@ pub fn decode(dec: *jxl.codec.dec_frame.FrameDecoder, data: []const u8, offset: 
 	}
 	const global = &dec.vardct_global.?;
 	// Smoothing needs neighbors across DC-group boundaries.
-	if (!use_dc and fh.flags & jxl.codec.frame_header.FrameFlags.skip_adaptive_dc_smoothing == 0)
+	if (dec.jpeg_output == null and !use_dc and fh.flags & jxl.codec.frame_header.FrameFlags.skip_adaptive_dc_smoothing == 0)
 		try jxl.codec.dc_smoothing.smooth(dec.allocator, full_dc.planes, global.quantizer.dcSteps(dec.dequant_matrices.dc_quant));
 	const ac_global_id = 1 + dec.frame_dim.num_dc_groups;
 	const modular = &dec.modular_decoder;
 	var acg = try ac_global.Global.decode(dec.allocator, section(readers, ac_global_id), &dec.dequant_matrices, used_acs, dec.frame_dim.num_groups, fh.passes.num_passes, &global.block_context, .{
+		.materialize_weights = dec.jpeg_output == null,
 		.first_stream_id = (jxl.codec.dec_frame.ModularStreamId{ .kind = .quant_table }).id(dec.frame_dim),
 		.global = .{
 			.tree = if (modular.has_tree) modular.tree.items else null,
@@ -106,10 +107,11 @@ pub fn decode(dec: *jxl.codec.dec_frame.FrameDecoder, data: []const u8, offset: 
 		},
 	});
 	defer acg.deinit();
+	if (dec.jpeg_output != null) try @import("jpeg_coefficients.zig").prepare(dec);
 	var output = filter.Image{
 		.width = dec.frame_dim.xsize,
 		.height = dec.frame_dim.ysize,
-		.data = try dec.allocator.alloc(sf.Fixed, 3 * dec.frame_dim.xsize * dec.frame_dim.ysize),
+		.data = if (dec.jpeg_output != null) &.{} else try dec.allocator.alloc(sf.Fixed, 3 * dec.frame_dim.xsize * dec.frame_dim.ysize),
 	};
 	defer dec.allocator.free(output.data);
 	for (0..dec.frame_dim.num_groups) |id| {
@@ -125,7 +127,7 @@ pub fn decode(dec: *jxl.codec.dec_frame.FrameDecoder, data: []const u8, offset: 
 			try group.decodeEntropyPass(dec.allocator, .{ .map = &dc_section.meta.block_map, .dc = dc_section.dc.buckets, .orders = &pass.orders, .context = &global.block_context, .x = local_x, .y = local_y, .shift = @intCast(fh.passes.shift[pid]) }, br, &pass.code, pass.contexts, acg.num_histograms);
 			try dec.modular_decoder.decodeGroup(br, id, pid, false);
 		}
-		try renderGroup(dec, &dc_section.meta, &full_dc, &group, rect, &output);
+		if (dec.jpeg_output != null) try @import("jpeg_coefficients.zig").group(dec, &dc_section.meta, &full_dc, &group, rect) else try renderGroup(dec, &dc_section.meta, &full_dc, &group, rect, &output);
 	}
 	for (dec.toc_entries) |entry| {
 		const br = &readers[entry.id];
@@ -134,6 +136,7 @@ pub fn decode(dec: *jxl.codec.dec_frame.FrameDecoder, data: []const u8, offset: 
 		try br.close();
 	}
 	try dec.modular_decoder.finalizeDecoding();
+	if (dec.jpeg_output != null) return;
 	for (0..3) |c| {
 		const hs = fh.chroma_subsampling.hShift(c);
 		const vs = fh.chroma_subsampling.vShift(c);

@@ -2,7 +2,8 @@
 const std = @import("std");
 const jxl = @import("../root.zig");
 const sf = jxl.base.soft_float;
-pub const Params = struct { width: usize, height: usize, stream_id: usize = 0, global: jxl.codec.ac_metadata.GlobalEntropy = .{} };
+pub const Record = struct { denominator: sf.Fixed = sf.Fixed.zero, values: []i32 = &.{} };
+pub const Params = struct { width: usize, height: usize, stream_id: usize = 0, global: jxl.codec.ac_metadata.GlobalEntropy = .{}, record: ?*Record = null };
 pub fn decode(allocator: std.mem.Allocator, br: *jxl.base.bit_reader.BitReader, params: Params) jxl.base.status.JxlError![]sf.Fixed {
 	return decodeInner(allocator, br, params) catch |err| {
 		return if (!br.allReadsWithinBounds()) error.NotEnoughBytes else err;
@@ -21,12 +22,16 @@ fn decodeInner(allocator: std.mem.Allocator, br: *jxl.base.bit_reader.BitReader,
 	if (image.channels.items.len != 3) return error.GenericError;
 	const weights = try allocator.alloc(sf.Fixed, 3 * params.width * params.height);
 	errdefer allocator.free(weights);
+	const values: []i32 = if (params.record != null) try allocator.alloc(i32, weights.len) else &.{};
+	errdefer allocator.free(values);
 	for (image.channels.items, 0..) |channel, c| {
 		if (channel.w != params.width or channel.h != params.height) return error.GenericError;
 		for (0..channel.h) |y| for (channel.rowConst(y), 0..) |value, x| {
 			if (value <= 0) return error.GenericError;
 			weights[(c * params.height + y) * params.width + x] = sf.div(sf.fromInt(1), sf.mul(denominator, sf.fromInt(value)));
+			if (values.len != 0) values[(c * params.height + y) * params.width + x] = value;
 		};
 	}
+	if (params.record) |record| record.* = .{ .denominator = denominator, .values = values };
 	return weights;
 }
