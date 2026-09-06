@@ -67,22 +67,30 @@ fn compose(dec: *jxl.codec.dec_frame.FrameDecoder, refs: *[4]patch.Reference, in
 	};
 	return output;
 }
-pub fn finish(dec: *jxl.codec.dec_frame.FrameDecoder, refs: *[4]patch.Reference, coalescing: bool) Error!void {
+pub fn finish(dec: *jxl.codec.dec_frame.FrameDecoder, refs: *[4]patch.Reference, coalescing: bool, post_color: bool) Error!void {
 	const fh = &dec.frame_header;
 	const input = dec.rendered_image orelse return error.GenericError;
 	const regular = fh.frame_type == .regular_frame or fh.frame_type == .skip_progressive;
-	const post_color = fh.color_transform == .ycbcr and (regular or !fh.save_before_color_transform);
+	const metadata = dec.metadata;
+	const xyb = metadata.m.xyb_encoded or fh.color_transform == .xyb;
+	const ycbcr = fh.color_transform == .ycbcr;
 	var converted: ?FloatImage = null;
 	defer if (converted) |*image| image.deinit();
 	if (post_color) {
 		converted = try copy(dec.allocator, input);
+		const params = if (ycbcr) null else try jxl.codec.xyb.opsinParams(&metadata.m, &metadata.transform_data);
 		for (0..input.ysize) |y| for (0..input.xsize) |x| {
-			const rgb = @import("chroma.zig").toRgbBinary32(@bitCast(input.rowConst(y, 0)[x]), @bitCast(input.rowConst(y, 1)[x]), @bitCast(input.rowConst(y, 2)[x]));
-			for (rgb, 0..) |value, c| converted.?.row(y, c)[x] = @bitCast(value);
+			if (ycbcr) {
+				const rgb = @import("chroma.zig").toRgbBinary32(@bitCast(input.rowConst(y, 0)[x]), @bitCast(input.rowConst(y, 1)[x]), @bitCast(input.rowConst(y, 2)[x]));
+				for (rgb, 0..) |value, c| converted.?.row(y, c)[x] = @bitCast(value);
+			} else {
+				const rgb = try jxl.codec.xyb.toOutputRgb(input.rowConst(y, 0)[x], input.rowConst(y, 1)[x], input.rowConst(y, 2)[x], &params.?, &metadata.m);
+				for (rgb, 0..) |value, c| converted.?.row(y, c)[x] = value;
+			}
 		};
 	}
 	const pixels = converted orelse input;
-	var output = if (coalescing and regular) try compose(dec, refs, pixels) else try copy(dec.allocator, pixels);
+	var output = if (coalescing and regular and (!xyb or post_color)) try compose(dec, refs, pixels) else try copy(dec.allocator, pixels);
 	errdefer output.deinit();
 	if (fh.canBeReferenced() and (fh.save_before_color_transform or coalescing)) {
 		if (fh.save_as_reference >= 4) return error.GenericError;

@@ -225,7 +225,7 @@ below; pause for decisions only when they prevent safe implementation.
   The integrated frame measures 104.676 s wall / 104.080 s CPU and remains
   byte-exact with the native baseline. Retained post-barrier timing records.
   Commit this slice, verify its remote revision, then run the benchmark suite.
-- [ ] Integrate floating extras in VarDCT and XYB rendering. The isolated
+- [x] Integrate floating extras in VarDCT and XYB rendering. The isolated
   `/tmp/libjxlz-xyb-extras-src` passes 40 upstream files, including half-float
   alpha, filters, equal/unequal resampling, layers, blending and rewind.
   Fixed color joins binary32 extra-channel processing at shared final rendering;
@@ -234,6 +234,34 @@ below; pause for decisions only when they prevent safe implementation.
   Sixteen pre-color patch-reference cases are under test before integration.
   The half-float oracle uses aligned crops: upstream rejected an odd crop after
   downsampling produced an unrepresentable -1/6. Float32 cases retain odd edges.
+  All 16 pre-color patch-reference cases pass too, bringing this slice to 56
+  complete upstream files. The shared output policy passes 50 selected isolated
+  checks. Applied the snapshot; both retained generators reproduce their fixtures
+  byte for byte and all 48 integrated selected checks pass — 20:36 EDT.
+  Run the full suite and production build with the source tree frozen.
+  Spline commit `ba00f4d1` is pushed with matching remote SHA; Mechatron is
+  building it. Its complete benchmark passes: VarDCT 5.695 ms/decode versus
+  upstream 0.356 ms; large Modular 26.648 ms versus 23.726 ms. Histories
+  accompany this slice. Final x86_64 and ARM spline object disassembly contains
+  no native floating arithmetic/conversions/comparisons; the seven ARM compiler
+  runtime helpers pass that instruction check too. These are compile checks.
+  Full Nix unit checks, all 101 CLI suites, 264 required mutation detections,
+  Windows cross-compilation and the production build pass — 21:06 EDT.
+  Spline commit `ba00f4d1` passed Mechatron at 21:03:07 EDT. Commit the extra
+  channel slice and record its complete benchmark before integrating JPEG work.
+- [ ] Parse JPEG reconstruction metadata and retain it in container boxes.
+  The isolated parser matches six upstream records, including every marker,
+  Huffman symbol, scan parameter and metadata payload byte. It agrees on all
+  19,112 single-bit mutations (4,140 accepted; 14,972 rejected) and 2,389
+  truncated prefixes. Synthetic metadata records cover grayscale, RGB/custom
+  IDs, ICC chunks, empty Huffman markers, 16-bit quantization metadata, reset
+  points, extra zero runs, padding, inter-marker data and trailing bytes.
+  Bounded Brotli output and allocation-failure controls pass. Container controls
+  exposed two existing allocation leaks; fixes pass in the isolated copy.
+  Finish public API checks, then integrate and run the full suite/build/CI.
+- [ ] Recover JPEG quantization tables and coefficients from existing VarDCT
+  sections, then implement byte-exact JPEG writing and public reconstruction
+  events/buffers. Metadata parsing alone does not reconstruct a JPEG file.
 - [x] Fix redirected benchmark diagnostics overwriting earlier log records.
   `bench_dequant_ensure_computed` uses positional stdout/stderr writers; the
   scaling diagnostic overwrote the start of the combined `./bm` log. Retained

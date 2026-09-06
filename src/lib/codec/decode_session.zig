@@ -72,15 +72,15 @@ pub const Session = struct {
 		if (!fh.canBeReferenced() and !fh.needsBlending(metadata.m.num_extra_channels) and !ycbcr) return;
 		var has_float = metadata.m.bit_depth.floating_point_sample;
 		for (metadata.m.extra_channel_info[0..metadata.m.num_extra_channels]) |extra| has_float = has_float or extra.bit_depth.floating_point_sample;
-		if (has_float and !metadata.m.xyb_encoded and (fh.color_transform == .none or fh.color_transform == .ycbcr)) return @import("float_reference.zig").finish(dec, &self.refs, self.coalescing);
-		const rendered = dec.rendered_image orelse return error.GenericError;
 		const xyb = metadata.m.xyb_encoded or fh.color_transform == .xyb;
 		if (!xyb and !ycbcr and fh.color_transform != .none) return error.Unsupported;
+		const regular = fh.frame_type == .regular_frame or fh.frame_type == .skip_progressive;
+		const post_color = (xyb and self.coalescing and (!fh.save_before_color_transform or (regular and fh.needsBlending(metadata.m.num_extra_channels)))) or (ycbcr and (regular or !fh.save_before_color_transform));
+		if (has_float and (fh.color_transform == .none or fh.color_transform == .ycbcr or fh.color_transform == .xyb)) return @import("float_reference.zig").finish(dec, &self.refs, self.coalescing, post_color);
+		const rendered = dec.rendered_image orelse return error.GenericError;
 		const input = patch.Image{ .width = rendered.xsize, .height = rendered.ysize, .channels = rendered.channels, .data = try self.allocator.alloc(sf.Fixed, rendered.data.len) };
 		defer self.allocator.free(input.data);
 		for (rendered.data, input.data) |value, *dest| dest.* = try jxl.base.float16.loadFloat32Fixed(value);
-		const regular = fh.frame_type == .regular_frame or fh.frame_type == .skip_progressive;
-		const post_color = (xyb and self.coalescing and (!fh.save_before_color_transform or (regular and fh.needsBlending(metadata.m.num_extra_channels)))) or (ycbcr and (regular or !fh.save_before_color_transform));
 		var converted: ?patch.Image = null;
 		defer if (converted) |image| self.allocator.free(image.data);
 		if (post_color) {

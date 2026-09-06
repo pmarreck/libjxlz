@@ -18,7 +18,16 @@ const Float = struct {
 		return if (depth.floating_point_sample) try @import("float_samples.zig").toBits(raw, depth.bits_per_sample, depth.exponent_bits_per_sample) else @import("../base/fixed_display.zig").bits(try @import("float_samples.zig").toFixed(raw, depth));
 	}
 };
-pub const finish = Implementation(Finite).finish;
+pub fn finish(dec: *jxl.codec.dec_frame.FrameDecoder, output: jxl.codec.vardct_filters.Image) !void {
+	for (dec.metadata.m.extra_channel_info[0..dec.metadata.m.num_extra_channels]) |extra| {
+		if (!extra.bit_depth.floating_point_sample) continue;
+		const words = try dec.allocator.alloc(u32, output.data.len);
+		defer dec.allocator.free(words);
+		for (output.data, words) |value, *dest| dest.* = Finite.bits(value);
+		return finishBinary32(dec, .{ .width = output.width, .height = output.height, .data = words });
+	}
+	return Implementation(Finite).finish(dec, output);
+}
 pub const finishBinary32 = Implementation(Float).finish;
 fn Implementation(comptime sf: type) type {
 	return struct {
