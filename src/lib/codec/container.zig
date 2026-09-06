@@ -80,10 +80,38 @@ const ParsedBoxHeader = struct {
 	next_offset: usize,
 };
 
+test "extended box sizes reject lengths beyond the available input" {
+	var bytes: [28]u8 = @splat(0);
+	std.mem.writeInt(u32, bytes[12..16], 1, .big);
+	@memcpy(bytes[16..20], "test");
+	std.mem.writeInt(u64, bytes[20..28], 16, .big);
+	const exact = try parseBoxHeader(&bytes, 12);
+	try std.testing.expectEqual(@as(usize, 28), exact.next_offset);
+	try std.testing.expectEqual(@as(usize, 0), exact.payload.len);
+	for ([_]u64{ 17, std.math.maxInt(u64) - 11, std.math.maxInt(u64) }) |size| {
+		std.mem.writeInt(u64, bytes[20..28], size, .big);
+		try std.testing.expectError(error.GenericError, parseBoxHeader(&bytes, 12));
+	}
+}
+
+test "box headers reject invalid offsets and truncated headers" {
+	var bytes: [28]u8 = @splat(0);
+	std.mem.writeInt(u32, bytes[12..16], 1, .big);
+	std.mem.writeInt(u64, bytes[20..28], 16, .big);
+	for (0..28) |len| {
+		try std.testing.expectError(error.GenericError, parseBoxHeader(bytes[0..len], 12));
+	}
+	for ([_]usize{ 29, std.math.maxInt(usize) - 7, std.math.maxInt(usize) }) |offset| {
+		try std.testing.expectError(error.GenericError, parseBoxHeader(&bytes, offset));
+	}
+}
+
 /// Parses one BMFF box header, including the `size == 0` open-ended and
 /// `size == 1` extended-size forms, so container logic can stay size-form agnostic.
 fn parseBoxHeader(container_bytes: []const u8, offset: usize) !ParsedBoxHeader {
-	if (offset + 8 > container_bytes.len) return error.GenericError;
+	if (offset > container_bytes.len) return error.GenericError;
+	const remaining = container_bytes.len - offset;
+	if (remaining < 8) return error.GenericError;
 
 	const size32 = std.mem.readInt(u32, @ptrCast(container_bytes[offset .. offset + 4]), .big);
 	const box_type: [4]u8 = .{
@@ -98,7 +126,7 @@ fn parseBoxHeader(container_bytes: []const u8, offset: usize) !ParsedBoxHeader {
 	if (size32 == 0) {
 		raw_size = container_bytes.len - offset;
 	} else if (size32 == 1) {
-		if (offset + 16 > container_bytes.len) return error.GenericError;
+		if (remaining < 16) return error.GenericError;
 		raw_size = std.mem.readInt(u64, @ptrCast(container_bytes[offset + 8 .. offset + 16]), .big);
 		payload_offset = offset + 16;
 		if (raw_size < 16) return error.GenericError;
@@ -106,9 +134,8 @@ fn parseBoxHeader(container_bytes: []const u8, offset: usize) !ParsedBoxHeader {
 		return error.GenericError;
 	}
 
-	const end_u64 = @as(u64, offset) + raw_size;
-	if (end_u64 > container_bytes.len) return error.GenericError;
-	const end: usize = @intCast(end_u64);
+	if (raw_size > remaining) return error.GenericError;
+	const end = offset + @as(usize, @intCast(raw_size));
 	if (payload_offset > end) return error.GenericError;
 
 	return .{

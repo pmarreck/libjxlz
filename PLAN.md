@@ -2,6 +2,50 @@
 
 ## Active continuation (2026-09-06 10:24 EDT)
 
+- [ ] Resume from the handoff at Peter's request (2026-09-06 19:23 EDT;
+  continuing the earlier 13:23 resumption).
+  Finish container bounds, then Brotli resource errors and strict JPEG metadata.
+  Done for each slice means witnessed failing regressions, passing focused and
+  full tests, a passing build, and a focused commit. Check truncated headers and
+  invalid offsets alongside extended sizes; allocation failure must remain
+  distinguishable from malformed input. Continue the recorded coverage sequence.
+- [x] Write a fresh handoff and pause implementation at Peter's explicit request
+  after a second automated content-filter interruption (2026-09-06 13:07 EDT).
+  Preserve isolated regressions, review reports, benchmark results and CI state.
+  Saved `HANDOFF-20260906131200EDT.md` and persistent snapshot
+  `in-progress-20260906-jpeg/handoff-1311/` (2026-09-06 13:15 EDT).
+- [x] Ship JPEG writing/public buffers as
+  `28a2bb6b1106140f88f5a71d822313da03c8cfee`; origin matches (13:01 EDT).
+  Local full tests and build pass. Exact-commit Mechatron passed at
+  13:39:01 EDT (2267 seconds), verified at 19:24. The pinned post-writer benchmark stopped at f64 arithmetic guards
+  (+26.40% multiply CPU, +6.50% stencil); preserve its history and investigate
+  on resume. This is not a completed passing benchmark.
+- [x] Finish the extended-box regression (2026-09-06 19:43 EDT).
+  Both extended-size and invalid-offset tests reproduced
+  overflow panics. Remaining-length checks pass all 23 selected container/root
+  tests. Full ./test and ./build passed, including all 102 CLI suites,
+  264 required mutation detections and Windows cross-compilation.
+  Logs: /tmp/libjxlz-resume-container-{test,build}-20260906.log.
+- [ ] Review Brotli stream allocation-error classification before integrating
+  strict JPEG payload validation. The isolated payload controls pass, but native
+  decoder allocation errors currently become GenericError and could be reported
+  as corrupt input by the proposed catch. Preserve resource failures separately.
+  Isolated native allocation injection and complete native error-code checks
+  witnessed failures, then passed. Six allocation codes now map to OutOfMemory;
+  non-format native failures remain indeterminate. Eight Brotli/status checks
+  and 21 selected JPEG checks pass, including strict payload verdicts and
+  resource-limit precedence. Integrate after the container bounds commit.
+  Current sources/logs are preserved under
+  /mnt/devcache/projects/libjxlz-0d943c99bed2/in-progress-20260906-resume-1923/.
+- [ ] Integrate the final-frame completion fix after strict JPEG validation.
+  The 39-byte upstream-checked control falsely passed strict and public decode
+  after clearing is_last. Both regressions now pass in isolation; completion
+  follows is_last, and exhausted unfinished input requests more input while open
+  or reports truncation when closed. Five selected tests pass (19:38 EDT).
+  Source: /tmp/libjxlz-final-frame-resume-20260906/.
+- [ ] Strengthen independent controls after the codec fixes: distinguish crashes
+  from clean rejection, enforce mismatch-count bounds, and cover the complete
+  labeled-corpus classifier domain. See the retained control-audit report.
 - [x] Preserve the audit findings after an automated content filter stopped
   the memory-review worker (Peter, 2026-09-06 12:57 EDT). Continue authorized
   parser work; the filter notice supplied no specific technical explanation.
