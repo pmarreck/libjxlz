@@ -1,5 +1,6 @@
 const std = @import("std");
 const brotli = @import("../base/brotli.zig");
+const jpeg = @import("jpeg_reconstruction.zig");
 
 pub const signature_box = [_]u8{ 0x00, 0x00, 0x00, 0x0C, 0x4A, 0x58, 0x4C, 0x20, 0x0D, 0x0A, 0x87, 0x0A };
 pub const ftyp_payload = [_]u8{ 'j', 'x', 'l', ' ', 0, 0, 0, 0, 'j', 'x', 'l', ' ' };
@@ -14,8 +15,10 @@ pub const OwnedBox = struct {
 	contents: []u8,
 	decompressed_box_type: ?[4]u8 = null,
 	decompressed_contents: ?[]u8 = null,
+	reconstruction: ?jpeg.Data = null,
 
 	pub fn deinit(self: *OwnedBox, allocator: std.mem.Allocator) void {
+		if (self.reconstruction) |*data| data.deinit();
 		if (self.decompressed_contents) |contents| allocator.free(contents);
 		allocator.free(self.contents);
 		self.* = .{
@@ -139,10 +142,12 @@ fn appendBoxRuntime(list: *std.ArrayListUnmanaged(u8), allocator: std.mem.Alloca
 }
 
 fn appendOwnedBox(list: *std.ArrayListUnmanaged(OwnedBox), allocator: std.mem.Allocator, box_type: [4]u8, raw_size: u64, payload: []const u8) !void {
+	const contents = try allocator.dupe(u8, payload);
+	errdefer allocator.free(contents);
 	try list.append(allocator, .{
 		.box_type = box_type,
 		.raw_size = raw_size,
-		.contents = try allocator.dupe(u8, payload),
+		.contents = contents,
 	});
 }
 
@@ -207,6 +212,7 @@ pub fn extractCodestreamAndBoxes(allocator: std.mem.Allocator, container_bytes: 
 		owned_boxes.deinit(allocator);
 	}
 	var codestream: ?[]u8 = null;
+	errdefer if (codestream) |bytes| allocator.free(bytes);
 	var saw_jxlp = false;
 	var saw_last_jxlp = false;
 	var next_jxlp_index: u32 = 0;
@@ -237,6 +243,9 @@ pub fn extractCodestreamAndBoxes(allocator: std.mem.Allocator, container_bytes: 
 				try validateBrobPayload(allocator, payload);
 			}
 			try appendOwnedBox(&owned_boxes, allocator, header.box_type, header.raw_size, payload);
+			if (std.mem.eql(u8, &header.box_type, "jbrd")) {
+				owned_boxes.items[owned_boxes.items.len - 1].reconstruction = try jpeg.parse(allocator, payload);
+			}
 		}
 
 		offset = header.next_offset;

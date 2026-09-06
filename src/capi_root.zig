@@ -6453,4 +6453,5 @@ test {
 	_ = @import("capi/float_spline_test.zig");
 	_ = @import("capi/float_xyb_extra_test.zig");
 	_ = @import("capi/float_xyb_extra_patch_test.zig");
+	_ = @import("capi/jpeg_reconstruction_metadata_test.zig");
 }

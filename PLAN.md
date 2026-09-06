@@ -249,19 +249,42 @@ below; pause for decisions only when they prevent safe implementation.
   Windows cross-compilation and the production build pass — 21:06 EDT.
   Spline commit `ba00f4d1` passed Mechatron at 21:03:07 EDT. Commit the extra
   channel slice and record its complete benchmark before integrating JPEG work.
-- [ ] Parse JPEG reconstruction metadata and retain it in container boxes.
+  Commit `337ba911` is pushed with matching remote SHA. Its complete benchmark
+  passes: VarDCT 5.754 ms/decode versus upstream 0.358 ms; large Modular
+  26.763 ms versus 23.709 ms. Mechatron is building the exact commit.
+- [x] Parse JPEG reconstruction metadata and retain it in container boxes.
   The isolated parser matches six upstream records, including every marker,
   Huffman symbol, scan parameter and metadata payload byte. It agrees on all
-  19,112 single-bit mutations (4,140 accepted; 14,972 rejected) and 2,389
+  19,104 single-bit mutations (4,135 accepted; 14,969 rejected) and 2,388
   truncated prefixes. Synthetic metadata records cover grayscale, RGB/custom
   IDs, ICC chunks, empty Huffman markers, 16-bit quantization metadata, reset
   points, extra zero runs, padding, inter-marker data and trailing bytes.
   Bounded Brotli output and allocation-failure controls pass. Container controls
   exposed two existing allocation leaks; fixes pass in the isolated copy.
   Finish public API checks, then integrate and run the full suite/build/CI.
+  Public valid-container, malformed-metadata and rewind controls pass. Added
+  explicit padding-flag retention, including an empty padding list; its new
+  test failed before the fix. Both retained generators reproduce their fixtures
+  byte for byte. All 20 integrated selected checks pass — 21:15 EDT.
+  Run the full suite and production build with the source tree frozen. Recover
+  coefficients in a separate copy while these checks run.
+  Full Nix unit checks, all 101 CLI suites, 264 required mutation detections,
+  Windows cross-compilation and the production build pass — 21:44 EDT.
+  Extra-channel commit `337ba911` passed Mechatron at 21:41:25 EDT. Commit
+  metadata parsing and measure its benchmark before coefficient integration.
 - [ ] Recover JPEG quantization tables and coefficients from existing VarDCT
   sections, then implement byte-exact JPEG writing and public reconstruction
   events/buffers. Metadata parsing alone does not reconstruct a JPEG file.
+  The isolated coefficient path matches the original 1x1 JPEG and 80 synthetic
+  upstream JPEGs: all 64 YCbCr sampling combinations, RGB, grayscale, restart
+  markers and actual multiple AC passes. Allocation-failure controls pass.
+  An unconditional luma-block read failed on unusual sampling and is fixed;
+  intended RGB fixtures initially carried JFIF and were corrected after a
+  header assertion failed. Upstream probes confirm nonzero chroma-from-luma
+  factors in six cases. Skipping unused pixel-weight tables removes a 12 MiB
+  allocation; small coefficient decoding now passes a one MiB allocator budget.
+  Modular/XYB rejection passes. Extend 16-bit quantization coverage, retain
+  these controls, then integrate after metadata checks and benchmarking finish.
 - [x] Fix redirected benchmark diagnostics overwriting earlier log records.
   `bench_dequant_ensure_computed` uses positional stdout/stderr writers; the
   scaling diagnostic overwrote the start of the combined `./bm` log. Retained

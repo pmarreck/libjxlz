@@ -39,6 +39,7 @@ pub const codec = struct {
 	pub const icc_codec = @import("codec/icc_codec.zig");
 	pub const icc_profiles = @import("codec/icc_profiles.zig");
 	pub const container = @import("codec/container.zig");
+	pub const jpeg_reconstruction = @import("codec/jpeg_reconstruction.zig");
 	pub const frame_header = @import("codec/frame_header.zig");
 	pub const toc = @import("codec/toc.zig");
 	pub const enc_toc = @import("codec/enc_toc.zig");
@@ -193,6 +194,9 @@ test {
 	_ = @import("codec/float_noise_allocation_test.zig");
 	_ = @import("codec/float_spline_allocation_test.zig");
 	_ = @import("codec/float_xyb_extra_allocation_test.zig");
+	_ = @import("codec/jpeg_reconstruction_test.zig");
+	_ = @import("codec/jpeg_reconstruction_container_test.zig");
+	_ = @import("base/brotli_bounded_test.zig");
 
 	// Modular
 	_ = @import("modular/ma_common.zig");

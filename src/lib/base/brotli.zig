@@ -40,10 +40,11 @@ fn compressWithC(allocator: std.mem.Allocator, input: []const u8) JxlError![]u8 
 /// Decompresses a Brotli payload of unknown final size by streaming into a
 /// growable buffer, which is exactly what `brob` metadata boxes require.
 pub fn decompress(allocator: std.mem.Allocator, compressed: []const u8) JxlError![]u8 {
-	return decompressWithC(allocator, compressed);
+	return decompressBounded(allocator, compressed, std.math.maxInt(usize));
 }
 
-fn decompressWithC(allocator: std.mem.Allocator, compressed: []const u8) JxlError![]u8 {
+/// Rejects output beyond the caller's byte limit before growing the result.
+pub fn decompressBounded(allocator: std.mem.Allocator, compressed: []const u8, limit: usize) JxlError![]u8 {
 	var out: std.ArrayListUnmanaged(u8) = .empty;
 	errdefer out.deinit(allocator);
 
@@ -66,6 +67,7 @@ fn decompressWithC(allocator: std.mem.Allocator, compressed: []const u8) JxlErro
 			null,
 		);
 		const produced = chunk.len - available_out;
+		if (produced > limit - out.items.len) return error.GenericError;
 		if (produced != 0) try out.appendSlice(allocator, chunk[0..produced]);
 
 		switch (result) {
