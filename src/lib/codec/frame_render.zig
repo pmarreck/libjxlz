@@ -68,15 +68,14 @@ fn Implementation(comptime sf: type) type {
 				};
 			}
 			if (dec.splines.hasAny()) {
-				if (comptime sf == Float) return error.Unsupported else {
-					const cfl = if (dec.vardct_global) |global| global.color_correlation.base else [2]sf.Fixed{ sf.Fixed.zero, sf.fromInt(1) };
-					try dec.splines.initializeDrawCache(width, height, .{ .base_correlation_x = @bitCast(sf.bits(cfl[0])), .base_correlation_b = @bitCast(sf.bits(cfl[1])) });
-					var overlay = try jxl.codec.render.FloatImage.init(dec.allocator, output.width, output.height, 3);
-					defer overlay.deinit();
-					for (output.data, overlay.data) |value, *dest| dest.* = @bitCast(sf.bits(value));
-					try overlay.applySplines(&dec.splines);
-					for (overlay.data, output.data) |value, *dest| dest.* = try jxl.base.float16.loadFloat32Fixed(value);
-				}
+				const cfl = if (dec.vardct_global) |global| global.color_correlation.base else [2]original.Fixed{ original.Fixed.zero, original.fromInt(1) };
+				const display = @import("../base/fixed_display.zig");
+				try dec.splines.initializeDrawCache(width, height, .{ .base_correlation_x = @bitCast(display.bits(cfl[0])), .base_correlation_b = @bitCast(display.bits(cfl[1])) });
+				var overlay = try jxl.codec.render.FloatImage.init(dec.allocator, output.width, output.height, 3);
+				defer overlay.deinit();
+				for (output.data, overlay.data) |value, *dest| dest.* = @bitCast(sf.bits(value));
+				try overlay.applySplines(&dec.splines);
+				for (overlay.data, output.data) |value, *dest| dest.* = if (sf == Float) @bitCast(value) else try jxl.base.float16.loadFloat32Fixed(value);
 			}
 			var rendered = try jxl.codec.render.FloatImage.init(dec.allocator, width, height, channels);
 			errdefer rendered.deinit();

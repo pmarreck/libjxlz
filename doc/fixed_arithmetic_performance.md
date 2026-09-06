@@ -90,3 +90,50 @@ The packaged arithmetic benchmark uses the baseline x86_64 CPU target, so its
 kernel numbers should not be treated as paired comparisons with the native
 target table above. Raw CPU and wall times are in `arithmetic_history.jsonl`
 and `public_api_cpu_history.jsonl`; the dequantization history remains unseeded.
+
+## Spline integer arithmetic, September 5 evening
+
+The spline port replaces native binary32 operations with integer arithmetic,
+including an exactly rounded fused multiply-add. This is a different numeric
+representation from the 63-bit Fixed kernel measured above. Square root uses
+an integer root; logarithm and hypotenuse use Fixed. Binary32 rounding remains
+visible at the same spline operations as in upstream.
+
+The 2048×2048 spline fixture has 7,448 curve segments and 1,185,676 row-segment
+entries. On the same Threadripper 3990X, baseline x86_64 ReleaseFast frame
+decoding took 8.020 s wall / 7.965 s CPU with native spline arithmetic and
+104.697 s wall / 104.051 s CPU with the integer port. All 12,582,912 output
+components match byte for byte. These are single paired measurements, taken
+before the integer comparison barriers were added. The roughly 13× slowdown
+is specific to this spline-heavy frame, and remains an optimization task.
+
+An earlier integer drawing version took 126.78 s. A bounded profile of that
+version attributed 59% of sampled cycles to its 128-bit FMA and 14% to
+binary32 multiplication. The current FMA uses a 64-bit accumulator with
+61 retained significant bits and sticky tails. It passes 208,000 native FMA
+comparisons and 200,000 correlated-cancellation comparisons against an exact
+576-bit accumulator. The exact control remains in `binary32_wide_control.zig`.
+
+Five native-target microbenchmark runs measured median CPU cost per FMA at
+0.495 ns native, 44.150 ns exact wide, 13.330 ns intermediate 128-bit, and
+8.904 ns current 64-bit. Native code can vectorize; this ratio does not measure
+the cost of Fixed arithmetic. Raw CPU/wall records are retained under
+`tests/benchmark/20260905/spline_*.jsonl`. The retained
+`src/bench_spline_fma.zig` compares native, exact wide and current arithmetic;
+`src/bench_spline_frame.zig` measures the complete embedded frame and can write
+raw pixels to an optional path after timing. Build both with `zig build-exe
+-O ReleaseFast -lc`; use `-mcpu=native` for the FMA comparison and the default
+x86_64 CPU target for the frame comparison, inside `nix develop -c`.
+
+`tests/cli/spline_integer_codegen.sh` compiles the spline cache/drawing probe
+without libc for all five supported targets and rejects native arithmetic,
+conversions and comparisons in its LLVM IR. ABI storage, sign masking and
+classification remain permitted. Compiler-runtime helper instruction checks
+and native arithmetic controls provide separate evidence; these cross-builds
+do not establish runtime correctness or performance on ARM or Windows.
+
+The integrated implementation, including integer comparison barriers, measures
+104.676 s wall / 104.080 s CPU on the same frame. Its full output still matches
+the native baseline byte for byte. The barriers produced no material change
+in this paired measurement. These final records are `spline_integer_frame.jsonl`
+and `spline_fma.jsonl` in the same dated benchmark directory.

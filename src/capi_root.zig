@@ -6450,4 +6450,5 @@ test {
 	_ = @import("capi/float_extra_upsampling_test.zig");
 	_ = @import("capi/float_modular_chroma_test.zig");
 	_ = @import("capi/float_noise_test.zig");
+	_ = @import("capi/float_spline_test.zig");
 }

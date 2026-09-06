@@ -1,0 +1,3 @@
+{"mode":"native","count":4096,"repeat":1024,"cpu_ns":2765590,"wall_ns":2790717,"checksum":8799965438306}
+{"mode":"wide","count":4096,"repeat":1024,"cpu_ns":182767834,"wall_ns":183730567,"checksum":8799965438306}
+{"mode":"scalar64","count":4096,"repeat":1024,"cpu_ns":37609839,"wall_ns":37819151,"checksum":8799965438306}

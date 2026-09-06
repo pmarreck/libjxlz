@@ -1,4 +1,5 @@
 const std = @import("std");
+const gm = @import("../base/binary32_geometry.zig");
 const BitReader = @import("../base/bit_reader.zig").BitReader;
 const bits = @import("../base/bits.zig");
 const common = @import("../base/common.zig");
@@ -16,11 +17,11 @@ pub const ColorCorrelation = struct {
 	color_factor: f32 = 84.0,
 
 	pub fn YtoXRatio(self: ColorCorrelation, x_factor: i32) f32 {
-		return self.base_correlation_x + @as(f32, @floatFromInt(x_factor)) / self.color_factor;
+		return gm.add(self.base_correlation_x, gm.div(gm.fromInt(x_factor), self.color_factor));
 	}
 
 	pub fn YtoBRatio(self: ColorCorrelation, b_factor: i32) f32 {
-		return self.base_correlation_b + @as(f32, @floatFromInt(b_factor)) / self.color_factor;
+		return gm.add(self.base_correlation_b, gm.div(gm.fromInt(b_factor), self.color_factor));
 	}
 };
 
@@ -29,7 +30,7 @@ pub const Point = struct {
 	y: f32 = 0.0,
 
 	pub fn approxEq(a: Point, b: Point, tolerance: f32) bool {
-		return @abs(a.x - b.x) <= tolerance and @abs(a.y - b.y) <= tolerance;
+		return gm.le(gm.abs(gm.sub(a.x, b.x)), tolerance) and gm.le(gm.abs(gm.sub(a.y, b.y)), tolerance);
 	}
 };
 
@@ -110,22 +111,22 @@ pub const SplineSegment = struct {
 
 fn adjustedQuant(adjustment: i32) f32 {
 	return if (adjustment >= 0)
-		1.0 + 0.125 * @as(f32, @floatFromInt(adjustment))
+		gm.add(1.0, gm.mul(0.125, gm.fromInt(adjustment)))
 	else
-		1.0 / (1.0 - 0.125 * @as(f32, @floatFromInt(adjustment)));
+		gm.div(1.0, gm.sub(1.0, gm.mul(0.125, gm.fromInt(adjustment))));
 }
 
 fn invAdjustedQuant(adjustment: i32) f32 {
 	return if (adjustment >= 0)
-		1.0 / (1.0 + 0.125 * @as(f32, @floatFromInt(adjustment)))
+		gm.div(1.0, gm.add(1.0, gm.mul(0.125, gm.fromInt(adjustment))))
 	else
-		1.0 - 0.125 * @as(f32, @floatFromInt(adjustment));
+		gm.sub(1.0, gm.mul(0.125, gm.fromInt(adjustment)));
 }
 
-fn scalarToF64(value: anytype) f64 {
+fn outsideSplineRange(value: anytype) bool {
 	return switch (@typeInfo(@TypeOf(value))) {
-		.int, .comptime_int => @floatFromInt(value),
-		.float, .comptime_float => value,
+		.int, .comptime_int => value >= (1 << 23) or value <= -(1 << 23),
+		.float, .comptime_float => gm.le(kSplinePosLimit, value) or gm.le(value, -kSplinePosLimit),
 		else => @compileError("unsupported spline scalar type"),
 	};
 }
@@ -133,9 +134,7 @@ fn scalarToF64(value: anytype) f64 {
 /// Guards dequantized control points and delta terms against absurd coordinates
 /// that would later overflow Catmull-Rom or draw-cache math.
 fn validateSplinePointPos(x: anytype, y: anytype) !void {
-	const xf = scalarToF64(x);
-	const yf = scalarToF64(y);
-	if (xf >= kSplinePosLimit or xf <= -kSplinePosLimit or yf >= kSplinePosLimit or yf <= -kSplinePosLimit) {
+	if (outsideSplineRange(x) or outsideSplineRange(y)) {
 		return error.GenericError;
 	}
 }
@@ -200,14 +199,14 @@ pub const QuantizedSpline = struct {
 		errdefer result.deinit(allocator);
 
 		const starting_point = original.control_points[0];
-		var previous_x: i32 = @intFromFloat(@round(starting_point.x));
-		var previous_y: i32 = @intFromFloat(@round(starting_point.y));
+		var previous_x: i32 = @intCast(gm.toInt(gm.round(starting_point.x)));
+		var previous_y: i32 = @intCast(gm.toInt(gm.round(starting_point.y)));
 		var previous_delta_x: i32 = 0;
 		var previous_delta_y: i32 = 0;
 
 		for (original.control_points[1..], 0..) |point, i| {
-			const new_x: i32 = @intFromFloat(@round(point.x));
-			const new_y: i32 = @intFromFloat(@round(point.y));
+			const new_x: i32 = @intCast(gm.toInt(gm.round(point.x)));
+			const new_y: i32 = @intCast(gm.toInt(gm.round(point.y)));
 			const new_delta_x = new_x - previous_x;
 			const new_delta_y = new_y - previous_y;
 			result.control_points[i] = .{
@@ -227,14 +226,14 @@ pub const QuantizedSpline = struct {
 			for (0..32) |i| {
 				const dct_factor: f32 = if (i == 0) kSqrt2 else 1.0;
 				const inv_dct_factor: f32 = if (i == 0) kSqrt0_5 else 1.0;
-				const restored_y = @as(f32, @floatFromInt(result.color_dct[1][i])) * inv_dct_factor * kChannelWeight[1] * inv_quant;
-				const decorrelated = original.color_dct[c][i] - factor * restored_y;
-				result.color_dct[c][i] = toQuantizedInt(decorrelated * dct_factor * quant / kChannelWeight[c]);
+				const restored_y = gm.mul(gm.mul(gm.mul(gm.fromInt(result.color_dct[1][i]), inv_dct_factor), kChannelWeight[1]), inv_quant);
+				const decorrelated = gm.sub(original.color_dct[c][i], gm.mul(factor, restored_y));
+				result.color_dct[c][i] = toQuantizedInt(gm.div(gm.mul(gm.mul(decorrelated, dct_factor), quant), kChannelWeight[c]));
 			}
 		}
 		for (0..32) |i| {
 			const dct_factor: f32 = if (i == 0) kSqrt2 else 1.0;
-			result.sigma_dct[i] = toQuantizedInt(original.sigma_dct[i] * dct_factor * quant / kChannelWeight[3]);
+			result.sigma_dct[i] = toQuantizedInt(gm.div(gm.mul(gm.mul(original.sigma_dct[i], dct_factor), quant), kChannelWeight[3]));
 		}
 
 		return result;
@@ -258,12 +257,12 @@ pub const QuantizedSpline = struct {
 		result.control_points = try allocator.alloc(Point, self.control_points.len + 1);
 		errdefer result.deinit(allocator);
 
-		const px = @round(starting_point.x);
-		const py = @round(starting_point.y);
+		const px = gm.round(starting_point.x);
+		const py = gm.round(starting_point.y);
 		try validateSplinePointPos(px, py);
-		var current_x: i32 = @intFromFloat(px);
-		var current_y: i32 = @intFromFloat(py);
-		result.control_points[0] = .{ .x = @floatFromInt(current_x), .y = @floatFromInt(current_y) };
+		var current_x: i32 = @intCast(gm.toInt(px));
+		var current_y: i32 = @intCast(gm.toInt(py));
+		result.control_points[0] = .{ .x = gm.fromInt(current_x), .y = gm.fromInt(current_y) };
 		var current_delta_x: i32 = 0;
 		var current_delta_y: i32 = 0;
 		var manhattan_distance: u64 = 0;
@@ -277,39 +276,39 @@ pub const QuantizedSpline = struct {
 			current_x += current_delta_x;
 			current_y += current_delta_y;
 			try validateSplinePointPos(current_x, current_y);
-			result.control_points[i + 1] = .{ .x = @floatFromInt(current_x), .y = @floatFromInt(current_y) };
+			result.control_points[i + 1] = .{ .x = gm.fromInt(current_x), .y = gm.fromInt(current_y) };
 		}
 
 		const inv_quant = invAdjustedQuant(quantization_adjustment);
 		for (0..3) |c| {
 			for (0..32) |i| {
 				const inv_dct_factor: f32 = if (i == 0) kSqrt0_5 else 1.0;
-				result.color_dct[c][i] = @as(f32, @floatFromInt(self.color_dct[c][i])) * inv_dct_factor * kChannelWeight[c] * inv_quant;
+				result.color_dct[c][i] = gm.mul(gm.mul(gm.mul(gm.fromInt(self.color_dct[c][i]), inv_dct_factor), kChannelWeight[c]), inv_quant);
 			}
 		}
 		for (0..32) |i| {
-			result.color_dct[0][i] += y_to_x * result.color_dct[1][i];
-			result.color_dct[2][i] += y_to_b * result.color_dct[1][i];
+			result.color_dct[0][i] = gm.add(result.color_dct[0][i], gm.mul(y_to_x, result.color_dct[1][i]));
+			result.color_dct[2][i] = gm.add(result.color_dct[2][i], gm.mul(y_to_b, result.color_dct[1][i]));
 		}
 
 		var width_estimate: u64 = 0;
 		var color: [3]u64 = .{ 0, 0, 0 };
 		for (0..3) |c| {
 			for (0..32) |i| {
-				color[c] += @intFromFloat(@ceil(inv_quant * @abs(@as(f32, @floatFromInt(self.color_dct[c][i])))));
+				color[c] += @intCast(gm.toInt(gm.ceil(gm.mul(inv_quant, gm.abs(gm.fromInt(self.color_dct[c][i]))))));
 			}
 		}
-		color[0] += @as(u64, @intFromFloat(@ceil(@abs(y_to_x)))) * color[1];
-		color[2] += @as(u64, @intFromFloat(@ceil(@abs(y_to_b)))) * color[1];
+		color[0] += @as(u64, @intCast(gm.toInt(gm.ceil(gm.abs(y_to_x))))) * color[1];
+		color[2] += @as(u64, @intCast(gm.toInt(gm.ceil(gm.abs(y_to_b))))) * color[1];
 		const max_color = @max(color[1], @max(color[0], color[2]));
 		const logcolor = @max(@as(u64, 1), @as(u64, bits.ceilLog2Nonzero(@as(u64, 1) + max_color)));
-		const weight_limit = @ceil(@sqrt((@as(f32, @floatFromInt(area_limit)) / @as(f32, @floatFromInt(logcolor))) / @max(@as(f32, 1.0), @as(f32, @floatFromInt(manhattan_distance)))));
+		const weight_limit = gm.ceil(gm.sqrt(gm.div(gm.div(gm.fromInt(@intCast(area_limit)), gm.fromInt(@intCast(logcolor))), gm.max(1.0, gm.fromInt(@intCast(manhattan_distance))))));
 
 		for (0..32) |i| {
 			const inv_dct_factor: f32 = if (i == 0) kSqrt0_5 else 1.0;
-			result.sigma_dct[i] = @as(f32, @floatFromInt(self.sigma_dct[i])) * inv_dct_factor * kChannelWeight[3] * inv_quant;
-			const weight_f = @ceil(inv_quant * @abs(@as(f32, @floatFromInt(self.sigma_dct[i]))));
-			const weight = @as(u64, @intFromFloat(@min(weight_limit, @max(@as(f32, 1.0), weight_f))));
+			result.sigma_dct[i] = gm.mul(gm.mul(gm.mul(gm.fromInt(self.sigma_dct[i]), inv_dct_factor), kChannelWeight[3]), inv_quant);
+			const weight_f = gm.ceil(gm.mul(inv_quant, gm.abs(gm.fromInt(self.sigma_dct[i]))));
+			const weight = @as(u64, @intCast(gm.toInt(gm.min(weight_limit, gm.max(1.0, weight_f)))));
 			width_estimate += weight * weight * logcolor;
 		}
 
@@ -471,8 +470,8 @@ pub const Splines = struct {
 			defer self.allocator.free(points_to_draw);
 
 			if (points_to_draw.len < 2) continue;
-			const arc_length = @as(f32, @floatFromInt(points_to_draw.len - 2)) * kDesiredRenderingDistance + points_to_draw[points_to_draw.len - 1].multiplier;
-			if (arc_length <= 0.0) continue;
+			const arc_length = gm.add(gm.mul(gm.fromInt(@intCast(points_to_draw.len - 2)), kDesiredRenderingDistance), points_to_draw[points_to_draw.len - 1].multiplier);
+			if (gm.le(arc_length, 0.0)) continue;
 			try segmentsFromPoints(&spline, points_to_draw, arc_length, &segments, &segments_by_y, self.allocator);
 		}
 
@@ -520,9 +519,10 @@ fn hasAdjacentDuplicatePoints(points: []const Point) bool {
 }
 
 fn toQuantizedInt(value: f32) i32 {
-	const max = @as(f32, @floatFromInt(std.math.maxInt(i32) - 127));
+	const max: f32 = comptime @floatFromInt(std.math.maxInt(i32) - 127);
 	const min = -max;
-	return @intFromFloat(@round(common.clamp1(value, min, max)));
+	const clamped = if (gm.lt(value, min)) min else if (gm.lt(max, value)) max else value;
+	return @intCast(gm.toInt(gm.round(clamped)));
 }
 
 const Vector = struct {
@@ -530,28 +530,28 @@ const Vector = struct {
 	y: f32,
 
 	fn add(a: Vector, b: Vector) Vector {
-		return .{ .x = a.x + b.x, .y = a.y + b.y };
+		return .{ .x = gm.add(a.x, b.x), .y = gm.add(a.y, b.y) };
 	}
 
 	fn sub(a: Vector, b: Vector) Vector {
-		return .{ .x = a.x - b.x, .y = a.y - b.y };
+		return .{ .x = gm.sub(a.x, b.x), .y = gm.sub(a.y, b.y) };
 	}
 
 	fn scale(k: f32, vec: Vector) Vector {
-		return .{ .x = k * vec.x, .y = k * vec.y };
+		return .{ .x = gm.mul(k, vec.x), .y = gm.mul(k, vec.y) };
 	}
 
 	fn squaredNorm(self: Vector) f32 {
-		return self.x * self.x + self.y * self.y;
+		return gm.add(gm.mul(self.x, self.x), gm.mul(self.y, self.y));
 	}
 };
 
 fn pointAddVector(point: Point, vec: Vector) Point {
-	return .{ .x = point.x + vec.x, .y = point.y + vec.y };
+	return .{ .x = gm.add(point.x, vec.x), .y = gm.add(point.y, vec.y) };
 }
 
 fn pointSub(a: Point, b: Point) Vector {
-	return .{ .x = a.x - b.x, .y = a.y - b.y };
+	return .{ .x = gm.sub(a.x, b.x), .y = gm.sub(a.y, b.y) };
 }
 
 /// Approximates cosine with upstream libjxl's FastCosf polynomial/range
@@ -561,37 +561,39 @@ fn fastCos(x: f32) f32 {
 	const pi2_inv: f32 = @bitCast(@as(u32, 0x3e22f983));
 	const pi: f32 = @bitCast(@as(u32, 0x40490fdb));
 	const pi_half: f32 = @bitCast(@as(u32, 0x3fc90fdb));
-	const periods = @floor(x * pi2_inv);
-	const xmodpi2 = @mulAdd(f32, -periods, pi2, x);
-	const x_pi = @min(xmodpi2, pi2 - xmodpi2);
-	const above_pihalf = x_pi >= pi_half;
-	const x_pihalf = if (above_pihalf) pi - x_pi else x_pi;
-	const xs = x_pihalf * 0.25;
-	const x2 = xs * xs;
-	const x4 = x2 * x2;
-	const cosx_prescaling = @mulAdd(f32, x4, 0.06960438, @mulAdd(f32, x2, -0.84087373, 1.68179268));
-	const cosx_scale1 = @mulAdd(f32, cosx_prescaling, cosx_prescaling, -1.414213562);
-	const cosx_scale2 = @mulAdd(f32, cosx_scale1, cosx_scale1, -1.0);
-	return if (above_pihalf) -cosx_scale2 else cosx_scale2;
+	const periods = gm.floor(gm.mul(x, pi2_inv));
+	const xmodpi2 = gm.fma(gm.neg(periods), pi2, x);
+	const x_pi = gm.min(xmodpi2, gm.sub(pi2, xmodpi2));
+	const above_pihalf = gm.le(pi_half, x_pi);
+	const x_pihalf = if (above_pihalf) gm.sub(pi, x_pi) else x_pi;
+	const xs = gm.mul(x_pihalf, 0.25);
+	const x2 = gm.mul(xs, xs);
+	const x4 = gm.mul(x2, x2);
+	const cosx_prescaling = gm.fma(x4, 0.06960438, gm.fma(x2, -0.84087373, 1.68179268));
+	const cosx_scale1 = gm.fma(cosx_prescaling, cosx_prescaling, -1.414213562);
+	const cosx_scale2 = gm.fma(cosx_scale1, cosx_scale1, -1.0);
+	return if (above_pihalf) gm.neg(cosx_scale2) else cosx_scale2;
 }
 
 /// Interpolates the spline's 32 DCT coefficients continuously so draw-cache
 /// construction can sample color and sigma at arbitrary arc-length positions.
 fn continuousIDCT(dct: Dct32, t: f32) f32 {
+	const multipliers = comptime blk: {
+		var values: [32]f32 = undefined;
+		for (&values, 0..) |*value, i| value.* = @floatCast(std.math.pi / 32.0 * @as(f64, @floatFromInt(i)));
+		break :blk values;
+	};
 	var lanes = [_]f32{0.0} ** 8;
 	for (dct, 0..) |coeff, i| {
-		const multiplier: f32 = @floatCast(
-			std.math.pi / 32.0 * @as(f64, @floatFromInt(i)),
-		);
-		const local = coeff * fastCos(multiplier * (t + 0.5));
+		const local = gm.mul(coeff, fastCos(gm.mul(multipliers[i], gm.add(t, 0.5))));
 		const lane = i % lanes.len;
-		lanes[lane] = @mulAdd(f32, kSqrt2, local, lanes[lane]);
+		lanes[lane] = gm.fma(kSqrt2, local, lanes[lane]);
 	}
-	const sum_04 = lanes[0] + lanes[4];
-	const sum_15 = lanes[1] + lanes[5];
-	const sum_26 = lanes[2] + lanes[6];
-	const sum_37 = lanes[3] + lanes[7];
-	return (sum_04 + sum_37) + (sum_15 + sum_26);
+	const sum_04 = gm.add(lanes[0], lanes[4]);
+	const sum_15 = gm.add(lanes[1], lanes[5]);
+	const sum_26 = gm.add(lanes[2], lanes[6]);
+	const sum_37 = gm.add(lanes[3], lanes[7]);
+	return gm.add(gm.add(sum_04, sum_37), gm.add(sum_15, sum_26));
 }
 
 /// Converts sparse control points into a denser centripetal Catmull-Rom polyline
@@ -618,23 +620,23 @@ fn drawCentripetalCatmullRomSpline(allocator: std.mem.Allocator, points_in: []co
 		var d: [3]f32 = undefined;
 		var t: [4]f32 = .{ 0.0, 0.0, 0.0, 0.0 };
 		for (0..3) |k| {
-			const dx = p[k + 1].x - p[k].x;
-			const dy = p[k + 1].y - p[k].y;
-			d[k] = @sqrt(std.math.hypot(dx, dy));
-			t[k + 1] = t[k] + d[k];
+			const dx = gm.sub(p[k + 1].x, p[k].x);
+			const dy = gm.sub(p[k + 1].y, p[k].y);
+			d[k] = gm.sqrt(gm.hypot(dx, dy));
+			t[k + 1] = gm.add(t[k], d[k]);
 		}
 
 		for (1..kNumPoints) |i| {
-			const tt = d[0] + (@as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(kNumPoints))) * d[1];
+			const tt = gm.add(d[0], gm.mul(gm.div(gm.fromInt(@intCast(i)), kNumPoints), d[1]));
 			var a: [3]Point = undefined;
 			for (0..3) |k| {
-				a[k] = pointAddVector(p[k], Vector.scale((tt - t[k]) / d[k], pointSub(p[k + 1], p[k])));
+				a[k] = pointAddVector(p[k], Vector.scale(gm.div(gm.sub(tt, t[k]), d[k]), pointSub(p[k + 1], p[k])));
 			}
 			var b: [2]Point = undefined;
 			for (0..2) |k| {
-				b[k] = pointAddVector(a[k], Vector.scale((tt - t[k]) / (d[k] + d[k + 1]), pointSub(a[k + 1], a[k])));
+				b[k] = pointAddVector(a[k], Vector.scale(gm.div(gm.sub(tt, t[k]), gm.add(d[k], d[k + 1])), pointSub(a[k + 1], a[k])));
 			}
-			try result.append(allocator, pointAddVector(b[0], Vector.scale((tt - t[1]) / d[1], pointSub(b[1], b[0]))));
+			try result.append(allocator, pointAddVector(b[0], Vector.scale(gm.div(gm.sub(tt, t[1]), d[1]), pointSub(b[1], b[0]))));
 		}
 	}
 
@@ -663,13 +665,13 @@ fn collectEquallySpacedPoints(allocator: std.mem.Allocator, points: []const Poin
 			}
 			const next = points[next_index];
 			const delta = pointSub(next, previous);
-			const arc_to_next = @sqrt(delta.squaredNorm());
-			if (arc_from_previous + arc_to_next >= kDesiredRenderingDistance) {
-				current = pointAddVector(previous, Vector.scale((kDesiredRenderingDistance - arc_from_previous) / arc_to_next, delta));
+			const arc_to_next = gm.sqrt(delta.squaredNorm());
+			if (gm.le(kDesiredRenderingDistance, gm.add(arc_from_previous, arc_to_next))) {
+				current = pointAddVector(previous, Vector.scale(gm.div(gm.sub(kDesiredRenderingDistance, arc_from_previous), arc_to_next), delta));
 				try result.append(allocator, .{ .point = current, .multiplier = kDesiredRenderingDistance });
 				break;
 			}
-			arc_from_previous += arc_to_next;
+			arc_from_previous = gm.add(arc_from_previous, arc_to_next);
 			previous = next;
 			next_index += 1;
 		}
@@ -687,23 +689,25 @@ fn computeSegments(
 	segments_by_y: *std.ArrayListUnmanaged(SegmentByY),
 	allocator: std.mem.Allocator,
 ) !void {
-	if (!std.math.isFinite(sigma) or sigma == 0.0 or !std.math.isFinite(1.0 / sigma) or !std.math.isFinite(intensity)) return;
+	if (!std.math.isFinite(sigma) or gm.cmp(sigma, 0.0) == 0 or !std.math.isFinite(intensity)) return;
+	const inv_sigma = gm.div(1.0, sigma);
+	if (!std.math.isFinite(inv_sigma)) return;
 
 	var max_color: f32 = 0.01;
-	for (0..3) |c| max_color = @max(max_color, @abs(color[c] * intensity));
+	for (0..3) |c| max_color = gm.max(max_color, gm.abs(gm.mul(color[c], intensity)));
 	const maximum_distance = maximumDistance(sigma, max_color);
 
 	const segment = SplineSegment{
 		.center_x = center.x,
 		.center_y = center.y,
 		.maximum_distance = maximum_distance,
-		.inv_sigma = 1.0 / sigma,
-		.sigma_over_4_times_intensity = 0.25 * sigma * intensity,
+		.inv_sigma = inv_sigma,
+		.sigma_over_4_times_intensity = gm.mul(gm.mul(0.25, sigma), intensity),
 		.color = color,
 	};
 
-	const y0: i64 = @intFromFloat(@round(center.y - maximum_distance));
-	const y1: i64 = @as(i64, @intFromFloat(@round(center.y + maximum_distance))) + 1;
+	const y0 = gm.toInt(gm.round(gm.sub(center.y, maximum_distance)));
+	const y1 = gm.toInt(gm.round(gm.add(center.y, maximum_distance))) + 1;
 	var y = @max(y0, 0);
 	while (y < y1) : (y += 1) {
 		try segments_by_y.append(allocator, .{ .y = @intCast(y), .index = segments.items.len });
@@ -716,15 +720,16 @@ fn computeSegments(
 /// literal, which promoted the whole term to double and yielded a one-ULP-larger
 /// radius; v0.12.0 uses `-2.0f` and `std::log(0.1f)`, keeping every operation f32.
 fn maximumDistance(sigma: f32, max_color: f32) f32 {
-	const sigma_term: f32 = -2.0 * sigma * sigma;
-	const log_term: f32 = @log(@as(f32, 0.1)) * kDistanceExp - @log(max_color);
-	return @sqrt(sigma_term * log_term);
+	const sigma_term = gm.mul(gm.mul(-2.0, sigma), sigma);
+	const log_tenth: f32 = comptime @log(@as(f32, 0.1));
+	const log_term = gm.sub(gm.mul(log_tenth, kDistanceExp), gm.log(max_color));
+	return gm.sqrt(gm.mul(sigma_term, log_term));
 }
 
 /// Applies the spline Gaussian's squared integration factor using the same
 /// operation boundary as libjxl's SIMD render stage.
 fn localIntensity(sigma_over_4_times_intensity: f32, factor: f32) f32 {
-	return sigma_over_4_times_intensity * (factor * factor);
+	return gm.mul(sigma_over_4_times_intensity, gm.mul(factor, factor));
 }
 
 fn segmentsFromPoints(
@@ -735,38 +740,37 @@ fn segmentsFromPoints(
 	segments_by_y: *std.ArrayListUnmanaged(SegmentByY),
 	allocator: std.mem.Allocator,
 ) !void {
-	const inv_arc_length = 1.0 / arc_length;
+	const inv_arc_length = gm.div(1.0, arc_length);
 	for (points_to_draw, 0..) |point_to_draw, k| {
-		const progress_along_arc = @min(1.0, (@as(f32, @floatFromInt(k)) * kDesiredRenderingDistance) * inv_arc_length);
+		const progress_along_arc = gm.min(1.0, gm.mul(gm.mul(gm.fromInt(@intCast(k)), kDesiredRenderingDistance), inv_arc_length));
 		var color: [3]f32 = undefined;
 		for (0..3) |c| {
-			color[c] = continuousIDCT(spline.color_dct[c], 31.0 * progress_along_arc);
+			color[c] = continuousIDCT(spline.color_dct[c], gm.mul(31.0, progress_along_arc));
 		}
-		const sigma = continuousIDCT(spline.sigma_dct, 31.0 * progress_along_arc);
+		const sigma = continuousIDCT(spline.sigma_dct, gm.mul(31.0, progress_along_arc));
 		try computeSegments(point_to_draw.point, point_to_draw.multiplier, color, sigma, segments, segments_by_y, allocator);
 	}
 }
 
 fn drawSegment(segment: SplineSegment, add: bool, row_x: []f32, row_y: []f32, row_b: []f32, y: usize, x0: usize, x1: usize) void {
-	const start: i64 = @intFromFloat(@round(segment.center_x - segment.maximum_distance));
-	const end: i64 = @intFromFloat(@round(segment.center_x + segment.maximum_distance));
+	const start = gm.toInt(gm.round(gm.sub(segment.center_x, segment.maximum_distance)));
+	const end = gm.toInt(gm.round(gm.add(segment.center_x, segment.maximum_distance)));
 	if (end < @as(i64, @intCast(x0)) or start >= @as(i64, @intCast(x1))) return;
 
 	const span_x0 = @max(@as(i64, @intCast(x0)), start);
 	const span_x1 = @min(@as(i64, @intCast(x1)), end + 1);
 	var x_abs = span_x0;
 	while (x_abs < span_x1) : (x_abs += 1) {
-		const dx = @as(f32, @floatFromInt(x_abs)) - segment.center_x;
-		const dy = @as(f32, @floatFromInt(y)) - segment.center_y;
-		const distance = @sqrt(@mulAdd(f32, dx, dx, dy * dy));
-		const factor = erfApprox(@mulAdd(f32, distance, 0.5, 0.353553391) * segment.inv_sigma) -
-			erfApprox(@mulAdd(f32, distance, 0.5, -0.353553391) * segment.inv_sigma);
+		const dx = gm.sub(gm.fromInt(x_abs), segment.center_x);
+		const dy = gm.sub(gm.fromInt(@intCast(y)), segment.center_y);
+		const distance = gm.sqrt(gm.fma(dx, dx, gm.mul(dy, dy)));
+		const factor = gm.sub(erfApprox(gm.mul(gm.fma(distance, 0.5, 0.353553391), segment.inv_sigma)), erfApprox(gm.mul(gm.fma(distance, 0.5, -0.353553391), segment.inv_sigma)));
 		const local_intensity = localIntensity(segment.sigma_over_4_times_intensity, factor);
 		const out_x = @as(usize, @intCast(x_abs - @as(i64, @intCast(x0))));
 		const sign: f32 = if (add) 1.0 else -1.0;
-		row_x[out_x] = @mulAdd(f32, sign * segment.color[0], local_intensity, row_x[out_x]);
-		row_y[out_x] = @mulAdd(f32, sign * segment.color[1], local_intensity, row_y[out_x]);
-		row_b[out_x] = @mulAdd(f32, sign * segment.color[2], local_intensity, row_b[out_x]);
+		row_x[out_x] = gm.fma(gm.mul(sign, segment.color[0]), local_intensity, row_x[out_x]);
+		row_y[out_x] = gm.fma(gm.mul(sign, segment.color[1]), local_intensity, row_y[out_x]);
+		row_b[out_x] = gm.fma(gm.mul(sign, segment.color[2]), local_intensity, row_b[out_x]);
 	}
 }
 
@@ -776,19 +780,16 @@ fn decodeAllStartingPoints(reader: anytype, points: []Point) !void {
 	for (points, 0..) |*point, i| {
 		const dx_raw = try readHybrid(reader, .starting_position);
 		const dy_raw = try readHybrid(reader, .starting_position);
-		const x: i64 = if (i == 0)
-			blk: {
-				try validateSplinePointPos(dx_raw, dy_raw);
-				break :blk @intCast(dx_raw);
-			}
-		else
-			last_x + try unpackSignedHybrid(dx_raw);
+		const x: i64 = if (i == 0) blk: {
+			try validateSplinePointPos(dx_raw, dy_raw);
+			break :blk @intCast(dx_raw);
+		} else last_x + try unpackSignedHybrid(dx_raw);
 		const y: i64 = if (i == 0)
 			@intCast(dy_raw)
 		else
 			last_y + try unpackSignedHybrid(dy_raw);
 		try validateSplinePointPos(x, y);
-		point.* = .{ .x = @floatFromInt(x), .y = @floatFromInt(y) };
+		point.* = .{ .x = gm.fromInt(x), .y = gm.fromInt(y) };
 		last_x = x;
 		last_y = y;
 	}
@@ -797,15 +798,15 @@ fn decodeAllStartingPoints(reader: anytype, points: []Point) !void {
 /// Uses upstream libjxl's FastErff denominator polynomial so spline Gaussian
 /// integration follows the same approximation family as the SIMD render path.
 fn erfApprox(x: f32) f32 {
-	const sign: f32 = if (x <= 0.0) -1.0 else 1.0;
-	const ax = @abs(x);
-	const denom1 = @mulAdd(f32, ax, 7.77394369e-02, 2.05260015e-04);
-	const denom2 = @mulAdd(f32, denom1, ax, 2.32120216e-01);
-	const denom3 = @mulAdd(f32, denom2, ax, 2.77820801e-01);
-	const denom4 = @mulAdd(f32, denom3, ax, 1.0);
-	const denom5 = denom4 * denom4;
-	const inv_denom5 = 1.0 / denom5;
-	return sign * @mulAdd(f32, -inv_denom5, inv_denom5, 1.0);
+	const sign: f32 = if (@import("../base/binary32.zig").cmp(@bitCast(x), 0) <= 0) -1.0 else 1.0;
+	const ax = gm.abs(x);
+	const denom1 = gm.fma(ax, 7.77394369e-02, 2.05260015e-04);
+	const denom2 = gm.fma(denom1, ax, 2.32120216e-01);
+	const denom3 = gm.fma(denom2, ax, 2.77820801e-01);
+	const denom4 = gm.fma(denom3, ax, 1.0);
+	const denom5 = gm.mul(denom4, denom4);
+	const inv_denom5 = gm.div(1.0, denom5);
+	return gm.mul(sign, gm.fma(gm.neg(inv_denom5), inv_denom5, 1.0));
 }
 
 const testing = std.testing;
@@ -1068,4 +1069,13 @@ test "Splines decodeFromHybridReader rejects more splines than image permits" {
 	var decoded = Splines.init(testing.allocator);
 	defer decoded.deinit();
 	try testing.expectError(error.GenericError, decoded.decodeFromHybridReader(&reader, 4));
+}
+
+test "spline point proximity rejects unordered inputs" {
+	const values = [_]f32{ 0, 0.0001, 0.1, std.math.inf(f32), -std.math.inf(f32), std.math.nan(f32) };
+	var actual: [values.len]bool = undefined;
+	for (values, &actual) |value, *result| result.* = Point.approxEq(.{ .x = value }, .{}, 0.001);
+	try std.testing.expectEqualSlices(bool, &.{ true, true, false, false, false, false }, &actual);
+	try std.testing.expect(!Point.approxEq(.{}, .{}, std.math.nan(f32)));
+	try std.testing.expect(!Point.approxEq(.{ .x = std.math.inf(f32) }, .{ .x = std.math.inf(f32) }, 0.001));
 }

@@ -187,7 +187,7 @@ below; pause for decisions only when they prevent safe implementation.
   Windows cross-compilation and the production build pass — 19:25 EDT.
   Resampling commit `67f0a0db` passed Mechatron at 19:11:47 EDT. Commit
   noise with the recorded resampling baseline, then measure this revision.
-- [ ] Replace native spline arithmetic before enabling nonfinite spline frames.
+- [x] Replace native spline arithmetic before enabling nonfinite spline frames.
   Current integer-image comparisons pass; floating spline images are rejected.
   An isolated exact integer FMA passes 208,000 native comparisons, geometry
   rounding/sqrt passes 800,092 and log/hypot passes 400,000 within one ULP.
@@ -202,6 +202,38 @@ below; pause for decisions only when they prevent safe implementation.
   wide-sum controls; the 64-bit version is being measured. Curve, DCT and
   dequantization conversions pass existing image controls; the final cache
   conversion is under test. Keep this performance issue explicit — 19:25 EDT.
+  Full geometry/cache conversion and the 64-bit FMA now pass 30 upstream
+  spline files, allocation-failure controls, 208,000 native FMA comparisons
+  and 200,000 exact wide-sum cancellation cases. The large frame measures
+  104.70 s integer versus 8.02 s native; all 12,582,912 output components
+  match byte for byte. This is a substantial remaining performance cost.
+  All five no-libc probes pass an integer-operation IR check after preventing
+  LLVM from replacing bit tests with floating comparisons. The checker has
+  retained classifier tests, including the `experimental.noalias` false match.
+  Integrated the spline slice and retained its generator, which reproduces
+  all 30 fixtures byte for byte. Run integrated checks, full suite and build;
+  retain whole-frame performance after the comparison barriers — 19:58 EDT.
+  Noise commit `35ac86a2` passed Mechatron at 19:39:25 EDT. Its complete
+  benchmark passes all guards: VarDCT 5.757 ms/decode versus 0.358 ms;
+  large Modular 26.932 ms versus 23.688 ms. Histories accompany this slice.
+  All 14 integrated selected controls and five-target code-generation checks
+  pass. Start the full suite and production build with the source frozen.
+  Investigate VarDCT/XYB floating extras in a separate source copy while those
+  run; keep spline timing records separate from the earlier Fixed measurements.
+  Full Nix unit checks, all 101 CLI suites, 264 required mutation detections,
+  Windows cross-compilation and the production build pass — 20:29 EDT.
+  The integrated frame measures 104.676 s wall / 104.080 s CPU and remains
+  byte-exact with the native baseline. Retained post-barrier timing records.
+  Commit this slice, verify its remote revision, then run the benchmark suite.
+- [ ] Integrate floating extras in VarDCT and XYB rendering. The isolated
+  `/tmp/libjxlz-xyb-extras-src` passes 40 upstream files, including half-float
+  alpha, filters, equal/unequal resampling, layers, blending and rewind.
+  Fixed color joins binary32 extra-channel processing at shared final rendering;
+  reference storage preserves extra bits through the existing XYB output policy.
+  Forty-five selected regression tests and both allocation-failure cases pass.
+  Sixteen pre-color patch-reference cases are under test before integration.
+  The half-float oracle uses aligned crops: upstream rejected an odd crop after
+  downsampling produced an unrepresentable -1/6. Float32 cases retain odd edges.
 - [x] Fix redirected benchmark diagnostics overwriting earlier log records.
   `bench_dequant_ensure_computed` uses positional stdout/stderr writers; the
   scaling diagnostic overwrote the start of the combined `./bm` log. Retained

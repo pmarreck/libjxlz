@@ -1,0 +1,31 @@
+const std = @import("std");
+const jxl = @import("lib/root.zig");
+pub fn main(init: std.process.Init) !void {
+	if (@import("builtin").mode != .ReleaseFast) return error.BenchmarkRequiresReleaseFast;
+	const data = @embedFile("lib/testdata/splines.jxl");
+	const metadata = try init.gpa.create(jxl.codec.image_metadata.CodecMetadata);
+	defer init.gpa.destroy(metadata);
+	metadata.* = .{};
+	var br = jxl.base.bit_reader.BitReader.init(data[2..]);
+	metadata.size = jxl.codec.headers.SizeHeader.readFromBitStream(&br);
+	metadata.m = try jxl.codec.image_metadata.ImageMetadata.readFromBitStream(&br);
+	metadata.transform_data = try jxl.codec.image_metadata.CustomTransformData.readFromBitStream(&br, metadata.m.xyb_encoded);
+	try br.jumpToByteBoundary();
+	try br.close();
+	var dec = jxl.codec.dec_frame.FrameDecoder.init(init.gpa, metadata);
+	defer dec.deinit();
+	const wall_start = std.Io.Timestamp.now(init.io, .awake).nanoseconds;
+	const cpu_start = std.Io.Timestamp.now(init.io, .cpu_process).nanoseconds;
+	try dec.decodeFrame(data[2 + br.totalBitsConsumed() / 8 ..]);
+	const cpu = std.Io.Timestamp.now(init.io, .cpu_process).nanoseconds - cpu_start;
+	const wall = std.Io.Timestamp.now(init.io, .awake).nanoseconds - wall_start;
+	const rendered = dec.rendered_image orelse return error.MissingImage;
+	var checksum: u64 = 0;
+	for (rendered.data) |value| checksum +%= @as(u32, @bitCast(value));
+	const args = try init.minimal.args.toSlice(init.arena.allocator());
+	if (args.len == 2) try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = args[1], .data = std.mem.sliceAsBytes(rendered.data) });
+	var buffer: [4096]u8 = undefined;
+	var stdout = std.Io.File.stdout().writerStreaming(init.io, &buffer);
+	try stdout.interface.print("{{\"width\":{d},\"height\":{d},\"segments\":{d},\"row_segments\":{d},\"cpu_ns\":{d},\"wall_ns\":{d},\"checksum\":{d}}}\n", .{ rendered.xsize, rendered.ysize, dec.splines.segments.len, dec.splines.segment_indices.len, cpu, wall, checksum });
+	try stdout.interface.flush();
+}
