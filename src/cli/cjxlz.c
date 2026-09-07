@@ -119,7 +119,7 @@ static void print_help(FILE* out) {
 		"  --relative-to-max-display Mark tone mapping as relative_to_max_display\n"
 		"  --linear-below VALUE      Set tone-mapping linear_below\n"
 		"  --orientation N           Set orientation 1..8\n"
-		"  --preview-size WxH        Set preview pixel size metadata\n"
+		"  --preview-size WxH        Generate a nearest-neighbor preview\n"
 		"  --intrinsic-size WxH      Set intrinsic pixel size metadata\n"
 		"  --animation-tps N/D       Set animation ticks per second numerator/denominator\n"
 		"  --animation-loops N       Set animation loop count\n"

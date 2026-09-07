@@ -5,6 +5,8 @@ SYSTEM="$(nix eval --impure --raw --expr builtins.currentSystem)"
 BUILD_LOG="${TMPDIR}/capi_encode_preview_build.log"
 RUN_STDERR="${TMPDIR}/capi_encode_preview_run_stderr.log"
 CHECK_BIN="${TMPDIR}/capi_encode_preview"
+DECODE_BIN="${TMPDIR}/encoded_preview_decode"
+ENCODED="${TMPDIR}/encoded_preview.jxl"
 
 if ! PACKAGE_OUT="$(nix build --no-link --print-out-paths ".#packages.${SYSTEM}.default" 2>"${BUILD_LOG}")"; then
 	cat "${BUILD_LOG}"
@@ -24,7 +26,27 @@ if ! clang \
 	exit 1
 fi
 
-if ! "${CHECK_BIN}" > /dev/null 2>"${RUN_STDERR}"; then
+if ! clang -std=c11 -Wall -Wextra -Werror -Iinclude -Ilib/include \
+	tests/cli/encoded_preview_decode.c "${PACKAGE_OUT}/lib/libjxlz_capi.a" \
+	$(pkg-config --libs libbrotlienc libbrotlidec libbrotlicommon) \
+	-o "${DECODE_BIN}" >"${BUILD_LOG}" 2>&1; then
+	cat "${BUILD_LOG}"
+	exit 1
+fi
+
+if ! "${CHECK_BIN}" "${ENCODED}" > /dev/null 2>"${RUN_STDERR}"; then
+	cat "${RUN_STDERR}"
+	exit 1
+fi
+if ! "${DECODE_BIN}" "${ENCODED}" > /dev/null 2>"${RUN_STDERR}"; then
+	cat "${RUN_STDERR}"
+	exit 1
+fi
+if ! "${CHECK_BIN}" "${ENCODED}" animation > /dev/null 2>"${RUN_STDERR}"; then
+	cat "${RUN_STDERR}"
+	exit 1
+fi
+if ! "${DECODE_BIN}" "${ENCODED}" 2 > /dev/null 2>"${RUN_STDERR}"; then
 	cat "${RUN_STDERR}"
 	exit 1
 fi

@@ -23,7 +23,7 @@ static int append_chunk(uint8_t** out, size_t* size, size_t* cap, const uint8_t*
 	return 1;
 }
 
-int main(void) {
+int main(int argc, char** argv) {
 	const uint8_t pixels[12] = {
 		0, 10, 20, 30, 40, 50,
 		60, 70, 80, 90, 100, 110,
@@ -39,6 +39,11 @@ int main(void) {
 	info.have_preview = JXL_TRUE;
 	info.preview.xsize = 1;
 	info.preview.ysize = 1;
+	if (argc > 2) {
+		info.have_animation = JXL_TRUE;
+		info.animation.tps_numerator = 10;
+		info.animation.tps_denominator = 1;
+	}
 
 	JxlColorEncoding color;
 	JxlColorEncodingSetToSRGB(&color, 0);
@@ -60,10 +65,18 @@ int main(void) {
 		JxlEncoderDestroy(enc);
 		return 1;
 	}
+	if (argc > 2) {
+		JxlFrameHeader header;
+		memset(&header, 0, sizeof(header));
+		header.duration = 1;
+		if (JxlEncoderSetFrameHeader(settings, &header) != JXL_ENC_SUCCESS) { JxlEncoderDestroy(enc); return 1; }
+	}
+	for (int frame = 0; frame < (argc > 2 ? 2 : 1); ++frame) {
 	if (JxlEncoderAddImageFrame(settings, &format, pixels, sizeof(pixels)) != JXL_ENC_SUCCESS) {
 		fprintf(stderr, "add image frame failed\n");
 		JxlEncoderDestroy(enc);
 		return 1;
+	}
 	}
 	JxlEncoderCloseInput(enc);
 
@@ -91,12 +104,19 @@ int main(void) {
 	}
 	JxlEncoderDestroy(enc);
 
+	if (argc >= 2) {
+		FILE* file = fopen(argv[1], "wb");
+		if (!file) { free(encoded); return 1; }
+		const int complete = fwrite(encoded, 1, encoded_size, file) == encoded_size;
+		const int closed = fclose(file) == 0;
+		if (!complete || !closed) { free(encoded); return 1; }
+	}
 	JxlDecoder* dec = JxlDecoderCreate(NULL);
 	if (!dec) {
 		free(encoded);
 		return 1;
 	}
-	if (JxlDecoderSubscribeEvents(dec, JXL_DEC_BASIC_INFO | JXL_DEC_FULL_IMAGE) != JXL_DEC_SUCCESS) {
+	if (JxlDecoderSubscribeEvents(dec, JXL_DEC_BASIC_INFO | JXL_DEC_PREVIEW_IMAGE | JXL_DEC_FULL_IMAGE) != JXL_DEC_SUCCESS) {
 		JxlDecoderDestroy(dec);
 		free(encoded);
 		return 1;
@@ -112,8 +132,24 @@ int main(void) {
 	memset(&decoded_info, 0, sizeof(decoded_info));
 	uint8_t* decoded_pixels = NULL;
 	size_t decoded_size = 0;
+	uint8_t preview_pixels[3] = {255,255,255};
+	int saw_preview = 0;
+	int frames = 0;
 	for (;;) {
 		JxlDecoderStatus status = JxlDecoderProcessInput(dec);
+		if (status == JXL_DEC_NEED_PREVIEW_OUT_BUFFER) {
+			if (JxlDecoderSetPreviewOutBuffer(dec, &format, preview_pixels, sizeof(preview_pixels)) != JXL_DEC_SUCCESS) {
+				free(decoded_pixels); JxlDecoderDestroy(dec); free(encoded); return 1;
+			}
+			continue;
+		}
+		if (status == JXL_DEC_PREVIEW_IMAGE) {
+			saw_preview = 1;
+			if (memcmp(preview_pixels, pixels, sizeof(preview_pixels)) != 0) {
+				free(decoded_pixels); JxlDecoderDestroy(dec); free(encoded); return 1;
+			}
+			continue;
+		}
 		if (status == JXL_DEC_BASIC_INFO) {
 			if (JxlDecoderGetBasicInfo(dec, &decoded_info) != JXL_DEC_SUCCESS) {
 				fprintf(stderr, "decoder basic info failed\n");
@@ -132,6 +168,7 @@ int main(void) {
 				free(encoded);
 				return 1;
 			}
+			free(decoded_pixels);
 			decoded_pixels = (uint8_t*)malloc(decoded_size);
 			if (!decoded_pixels) {
 				JxlDecoderDestroy(dec);
@@ -147,7 +184,7 @@ int main(void) {
 			}
 			continue;
 		}
-		if (status == JXL_DEC_FULL_IMAGE) continue;
+		if (status == JXL_DEC_FULL_IMAGE) { ++frames; continue; }
 		if (status == JXL_DEC_SUCCESS) break;
 		fprintf(stderr, "unexpected decoder status %d\n", (int)status);
 		free(decoded_pixels);
@@ -157,7 +194,7 @@ int main(void) {
 	}
 
 	if (
-		decoded_info.have_preview != JXL_TRUE ||
+		!saw_preview || frames != (argc > 2 ? 2 : 1) || decoded_info.have_preview != JXL_TRUE ||
 		decoded_info.preview.xsize != 1 ||
 		decoded_info.preview.ysize != 1
 	) {

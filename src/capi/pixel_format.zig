@@ -1,5 +1,13 @@
 const std = @import("std");
 
+test "row stride arithmetic handles large dimensions and alignment" {
+	var format: JxlPixelFormat = .{ .num_channels = 4, .data_type = .JXL_TYPE_UINT8, .endianness = .JXL_NATIVE_ENDIAN, .@"align" = 0 };
+	try std.testing.expectEqual(@as(?usize, null), rowStrideBytes(std.math.maxInt(usize), format));
+	format.num_channels = 3;
+	format.@"align" = std.math.maxInt(usize);
+	try std.testing.expectEqual(@as(?usize, std.math.maxInt(usize)), rowStrideBytes(1, format));
+}
+
 pub const JxlDataType = enum(c_int) {
 	JXL_TYPE_FLOAT = 0,
 	JXL_TYPE_UINT8 = 2,
@@ -33,10 +41,25 @@ pub fn bytesPerChannel(data_type: JxlDataType) ?usize {
 /// Converts pixel-format alignment into a concrete row stride so callers can
 /// size and write output buffers exactly like libjxl's image buffer API.
 pub fn rowStrideBytes(width: usize, format: JxlPixelFormat) ?usize {
-	const bytes_per_channel = bytesPerChannel(format.data_type) orelse return null;
-	const row_bytes = width * format.num_channels * bytes_per_channel;
+	const row_bytes = packedRowBytes(width, format) orelse return null;
 	const row_align = if (format.@"align" <= 1) 1 else format.@"align";
-	return roundUpTo(row_bytes, row_align);
+	const remainder = row_bytes % row_align;
+	return if (remainder == 0) row_bytes else std.math.add(usize, row_bytes, row_align - remainder) catch null;
+}
+
+pub fn packedRowBytes(width: usize, format: JxlPixelFormat) ?usize {
+	const bytes_per_channel = bytesPerChannel(format.data_type) orelse return null;
+	const samples = std.math.mul(usize, width, format.num_channels) catch return null;
+	return std.math.mul(usize, samples, bytes_per_channel) catch null;
+}
+
+/// Row alignment separates rows; the final row needs only its pixel bytes.
+pub fn outputBufferSize(width: usize, height: usize, format: JxlPixelFormat) ?usize {
+	if (height == 0) return 0;
+	const stride = rowStrideBytes(width, format) orelse return null;
+	const row_bytes = packedRowBytes(width, format) orelse return null;
+	const prefix = std.math.mul(usize, stride, height - 1) catch return null;
+	return std.math.add(usize, prefix, row_bytes) catch null;
 }
 
 /// Stores 16-bit C API samples in the requested byte order, resolving native
@@ -189,10 +212,6 @@ pub fn scaleRenderedToU8(value: f32, x: usize, y: usize, c: usize) u8 {
 	if (fraction < 0.5 or lower == 255) return lower;
 	if (fraction > 0.5) return lower + 1;
 	return if (lower & 1 == 0) lower else lower + 1;
-}
-
-fn roundUpTo(value: usize, alignment: usize) usize {
-	return ((value + alignment - 1) / alignment) * alignment;
 }
 
 test "pixel format helpers compute channel size and aligned rows" {

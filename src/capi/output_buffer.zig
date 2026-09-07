@@ -89,7 +89,9 @@ pub fn writeImageToOutput(img: *const Image, metadata: *const image_metadata.Ima
 	if (color_channels == 1 and !(format.num_channels == 1 or format.num_channels == 2 or format.num_channels == 3 or format.num_channels == 4)) return error.Unsupported;
 
 	const stride = rowStrideBytes(img.w, format) orelse return error.Unsupported;
-	if (stride * img.h > buffer_size) return error.GenericError;
+	const row_bytes = pixel_format.packedRowBytes(img.w, format) orelse return error.Unsupported;
+	const needed = pixel_format.outputBufferSize(img.w, img.h, format) orelse return error.GenericError;
+	if (needed > buffer_size) return error.GenericError;
 
 	const bytes_per_channel = bytesPerChannel(format.data_type) orelse return error.Unsupported;
 	const max_value = bitDepthMax(metadata.bit_depth.bits_per_sample);
@@ -136,7 +138,7 @@ pub fn writeImageToOutput(img: *const Image, metadata: *const image_metadata.Ima
 	}
 
 	for (0..img.h) |y| {
-		const row = buffer[y * stride .. y * stride + stride];
+		const row = buffer[y * stride .. y * stride + row_bytes];
 		for (0..img.w) |x| {
 			const pixel = row[x * format.num_channels * bytes_per_channel ..];
 			for (0..format.num_channels) |c| {
@@ -173,7 +175,9 @@ pub fn writeRenderedImageToOutput(rendered: *const render_mod.FloatImage, alpha_
 	if (format.num_channels < (if (gray) @as(u32, 1) else 3) or format.num_channels > 4) return error.Unsupported;
 
 	const stride = rowStrideBytes(rendered.xsize, format) orelse return error.Unsupported;
-	if (stride * rendered.ysize > buffer_size) return error.GenericError;
+	const row_bytes = pixel_format.packedRowBytes(rendered.xsize, format) orelse return error.Unsupported;
+	const needed = pixel_format.outputBufferSize(rendered.xsize, rendered.ysize, format) orelse return error.GenericError;
+	if (needed > buffer_size) return error.GenericError;
 
 	const bytes_per_channel = bytesPerChannel(format.data_type) orelse return error.Unsupported;
 	const num_channels: usize = @intCast(format.num_channels);
@@ -194,7 +198,7 @@ pub fn writeRenderedImageToOutput(rendered: *const render_mod.FloatImage, alpha_
 	}
 
 	for (0..rendered.ysize) |y| {
-		const row = buffer[y * stride .. y * stride + stride];
+		const row = buffer[y * stride .. y * stride + row_bytes];
 		for (0..rendered.xsize) |x| {
 			const pixel = row[x * num_channels * bytes_per_channel ..];
 			for (0..num_channels) |c| {
@@ -238,7 +242,9 @@ pub fn writeXYBRenderedImageToOutput(rendered: *const render_mod.FloatImage, alp
 	if (format.num_channels < (if (gray) @as(u32, 1) else 3) or format.num_channels > 4) return error.Unsupported;
 
 	const stride = rowStrideBytes(rendered.xsize, format) orelse return error.Unsupported;
-	if (stride * rendered.ysize > buffer_size) return error.GenericError;
+	const row_bytes = pixel_format.packedRowBytes(rendered.xsize, format) orelse return error.Unsupported;
+	const needed = pixel_format.outputBufferSize(rendered.xsize, rendered.ysize, format) orelse return error.GenericError;
+	if (needed > buffer_size) return error.GenericError;
 
 	const bytes_per_channel = bytesPerChannel(format.data_type) orelse return error.Unsupported;
 	const num_channels: usize = @intCast(format.num_channels);
@@ -261,7 +267,7 @@ pub fn writeXYBRenderedImageToOutput(rendered: *const render_mod.FloatImage, alp
 	}
 
 	for (0..rendered.ysize) |y| {
-		const row = buffer[y * stride .. y * stride + stride];
+		const row = buffer[y * stride .. y * stride + row_bytes];
 		const row_x = rendered.rowConst(y, 0);
 		const row_y = rendered.rowConst(y, 1);
 		const row_b = rendered.rowConst(y, 2);

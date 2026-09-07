@@ -78,16 +78,22 @@
   contents in the test checkout. Full ./test passed at 22:32 EDT (105 CLI
   suites, 264 required mutation detections and Windows cross-compilation);
   ./build passed. Integrated source exactly matches the tested checkout.
-- [ ] Integrate actual preview decoding, buffers and event handling after parser
+- [x] Integrate actual preview decoding, buffers and event handling after parser
   completion. Twelve selected tests and the shared upstream/native C control
   pass. Controls cover padding, subscriptions, rewind/reset and preview budgets.
   Source: /tmp/libjxlz-preview-resume-20260906/.
-- [ ] Fix the encoder's missing preview frame before shipping preview decoding.
+  Full ./test and ./build passed at 23:11 EDT, including 106 CLI suites,
+  mutation controls and Windows cross-compilation. Integrated sources match
+  /tmp/libjxlz-preview-full-20260906 exactly apart from this plan.
+- [x] Fix the encoder's missing preview frame before shipping preview decoding.
   Full CLI tests exposed that have_preview currently writes only dimensions.
   Generate the requested preview from the first image with nearest-neighbor
   sampling, retaining all main frames and extra planes. Verify actual preview
   pixels with native and upstream decoders, including animation and allocation
   cleanup. Source: /tmp/libjxlz-preview-encoder-resume-20260906/.
+  Actual static/animated preview output passes native and upstream decoding.
+  Plane and allocation tests exposed and fixed two allocation-cleanup leaks.
+  Included in the passing preview gates and integration (23:11 EDT).
 - [ ] Integrate orientation handling after previews. Nine selected checks pass
   against upstream metadata, pixels, aligned buffers, actual previews and frame
   dimensions. All 32 cropped-origin cases, 16-bit RGBA padding controls and
@@ -108,6 +114,17 @@
   UINT16 rounding and dithering after reflection but before transposition.
   Preserve the existing >=23-bit integer normalization path pending its own
   control. Full integration follows the preview encoder correction.
+- [ ] Finish spot-color rendering after alpha output. The initial 216 upstream
+  comparisons witnessed unchanged pixels with rendering enabled, then passed.
+  RGB, grayscale and associated-alpha controls pass; XYB comparisons expose
+  small pre-existing differences with spots disabled. Measure these separately
+  before setting bounds. Actual-preview and replay controls are running.
+  Source: /tmp/libjxlz-spot-resume-20260906/. Upstream confirmed the corrected
+  CLI fixture pixels. Revisit subsampled extra planes and temporary allocation.
+- [ ] Finish the current cumulative gates (22:59 EDT). Preview, orientation and
+  alpha production builds passed. Preview units passed and 106 CLI suites are
+  running. Current logs use preview-encoder-full, orientation-encoder-full and
+  alpha-full prefixes under /tmp; these replace the earlier failed gates.
 - [ ] Recheck the three cumulative gates after correcting the old Modular JPEG
   error expectation and exporting pinned upstream submodule sources into their
   detached checkouts (22:02 EDT). Current logs end in full-finaltest and

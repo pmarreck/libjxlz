@@ -284,6 +284,12 @@ const DecoderImpl = struct {
 	frame_decoded: bool = false,
 	frame_displayed: bool = true,
 	decoded_frame: ?dec_frame.FrameDecoder = null,
+	decoded_preview: ?dec_frame.FrameDecoder = null,
+	preview_frame_size: usize = 0,
+	preview_emitted: bool = false,
+	preview_buffer: ?[*]u8 = null,
+	preview_buffer_size: usize = 0,
+	preview_format: JxlPixelFormat = .{ .num_channels = 0, .data_type = .JXL_TYPE_UINT8, .endianness = .JXL_NATIVE_ENDIAN, .@"align" = 0 },
 	decode_session: @import("lib/codec/decode_session.zig").Session = .{ .allocator = std.heap.c_allocator },
 	frame_name_len: usize = 0,
 	frame_name_buf: [1071]u8 = [_]u8{0} ** 1071,
@@ -410,6 +416,7 @@ fn allocDecoder(mm: ?*const JxlMemoryManager) ?*DecoderImpl {
 
 fn freeDecoder(dec: *DecoderImpl) void {
 	std.heap.c_allocator.free(dec.jpeg_bytes);
+	clearDecodedPreview(dec);
 	clearDecodedFrame(dec);
 	dec.decode_session.deinit();
 	if (dec.owned_codestream.len != 0) {
@@ -1059,6 +1066,11 @@ fn ensureCurrentFrameParsed(dec: *DecoderImpl) JxlDecoderStatus {
 		const parse_status = ensureParsed(dec);
 		if (parse_status != .JXL_DEC_SUCCESS) return parse_status;
 	}
+	if (dec.frame_offset == 0 and dec.codec_meta.m.have_preview) {
+		_ = decodePreview(dec) catch |err| return decoderStatusFromError(dec, err);
+		dec.frame_offset = dec.preview_frame_size;
+		clearDecodedPreview(dec);
+	}
 	if (dec.frame_offset >= dec.frame_data.len) {
 		return decoderStatusFromError(dec, error.NotEnoughBytes);
 	}
@@ -1140,6 +1152,10 @@ fn advanceCurrentBox(dec: *DecoderImpl) void {
 
 fn resetFrameIteration(dec: *DecoderImpl) void {
 	clearDecodedFrame(dec);
+	clearDecodedPreview(dec);
+	dec.preview_emitted = false;
+	dec.preview_buffer = null;
+	dec.preview_buffer_size = 0;
 	dec.decode_session.deinit();
 	dec.frame_offset = 0;
 	dec.frame_size = 0;
@@ -1238,6 +1254,26 @@ fn bitReaderError(br: *const BitReader, err: JxlError) JxlError {
 fn clearDecodedFrame(dec: *DecoderImpl) void {
 	if (dec.decoded_frame) |*frame| frame.deinit();
 	dec.decoded_frame = null;
+}
+
+fn clearDecodedPreview(dec: *DecoderImpl) void {
+	if (dec.decoded_preview) |*frame| frame.deinit();
+	dec.decoded_preview = null;
+	dec.preview_frame_size = 0;
+}
+
+fn decodePreview(dec: *DecoderImpl) JxlError!*dec_frame.FrameDecoder {
+	if (dec.decoded_preview == null) {
+		const count = try dec_frame.previewByteCount(std.heap.c_allocator, &dec.codec_meta, dec.frame_data);
+		var preview = dec_frame.FrameDecoder.init(std.heap.c_allocator, &dec.codec_meta);
+		errdefer preview.deinit();
+		preview.is_preview = true;
+		preview.force_render = true;
+		try preview.decodeFrame(dec.frame_data[0..count]);
+		dec.decoded_preview = preview;
+		dec.preview_frame_size = count;
+	}
+	return &dec.decoded_preview.?;
 }
 
 fn decodeCurrentFrame(dec: *DecoderImpl) JxlError!*dec_frame.FrameDecoder {
@@ -1368,6 +1404,11 @@ pub export fn JxlValidate(
 	if (pixels > options.max_pixels) {
 		return setValidationResult(result, .JXL_VALIDATION_INDETERMINATE, .JXL_VALIDATION_FINDING_RESOURCE_LIMIT, 0, host_offset, false, 0);
 	}
+	if (dec.basic_info.have_preview != 0) {
+		const preview_pixels = std.math.mul(u64, dec.basic_info.preview.xsize, dec.basic_info.preview.ysize) catch
+			return setValidationResult(result, .JXL_VALIDATION_INDETERMINATE, .JXL_VALIDATION_FINDING_RESOURCE_LIMIT, 0, host_offset, false, 0);
+		if (preview_pixels > options.max_pixels) return setValidationResult(result, .JXL_VALIDATION_INDETERMINATE, .JXL_VALIDATION_FINDING_RESOURCE_LIMIT, 0, host_offset, false, 0);
+	}
 	const reconstruction = jpegData(dec) catch
 		return setValidationResult(result, .JXL_VALIDATION_CORRUPT, .JXL_VALIDATION_FINDING_MALFORMED, 0, host_offset, false, 0);
 	if (reconstruction) |jpeg| {
@@ -1464,6 +1505,7 @@ pub export fn JxlDecoderReset(dec_ptr: ?*JxlDecoder) void {
 	const impl: *DecoderImpl = @ptrCast(@alignCast(dec));
 	const mm = impl.memory_manager;
 	std.heap.c_allocator.free(impl.jpeg_bytes);
+	clearDecodedPreview(impl);
 	clearDecodedFrame(impl);
 	impl.decode_session.deinit();
 	if (impl.owned_codestream.len != 0) std.heap.c_allocator.free(impl.owned_codestream);
@@ -1853,10 +1895,36 @@ pub export fn JxlDecoderImageOutBufferSize(dec_ptr: ?*const JxlDecoder, format: 
 	const out_size = size orelse return .JXL_DEC_ERROR;
 	if (!impl.basic_info_available) return .JXL_DEC_ERROR;
 	if (!impl.coalescing and !impl.frame_parsed) return .JXL_DEC_ERROR;
+	if (pixel_format.num_channels < impl.basic_info.num_color_channels or pixel_format.num_channels > 4) return .JXL_DEC_ERROR;
 	const width = if (impl.coalescing) impl.basic_info.xsize else impl.frame_header.layer_info.xsize;
 	const height = if (impl.coalescing) impl.basic_info.ysize else impl.frame_header.layer_info.ysize;
-	const stride = rowStrideBytes(width, pixel_format.*) orelse return .JXL_DEC_ERROR;
-	out_size.* = std.math.mul(usize, stride, height) catch return .JXL_DEC_ERROR;
+	out_size.* = capi_pixel.outputBufferSize(width, height, pixel_format.*) orelse return .JXL_DEC_ERROR;
+	return .JXL_DEC_SUCCESS;
+}
+
+pub export fn JxlDecoderPreviewOutBufferSize(dec_ptr: ?*const JxlDecoder, format: ?*const JxlPixelFormat, size: ?*usize) JxlDecoderStatus {
+	const dec = dec_ptr orelse return .JXL_DEC_ERROR;
+	const impl: *const DecoderImpl = @ptrCast(@alignCast(dec));
+	const pixel_format = format orelse return .JXL_DEC_ERROR;
+	const out_size = size orelse return .JXL_DEC_ERROR;
+	if (!impl.basic_info_available) return .JXL_DEC_NEED_MORE_INPUT;
+	if (impl.basic_info.have_preview == 0) return .JXL_DEC_ERROR;
+	if (pixel_format.num_channels < impl.basic_info.num_color_channels or pixel_format.num_channels > 4) return .JXL_DEC_ERROR;
+	out_size.* = capi_pixel.outputBufferSize(impl.basic_info.preview.xsize, impl.basic_info.preview.ysize, pixel_format.*) orelse return .JXL_DEC_ERROR;
+	return .JXL_DEC_SUCCESS;
+}
+
+pub export fn JxlDecoderSetPreviewOutBuffer(dec_ptr: ?*JxlDecoder, format: ?*const JxlPixelFormat, buffer: ?*anyopaque, size: usize) JxlDecoderStatus {
+	const dec = dec_ptr orelse return .JXL_DEC_ERROR;
+	const impl: *DecoderImpl = @ptrCast(@alignCast(dec));
+	if ((impl.subscribed_events & @intFromEnum(JxlDecoderStatus.JXL_DEC_PREVIEW_IMAGE)) == 0) return .JXL_DEC_ERROR;
+	const pixel_format = format orelse return .JXL_DEC_ERROR;
+	if (buffer == null) return .JXL_DEC_ERROR;
+	var needed: usize = 0;
+	if (JxlDecoderPreviewOutBufferSize(dec_ptr, format, &needed) != .JXL_DEC_SUCCESS or size < needed) return .JXL_DEC_ERROR;
+	impl.preview_format = pixel_format.*;
+	impl.preview_buffer = @ptrCast(buffer);
+	impl.preview_buffer_size = size;
 	return .JXL_DEC_SUCCESS;
 }
 
@@ -1937,6 +2005,15 @@ pub export fn JxlDecoderProcessInput(dec_ptr: ?*JxlDecoder) JxlDecoderStatus {
 			if ((jpegData(impl) catch |err| return decoderStatusFromError(impl, err)) != null) return .JXL_DEC_JPEG_RECONSTRUCTION;
 		}
 
+		if (impl.codec_meta.m.have_preview and (impl.subscribed_events & @intFromEnum(JxlDecoderStatus.JXL_DEC_PREVIEW_IMAGE)) != 0 and !impl.preview_emitted) {
+			const buffer = impl.preview_buffer orelse return .JXL_DEC_NEED_PREVIEW_OUT_BUFFER;
+			const preview = decodePreview(impl) catch |err| return decoderStatusFromError(impl, err);
+			writeFrameDecoderOutput(preview, &impl.codec_meta, impl.preview_format, buffer, impl.preview_buffer_size) catch |err| return decoderStatusFromError(impl, err);
+			impl.preview_buffer = null;
+			impl.preview_buffer_size = 0;
+			impl.preview_emitted = true;
+			return .JXL_DEC_PREVIEW_IMAGE;
+		}
 		const frame_status = ensureCurrentFrameParsed(impl);
 		if (frame_status != .JXL_DEC_SUCCESS) return frame_status;
 		if (!impl.frame_parsed) return .JXL_DEC_SUCCESS;
@@ -6560,4 +6637,8 @@ test {
 	_ = @import("capi/container_validation_test.zig");
 	_ = @import("capi/final_frame_test.zig");
 	_ = @import("capi/jpeg_consistency_test.zig");
+	_ = @import("capi/preview_test.zig");
+	_ = @import("capi/encoded_preview_test.zig");
+	_ = @import("capi/encoded_preview_animation_test.zig");
+	_ = @import("capi/encoded_preview_planes_test.zig");
 }

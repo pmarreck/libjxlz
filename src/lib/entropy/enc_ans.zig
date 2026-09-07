@@ -165,8 +165,8 @@ pub fn buildANSEncSymbolInfoTable(
 ) ![]ANSEncSymbolInfo {
 	const info_len = @max(@as(usize, 1), counts.len);
 	const info = try allocator.alloc(ANSEncSymbolInfo, info_len);
-	errdefer allocator.free(info);
 	for (info) |*entry| entry.* = .{};
+	errdefer freeANSEncSymbolInfoTable(allocator, info);
 
 	const table_size = @as(usize, 1) << log_alpha_size;
 	const table = try allocator.alloc(AliasTable.Entry, table_size);

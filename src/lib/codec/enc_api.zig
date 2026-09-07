@@ -358,6 +358,7 @@ fn buildSourceImage(allocator: std.mem.Allocator, image: SimpleInterleavedU8Imag
 fn buildPackedSourceImage(allocator: std.mem.Allocator, image: SimplePackedU8Image) !modular_image.Image {
 	var source = try modular_image.Image.create(allocator, image.width, image.height, @intCast(image.bits_per_sample), 0);
 	errdefer source.deinit();
+	try source.channels.ensureTotalCapacity(allocator, image.num_color_channels + @as(usize, @intFromBool(image.alpha_pixels.len != 0)) + image.extra_planes.len);
 
 	for (0..image.num_color_channels) |_| {
 		try source.channels.append(allocator, try modular_image.Channel.create(allocator, image.width, image.height, 0, 0));
@@ -508,6 +509,28 @@ fn encodePreparedFrameData(
 	return allocator.dupe(u8, frame_writer.bytes());
 }
 
+fn encodePreparedPreview(allocator: std.mem.Allocator, codec_meta: image_metadata.CodecMetadata, source: *const modular_image.Image) ![]u8 {
+	const width = codec_meta.m.preview_size.xsize();
+	const height = codec_meta.m.preview_size.ysize();
+	var preview = try modular_image.Image.create(allocator, width, height, source.bitdepth, 0);
+	defer preview.deinit();
+	for (source.channels.items) |channel| {
+		const target_width = common.subsampledSize(width, @intCast(channel.hshift));
+		const target_height = common.subsampledSize(height, @intCast(channel.vshift));
+		var target = try modular_image.Channel.create(allocator, target_width, target_height, channel.hshift, channel.vshift);
+		errdefer target.deinit();
+		for (0..target_height) |y| {
+			const source_y = y * channel.h / target_height;
+			for (0..target_width) |x| target.row(y)[x] = channel.rowConst(source_y)[x * channel.w / target_width];
+		}
+		try preview.channels.append(allocator, target);
+	}
+	var preview_meta = codec_meta;
+	preview_meta.size = .{ .small = false, .xsize_raw = @intCast(width), .ysize_raw = @intCast(height), .ratio = 0 };
+	const frame_header = buildSimpleFrameHeader(codec_meta.m.extra_channel_info[0..codec_meta.m.num_extra_channels], 0, 0);
+	return encodePreparedFrameData(allocator, preview_meta, frame_header, &preview);
+}
+
 fn encodePreparedSource(
 	allocator: std.mem.Allocator,
 	codec_meta: image_metadata.CodecMetadata,
@@ -518,7 +541,9 @@ fn encodePreparedSource(
 	const frame_data = try encodePreparedFrameData(allocator, codec_meta, frame_header, source);
 	defer allocator.free(frame_data);
 
-	const frame_datas = [_][]const u8{frame_data};
+	const preview_data = if (codec_meta.m.have_preview) try encodePreparedPreview(allocator, codec_meta, source) else &.{};
+	defer allocator.free(preview_data);
+	const frame_datas = [_][]const u8{ preview_data, frame_data };
 
 	var codestream = BitWriter.init(allocator);
 	defer codestream.deinit();
@@ -641,7 +666,8 @@ pub fn encodeSimplePackedU8Animation(
 		effective_color_encoding,
 	);
 
-	const frame_datas = try allocator.alloc([]const u8, image.frames.len);
+	const preview_count = @intFromBool(codec_meta.m.have_preview);
+	const frame_datas = try allocator.alloc([]const u8, image.frames.len + preview_count);
 	defer {
 		for (frame_datas) |frame_data| {
 			if (frame_data.len != 0) allocator.free(frame_data);
@@ -677,9 +703,10 @@ pub fn encodeSimplePackedU8Animation(
 		});
 		defer source.deinit();
 
+		if (i == 0 and codec_meta.m.have_preview) frame_datas[0] = try encodePreparedPreview(allocator, codec_meta, &source);
 		var frame_header = buildSimpleFrameHeader(extra_info_slice, frame.frame_duration, frame.frame_timecode);
 		frame_header.is_last = i + 1 == image.frames.len;
-		frame_datas[i] = try encodePreparedFrameData(allocator, codec_meta, frame_header, &source);
+		frame_datas[i + preview_count] = try encodePreparedFrameData(allocator, codec_meta, frame_header, &source);
 	}
 
 	var codestream = BitWriter.init(allocator);

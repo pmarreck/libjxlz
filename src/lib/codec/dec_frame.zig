@@ -102,8 +102,17 @@ pub fn frameByteCount(
 	metadata: *const CodecMetadata,
 	data: []const u8,
 ) JxlError!usize {
+	return frameByteCountWithPreview(allocator, metadata, data, false);
+}
+
+pub fn previewByteCount(allocator: std.mem.Allocator, metadata: *const CodecMetadata, data: []const u8) JxlError!usize {
+	return frameByteCountWithPreview(allocator, metadata, data, true);
+}
+
+fn frameByteCountWithPreview(allocator: std.mem.Allocator, metadata: *const CodecMetadata, data: []const u8, is_preview: bool) JxlError!usize {
 	var frame_dec = FrameDecoder.init(allocator, metadata);
 	defer frame_dec.deinit();
+	frame_dec.is_preview = is_preview;
 
 	var header_br = BitReader.init(data);
 	try frame_dec.initFrame(&header_br);
@@ -1517,6 +1526,7 @@ pub const ModularFrameDecoder = struct {
 
 pub const FrameDecoder = struct {
     frame_header: FrameHeader = .{},
+	is_preview: bool = false,
     frame_dim: FrameDimensions = .{},
     toc_entries: []TocEntry = &.{},
     modular_decoder: ModularFrameDecoder,
@@ -1563,8 +1573,8 @@ pub const FrameDecoder = struct {
     pub fn initFrame(self: *FrameDecoder, br: *BitReader) JxlError!void {
         if (self.patches) |*dictionary| dictionary.deinit();
         self.patches = null;
-        self.frame_header = try FrameHeader.readFromBitStream(br, self.metadata, false);
-        self.frame_dim = self.frame_header.toFrameDimensions(self.metadata, false);
+		self.frame_header = try FrameHeader.readFromBitStream(br, self.metadata, self.is_preview);
+		self.frame_dim = self.frame_header.toFrameDimensions(self.metadata, self.is_preview);
         self.modular_decoder.initFrame(self.frame_dim);
         self.splines.clear();
         self.clearVarDctGlobal();
