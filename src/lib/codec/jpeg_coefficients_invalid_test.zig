@@ -27,6 +27,7 @@ test "JPEG output rejects valid Modular and XYB frames" {
 		var decoder = jxl.codec.dec_frame.FrameDecoder.init(allocator, &metadata);
 		defer decoder.deinit();
 		decoder.jpeg_output = &jpeg;
-		if (decoder.decodeFrame(frame)) return error.AcceptedNonJpegFrame else |err| try std.testing.expectEqual(error.GenericError, err);
+		const expected_error = if (item.encoding == .modular) error.InvalidJpegReconstruction else error.GenericError;
+		if (decoder.decodeFrame(frame)) return error.AcceptedNonJpegFrame else |err| try std.testing.expectEqual(expected_error, err);
 	}
 }

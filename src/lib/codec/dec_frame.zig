@@ -1693,7 +1693,7 @@ pub const FrameDecoder = struct {
             if (refs[self.frame_header.dc_level] == null) return error.GenericError;
         }
 
-        if (self.jpeg_output != null and self.frame_header.encoding == .modular) return error.GenericError;
+        if (self.jpeg_output != null and self.frame_header.encoding == .modular) return error.InvalidJpegReconstruction;
         if (self.frame_header.encoding != .modular) {
             return @import("vardct_frame.zig").decode(self, data, header_byte_offset);
         }

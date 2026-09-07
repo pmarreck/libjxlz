@@ -1297,7 +1297,7 @@ fn validationFailure(
 	frames_validated: u32,
 ) JxlValidationVerdict {
 	return switch (err orelse error.GenericError) {
-		error.InvalidColorEncoding, error.InvalidContainer => setValidationResult(result, .JXL_VALIDATION_CORRUPT, .JXL_VALIDATION_FINDING_MALFORMED, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
+		error.InvalidColorEncoding, error.InvalidContainer, error.InvalidJpegReconstruction => setValidationResult(result, .JXL_VALIDATION_CORRUPT, .JXL_VALIDATION_FINDING_MALFORMED, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
 		error.Unsupported => setValidationResult(result, .JXL_VALIDATION_UNSUPPORTED, .JXL_VALIDATION_FINDING_UNSUPPORTED_FEATURE, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
 		error.NotEnoughBytes => setValidationResult(result, .JXL_VALIDATION_CORRUPT, .JXL_VALIDATION_FINDING_TRUNCATED, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
 		error.OutOfMemory => setValidationResult(result, .JXL_VALIDATION_INDETERMINATE, .JXL_VALIDATION_FINDING_OUT_OF_MEMORY, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
@@ -1387,6 +1387,9 @@ pub export fn JxlValidate(
 			return setValidationResult(result, .JXL_VALIDATION_INDETERMINATE, .JXL_VALIDATION_FINDING_RESOURCE_LIMIT, dec.frame_offset, host_offset, false, frames_validated);
 		}
 
+		if (reconstruction != null) prepareJPEG(dec) catch |err| {
+			return validationFailure(result, err, dec.frame_offset, host_offset, false, frames_validated);
+		};
 		_ = decodeCurrentFrame(dec) catch |err| {
 			return validationFailure(result, err, dec.frame_offset, host_offset, false, frames_validated);
 		};
@@ -1644,7 +1647,7 @@ fn jpegData(impl: *DecoderImpl) JxlError!?*@import("lib/codec/jpeg_reconstructio
 	return found;
 }
 
-fn outputJPEG(impl: *DecoderImpl) JxlError!JxlDecoderStatus {
+fn prepareJPEG(impl: *DecoderImpl) JxlError!void {
 	if (impl.jpeg_bytes.len == 0) {
 		const data = (try jpegData(impl)) orelse return error.GenericError;
 		try @import("lib/codec/jpeg_payloads.zig").populate(std.heap.c_allocator, data, impl.owned_icc, impl.owned_boxes);
@@ -1656,6 +1659,10 @@ fn outputJPEG(impl: *DecoderImpl) JxlError!JxlDecoderStatus {
 		try frame.decodeFrame(impl.frame_data[impl.frame_offset .. impl.frame_offset + impl.frame_size]);
 		impl.jpeg_bytes = try @import("lib/codec/jpeg_writer.zig").write(std.heap.c_allocator, data);
 	}
+}
+
+fn outputJPEG(impl: *DecoderImpl) JxlError!JxlDecoderStatus {
+	try prepareJPEG(impl);
 	if (impl.jpeg_offset == impl.jpeg_bytes.len) return .JXL_DEC_SUCCESS;
 	const buffer = impl.jpeg_buffer orelse return .JXL_DEC_JPEG_NEED_MORE_OUTPUT;
 	const count = @min(impl.jpeg_bytes.len - impl.jpeg_offset, impl.jpeg_buffer_size - impl.jpeg_buffer_written);
@@ -6552,4 +6559,5 @@ test {
 	_ = @import("capi/jpeg_output_test.zig");
 	_ = @import("capi/container_validation_test.zig");
 	_ = @import("capi/final_frame_test.zig");
+	_ = @import("capi/jpeg_consistency_test.zig");
 }

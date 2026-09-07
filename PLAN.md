@@ -42,7 +42,7 @@
   to the Windows commands. Canonical ./test and ./build passed at 20:56 EDT,
   including all 102 CLI suites, 264 required mutation detections and Windows
   cross-compilation. Pushed 02b997c8; origin independently matches at 20:57 EDT.
-  Verify exact-commit CI.
+  Exact-commit Mechatron passed at 21:33:25 EDT (2180 seconds).
   Current sources/logs are preserved under
   /mnt/devcache/projects/libjxlz-0d943c99bed2/in-progress-20260906-resume-1923/.
 - [x] Integrate the final-frame completion fix after strict JPEG validation.
@@ -59,18 +59,35 @@
   Integrated at 20:57 EDT after the strict JPEG/Brotli slice was pushed.
   All 24 integrated selected tests, full ./test (103 CLI suites, 264 required
   mutation detections, Windows cross-compilation) and ./build passed at 21:32 EDT.
-  Commit and verify exact-commit CI.
-- [ ] Finish strict JPEG/codestream consistency before preview integration.
+  Pushed 319eaaa1; origin matches. Exact-commit Mechatron passed at 22:09:59 EDT
+  (2194 seconds), verified at 22:12 EDT.
+- [x] Finish strict JPEG/codestream consistency before preview integration.
   The isolated regression returned VALID for reconstruction metadata attached
   to a Modular stream; upstream and native JPEG output reject it. Strict
   validation now prepares reconstruction too, with a typed malformed error for
   that proven mismatch. All 163 natural/sequential/progressive valid controls
   and ten focused tests pass. Other decoder errors remain indeterminate.
   Source: /tmp/libjxlz-jpeg-consistency-resume-20260906/. Run full tests/build.
+  Canonical gates use /tmp/libjxlz-consistency-full-20260906; preview and
+  orientation cumulative checkouts use /tmp/libjxlz-{preview,orientation}-full-20260906.
+  All-system evaluation exposed the obsolete x86_64-darwin flake output.
+  An exact-host-set test witnessed failure; the three supported Unix hosts now
+  pass that test and all-system evaluation. LuaJIT is declared for fixture
+  generation. Restart the affected full gates after this configuration fix.
+  Corrected the old Modular error expectation and restored pinned submodule
+  contents in the test checkout. Full ./test passed at 22:32 EDT (105 CLI
+  suites, 264 required mutation detections and Windows cross-compilation);
+  ./build passed. Integrated source exactly matches the tested checkout.
 - [ ] Integrate actual preview decoding, buffers and event handling after parser
   completion. Twelve selected tests and the shared upstream/native C control
   pass. Controls cover padding, subscriptions, rewind/reset and preview budgets.
   Source: /tmp/libjxlz-preview-resume-20260906/.
+- [ ] Fix the encoder's missing preview frame before shipping preview decoding.
+  Full CLI tests exposed that have_preview currently writes only dimensions.
+  Generate the requested preview from the first image with nearest-neighbor
+  sampling, retaining all main frames and extra planes. Verify actual preview
+  pixels with native and upstream decoders, including animation and allocation
+  cleanup. Source: /tmp/libjxlz-preview-encoder-resume-20260906/.
 - [ ] Integrate orientation handling after previews. Nine selected checks pass
   against upstream metadata, pixels, aligned buffers, actual previews and frame
   dimensions. All 32 cropped-origin cases, 16-bit RGBA padding controls and
@@ -79,6 +96,22 @@
 - [ ] Strengthen independent controls after the codec fixes: distinguish crashes
   from clean rejection, enforce mismatch-count bounds, and cover the complete
   labeled-corpus classifier domain. See the retained control-audit report.
+- [ ] Complete alpha output controls after orientation. Upstream's associated
+  alpha option changes pixels only when output includes alpha; metadata stays
+  unchanged. The 8/16-bit RGB/RGBA matrix witnessed ignored unpremultiplication,
+  then a separate existing wide-input quantization difference. Isolated work:
+  /tmp/libjxlz-alpha-resume-20260906/. Expand to float output and grayscale.
+  Revisit zero alpha, clipping, output precision and composition with orientation.
+  Twenty-eight selected checks now pass, including 672 decoder configurations,
+  actual previews, floating encoded input, rewind/reset and allocation failure.
+  Additional witnessed fixes cover gray expansion, normalization, nearest-even
+  UINT16 rounding and dithering after reflection but before transposition.
+  Preserve the existing >=23-bit integer normalization path pending its own
+  control. Full integration follows the preview encoder correction.
+- [ ] Recheck the three cumulative gates after correcting the old Modular JPEG
+  error expectation and exporting pinned upstream submodule sources into their
+  detached checkouts (22:02 EDT). Current logs end in full-finaltest and
+  full-finalbuild; earlier attempts failed or were interrupted and are not green.
 - [x] Preserve the audit findings after an automated content filter stopped
   the memory-review worker (Peter, 2026-09-06 12:57 EDT). Continue authorized
   parser work; the filter notice supplied no specific technical explanation.

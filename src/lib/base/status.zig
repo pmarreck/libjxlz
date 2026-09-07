@@ -11,6 +11,7 @@ pub const JxlError = error{
 	GenericError,
 	InvalidColorEncoding,
 	InvalidContainer,
+	InvalidJpegReconstruction,
 	Unsupported,
 	NotEnoughBytes,
 	OutOfMemory,
@@ -52,7 +53,7 @@ pub const Status = struct {
 	/// Convert a JxlError back into a Status.
 	pub fn fromError(err: JxlError) Status {
 		return switch (err) {
-			JxlError.GenericError, JxlError.InvalidColorEncoding, JxlError.InvalidContainer, JxlError.BrotliDecoderFailure => Status{ .code = .generic_error },
+			JxlError.GenericError, JxlError.InvalidColorEncoding, JxlError.InvalidContainer, JxlError.InvalidJpegReconstruction, JxlError.BrotliDecoderFailure => Status{ .code = .generic_error },
 			JxlError.Unsupported => Status{ .code = .unsupported },
 			JxlError.NotEnoughBytes => Status{ .code = .not_enough_bytes },
 			JxlError.OutOfMemory => Status{ .code = .generic_error },

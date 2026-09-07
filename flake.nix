@@ -8,7 +8,7 @@
     };
   };
   outputs = { self, nixpkgs, flake-utils, zig-overlay }:
-    flake-utils.lib.eachDefaultSystem
+    flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ]
       (system:
         let
           pkgs = import nixpkgs {
@@ -185,6 +185,7 @@
               hyperfine
             ];
             nativeBuildInputs = [
+              luajit
               # Differential decode oracle for the ground-truth corpus tests.
               # decode_ground_truth_oracle_djxl() falls back to `command -v djxl`,
               # so before this the oracle was whatever happened to be installed
