@@ -1291,7 +1291,7 @@ fn ensureDecoded(dec: *DecoderImpl) JxlDecoderStatus {
 	if (dec.output_buffer == null) return .JXL_DEC_NEED_IMAGE_OUT_BUFFER;
 
 	const frame_dec = decodeCurrentFrame(dec) catch |err| return decoderStatusFromError(dec, err);
-	capi_output.writeOrientedFrameDecoderOutput(std.heap.c_allocator, frame_dec, &dec.codec_meta, if (dec.keep_orientation) 1 else dec.codec_meta.m.orientation, dec.output_format, dec.output_buffer.?, dec.output_buffer_size) catch |err| return decoderStatusFromError(dec, err);
+	capi_output.writeConfiguredFrameDecoderOutput(std.heap.c_allocator, frame_dec, &dec.codec_meta, if (dec.keep_orientation) 1 else dec.codec_meta.m.orientation, dec.unpremultiply_alpha, dec.output_format, dec.output_buffer.?, dec.output_buffer_size) catch |err| return decoderStatusFromError(dec, err);
 	dec.frame_decoded = true;
 	return .JXL_DEC_SUCCESS;
 }
@@ -2037,7 +2037,7 @@ pub export fn JxlDecoderProcessInput(dec_ptr: ?*JxlDecoder) JxlDecoderStatus {
 		if (impl.codec_meta.m.have_preview and (impl.subscribed_events & @intFromEnum(JxlDecoderStatus.JXL_DEC_PREVIEW_IMAGE)) != 0 and !impl.preview_emitted) {
 			const buffer = impl.preview_buffer orelse return .JXL_DEC_NEED_PREVIEW_OUT_BUFFER;
 			const preview = decodePreview(impl) catch |err| return decoderStatusFromError(impl, err);
-			capi_output.writeOrientedFrameDecoderOutput(std.heap.c_allocator, preview, &impl.codec_meta, if (impl.keep_orientation) 1 else impl.codec_meta.m.orientation, impl.preview_format, buffer, impl.preview_buffer_size) catch |err| return decoderStatusFromError(impl, err);
+			capi_output.writeConfiguredFrameDecoderOutput(std.heap.c_allocator, preview, &impl.codec_meta, if (impl.keep_orientation) 1 else impl.codec_meta.m.orientation, impl.unpremultiply_alpha, impl.preview_format, buffer, impl.preview_buffer_size) catch |err| return decoderStatusFromError(impl, err);
 			impl.preview_buffer = null;
 			impl.preview_buffer_size = 0;
 			impl.preview_emitted = true;
@@ -3230,7 +3230,8 @@ test "writeImageToOutput scales grayscale to uint8 rgb" {
 	};
 	var buffer: [9]u8 = undefined;
 	try writeImageToOutput(&img, &metadata, format, buffer[0..].ptr, buffer.len);
-	try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 128, 128, 128, 255, 255, 255 }, &buffer);
+	// Public upstream control: tests/unit/gray_quantization_oracle.cc.
+	try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 128, 127, 127, 255, 255, 255 }, &buffer);
 }
 
 test "writeRenderedImageToOutput scales float RGB rows to uint8 output" {
@@ -6667,6 +6668,7 @@ test {
 	_ = @import("capi/final_frame_test.zig");
 	_ = @import("capi/jpeg_consistency_test.zig");
 	_ = @import("capi/preview_test.zig");
+	_ = @import("capi/alpha_output_test.zig");
 	_ = @import("capi/encoded_preview_test.zig");
 	_ = @import("capi/encoded_preview_animation_test.zig");
 	_ = @import("capi/encoded_preview_planes_test.zig");

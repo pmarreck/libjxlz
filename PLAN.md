@@ -106,7 +106,7 @@
 - [ ] Strengthen independent controls after the codec fixes: distinguish crashes
   from clean rejection, enforce mismatch-count bounds, and cover the complete
   labeled-corpus classifier domain. See the retained control-audit report.
-- [ ] Complete alpha output controls after orientation. Upstream's associated
+- [x] Complete alpha output controls after orientation. Upstream's associated
   alpha option changes pixels only when output includes alpha; metadata stays
   unchanged. The 8/16-bit RGB/RGBA matrix witnessed ignored unpremultiplication,
   then a separate existing wide-input quantization difference. Isolated work:
@@ -118,6 +118,9 @@
   UINT16 rounding and dithering after reflection but before transposition.
   Preserve the existing >=23-bit integer normalization path pending its own
   control. Full integration follows the preview encoder correction.
+  Full ./test and ./build passed at 23:14 EDT, including 106 CLI suites,
+  mutation controls and Windows cross-compilation. Integrated sources match
+  /tmp/libjxlz-alpha-full-20260906 apart from this plan.
 - [ ] Finish spot-color rendering after alpha output. The initial 216 upstream
   comparisons witnessed unchanged pixels with rendering enabled, then passed.
   RGB, grayscale and associated-alpha controls pass; XYB comparisons expose
