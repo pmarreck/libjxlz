@@ -11,6 +11,7 @@ CHECK_BUILD_LOG="${TMPDIR}/cjxlz_orientation_intrinsic_check_build.log"
 INPUT_PPM="${TMPDIR}/cjxlz_orientation_intrinsic_input.ppm"
 ENCODED_JXL="${TMPDIR}/cjxlz_orientation_intrinsic_output.jxl"
 ROUNDTRIP_PPM="${TMPDIR}/cjxlz_orientation_intrinsic_roundtrip.ppm"
+EXPECTED_PPM="${TMPDIR}/cjxlz_orientation_intrinsic_expected.ppm"
 
 if ! PACKAGE_OUT="$(nix build --no-link --print-out-paths ".#packages.${SYSTEM}.default" 2>"${BUILD_LOG}")"; then
 	cat "${BUILD_LOG}"
@@ -19,6 +20,8 @@ fi
 
 printf 'P6\n2 2\n255\n' >"${INPUT_PPM}"
 printf '\x00\x0A\x14\x1E\x28\x32\x3C\x46\x50\x5A\x64\x6E' >>"${INPUT_PPM}"
+printf 'P6\n2 2\n255\n' >"${EXPECTED_PPM}"
+printf '\x3C\x46\x50\x00\x0A\x14\x5A\x64\x6E\x1E\x28\x32' >>"${EXPECTED_PPM}"
 
 if ! "${PACKAGE_OUT}/bin/cjxlz" \
 	--orientation 6 \
@@ -33,7 +36,7 @@ if ! "${PACKAGE_OUT}/bin/djxlz" "${ENCODED_JXL}" @stdout --output_format ppm >"$
 	exit 1
 fi
 
-if ! cmp -s "${INPUT_PPM}" "${ROUNDTRIP_PPM}"; then
+if ! cmp -s "${EXPECTED_PPM}" "${ROUNDTRIP_PPM}"; then
 	echo "ppm roundtrip mismatch"
 	exit 1
 fi
@@ -56,7 +59,7 @@ if ! "${CHECK_BIN}" "${ENCODED_JXL}" >"${CHECK_STDOUT}" 2>"${CHECK_STDERR}"; the
 	exit 1
 fi
 
-if ! grep -Eq '^255 0 0 0 0 0 0 6 9 7$' "${CHECK_STDOUT}"; then
+if ! grep -Eq '^255 0 0 0 0 0 0 1 9 7$' "${CHECK_STDOUT}"; then
 	echo "unexpected decoded orientation/intrinsic"
 	cat "${CHECK_STDOUT}"
 	exit 1

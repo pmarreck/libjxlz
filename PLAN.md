@@ -94,11 +94,15 @@
   Actual static/animated preview output passes native and upstream decoding.
   Plane and allocation tests exposed and fixed two allocation-cleanup leaks.
   Included in the passing preview gates and integration (23:11 EDT).
-- [ ] Integrate orientation handling after previews. Nine selected checks pass
+- [x] Integrate orientation handling after previews. Nine selected checks pass
   against upstream metadata, pixels, aligned buffers, actual previews and frame
   dimensions. All 32 cropped-origin cases, 16-bit RGBA padding controls and
   allocation injection pass. The isolated parser/preview/orientation merge
   passes 42 selected checks. Source: /tmp/libjxlz-orientation-resume-20260906/.
+  Full ./test and ./build passed at 23:11 EDT, including 106 CLI suites,
+  mutation controls and Windows cross-compilation. Integrated sources match
+  /tmp/libjxlz-orientation-full-20260906 apart from this plan. Upstream verified
+  corrected orientation expectations in the old encoder and CLI controls.
 - [ ] Strengthen independent controls after the codec fixes: distinguish crashes
   from clean rejection, enforce mismatch-count bounds, and cover the complete
   labeled-corpus classifier domain. See the retained control-audit report.

@@ -313,3 +313,41 @@ pub fn writeFrameDecoderOutput(frame_dec: *dec_frame.FrameDecoder, codec_meta: *
 	}
 	return writeImageToOutput(frame_dec.getDecodedImage(), metadata, format, buffer, buffer_size);
 }
+
+/// Packs pixels once, then copies whole samples to their oriented coordinates.
+/// Identity output uses the existing direct writer without a temporary buffer.
+pub fn writeOrientedFrameDecoderOutput(allocator: std.mem.Allocator, frame_dec: *dec_frame.FrameDecoder, codec_meta: *const image_metadata.CodecMetadata, orientation: u32, format: JxlPixelFormat, buffer: [*]u8, buffer_size: usize) JxlError!void {
+	if (orientation == 1) return writeFrameDecoderOutput(frame_dec, codec_meta, format, buffer, buffer_size);
+	if (orientation < 1 or orientation > 8) return error.Unsupported;
+	const width = if (frame_dec.rendered_image) |rendered| rendered.xsize else frame_dec.getDecodedImage().w;
+	const height = if (frame_dec.rendered_image) |rendered| rendered.ysize else frame_dec.getDecodedImage().h;
+	const output_width = if (orientation >= 5) height else width;
+	const output_height = if (orientation >= 5) width else height;
+	const needed = pixel_format.outputBufferSize(output_width, output_height, format) orelse return error.GenericError;
+	if (buffer_size < needed) return error.GenericError;
+	const stride = rowStrideBytes(output_width, format) orelse return error.GenericError;
+	const pixel_bytes = pixel_format.packedRowBytes(1, format) orelse return error.Unsupported;
+	var packed_format = format;
+	packed_format.@"align" = 0;
+	const packed_size = pixel_format.outputBufferSize(width, height, packed_format) orelse return error.GenericError;
+	const packed_pixels = try allocator.alloc(u8, packed_size);
+	defer allocator.free(packed_pixels);
+	try writeFrameDecoderOutput(frame_dec, codec_meta, packed_format, packed_pixels.ptr, packed_pixels.len);
+	for (0..height) |y| {
+		for (0..width) |x| {
+			const point: [2]usize = switch (orientation) {
+				2 => .{ width - 1 - x, y },
+				3 => .{ width - 1 - x, height - 1 - y },
+				4 => .{ x, height - 1 - y },
+				5 => .{ y, x },
+				6 => .{ height - 1 - y, x },
+				7 => .{ height - 1 - y, width - 1 - x },
+				8 => .{ y, width - 1 - x },
+				else => unreachable,
+			};
+			const source = (y * width + x) * pixel_bytes;
+			const dest = point[1] * stride + point[0] * pixel_bytes;
+			@memcpy(buffer[dest .. dest + pixel_bytes], packed_pixels[source .. source + pixel_bytes]);
+		}
+	}
+}

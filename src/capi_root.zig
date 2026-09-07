@@ -1291,7 +1291,7 @@ fn ensureDecoded(dec: *DecoderImpl) JxlDecoderStatus {
 	if (dec.output_buffer == null) return .JXL_DEC_NEED_IMAGE_OUT_BUFFER;
 
 	const frame_dec = decodeCurrentFrame(dec) catch |err| return decoderStatusFromError(dec, err);
-	writeFrameDecoderOutput(frame_dec, &dec.codec_meta, dec.output_format, dec.output_buffer.?, dec.output_buffer_size) catch |err| return decoderStatusFromError(dec, err);
+	capi_output.writeOrientedFrameDecoderOutput(std.heap.c_allocator, frame_dec, &dec.codec_meta, if (dec.keep_orientation) 1 else dec.codec_meta.m.orientation, dec.output_format, dec.output_buffer.?, dec.output_buffer_size) catch |err| return decoderStatusFromError(dec, err);
 	dec.frame_decoded = true;
 	return .JXL_DEC_SUCCESS;
 }
@@ -1753,7 +1753,13 @@ pub export fn JxlDecoderGetBasicInfo(dec_ptr: ?*const JxlDecoder, info: ?*JxlBas
 	const dec = dec_ptr orelse return .JXL_DEC_ERROR;
 	const impl: *const DecoderImpl = @ptrCast(@alignCast(dec));
 	if (!impl.basic_info_available) return .JXL_DEC_NEED_MORE_INPUT;
-	if (info) |dst| dst.* = impl.basic_info;
+	if (info) |dst| {
+		dst.* = impl.basic_info;
+		if (!impl.keep_orientation) {
+			if (@intFromEnum(dst.orientation) >= 5) std.mem.swap(u32, &dst.xsize, &dst.ysize);
+			dst.orientation = .JXL_ORIENT_IDENTITY;
+		}
+	}
 	return .JXL_DEC_SUCCESS;
 }
 
@@ -1867,6 +1873,25 @@ pub export fn JxlDecoderGetFrameHeader(dec_ptr: ?*const JxlDecoder, header_ptr: 
 			dst.layer_info.xsize = impl.basic_info.xsize;
 			dst.layer_info.ysize = impl.basic_info.ysize;
 		}
+		if (!impl.keep_orientation) {
+			const orientation = impl.codec_meta.m.orientation;
+			if (orientation >= 5) std.mem.swap(u32, &dst.layer_info.xsize, &dst.layer_info.ysize);
+			if (!impl.coalescing) {
+				var x: i64 = dst.layer_info.crop_x0;
+				var y: i64 = dst.layer_info.crop_y0;
+				var width: i64 = impl.basic_info.xsize;
+				var height: i64 = impl.basic_info.ysize;
+				if (orientation >= 5) {
+					std.mem.swap(i64, &x, &y);
+					std.mem.swap(i64, &width, &height);
+				}
+				const flips = (orientation - 1) & 3;
+				if (flips == 1 or flips == 2) x = width - dst.layer_info.xsize - x;
+				if (flips >= 2) y = height - dst.layer_info.ysize - y;
+				dst.layer_info.crop_x0 = std.math.cast(i32, x) orelse return .JXL_DEC_ERROR;
+				dst.layer_info.crop_y0 = std.math.cast(i32, y) orelse return .JXL_DEC_ERROR;
+			}
+		}
 	}
 	return .JXL_DEC_SUCCESS;
 }
@@ -1896,8 +1921,9 @@ pub export fn JxlDecoderImageOutBufferSize(dec_ptr: ?*const JxlDecoder, format: 
 	if (!impl.basic_info_available) return .JXL_DEC_ERROR;
 	if (!impl.coalescing and !impl.frame_parsed) return .JXL_DEC_ERROR;
 	if (pixel_format.num_channels < impl.basic_info.num_color_channels or pixel_format.num_channels > 4) return .JXL_DEC_ERROR;
-	const width = if (impl.coalescing) impl.basic_info.xsize else impl.frame_header.layer_info.xsize;
-	const height = if (impl.coalescing) impl.basic_info.ysize else impl.frame_header.layer_info.ysize;
+	var width = if (impl.coalescing) impl.basic_info.xsize else impl.frame_header.layer_info.xsize;
+	var height = if (impl.coalescing) impl.basic_info.ysize else impl.frame_header.layer_info.ysize;
+	if (!impl.keep_orientation and impl.codec_meta.m.orientation >= 5) std.mem.swap(u32, &width, &height);
 	out_size.* = capi_pixel.outputBufferSize(width, height, pixel_format.*) orelse return .JXL_DEC_ERROR;
 	return .JXL_DEC_SUCCESS;
 }
@@ -1910,7 +1936,10 @@ pub export fn JxlDecoderPreviewOutBufferSize(dec_ptr: ?*const JxlDecoder, format
 	if (!impl.basic_info_available) return .JXL_DEC_NEED_MORE_INPUT;
 	if (impl.basic_info.have_preview == 0) return .JXL_DEC_ERROR;
 	if (pixel_format.num_channels < impl.basic_info.num_color_channels or pixel_format.num_channels > 4) return .JXL_DEC_ERROR;
-	out_size.* = capi_pixel.outputBufferSize(impl.basic_info.preview.xsize, impl.basic_info.preview.ysize, pixel_format.*) orelse return .JXL_DEC_ERROR;
+	var width = impl.basic_info.preview.xsize;
+	var height = impl.basic_info.preview.ysize;
+	if (!impl.keep_orientation and impl.codec_meta.m.orientation >= 5) std.mem.swap(u32, &width, &height);
+	out_size.* = capi_pixel.outputBufferSize(width, height, pixel_format.*) orelse return .JXL_DEC_ERROR;
 	return .JXL_DEC_SUCCESS;
 }
 
@@ -2008,7 +2037,7 @@ pub export fn JxlDecoderProcessInput(dec_ptr: ?*JxlDecoder) JxlDecoderStatus {
 		if (impl.codec_meta.m.have_preview and (impl.subscribed_events & @intFromEnum(JxlDecoderStatus.JXL_DEC_PREVIEW_IMAGE)) != 0 and !impl.preview_emitted) {
 			const buffer = impl.preview_buffer orelse return .JXL_DEC_NEED_PREVIEW_OUT_BUFFER;
 			const preview = decodePreview(impl) catch |err| return decoderStatusFromError(impl, err);
-			writeFrameDecoderOutput(preview, &impl.codec_meta, impl.preview_format, buffer, impl.preview_buffer_size) catch |err| return decoderStatusFromError(impl, err);
+			capi_output.writeOrientedFrameDecoderOutput(std.heap.c_allocator, preview, &impl.codec_meta, if (impl.keep_orientation) 1 else impl.codec_meta.m.orientation, impl.preview_format, buffer, impl.preview_buffer_size) catch |err| return decoderStatusFromError(impl, err);
 			impl.preview_buffer = null;
 			impl.preview_buffer_size = 0;
 			impl.preview_emitted = true;
@@ -6641,4 +6670,7 @@ test {
 	_ = @import("capi/encoded_preview_test.zig");
 	_ = @import("capi/encoded_preview_animation_test.zig");
 	_ = @import("capi/encoded_preview_planes_test.zig");
+	_ = @import("capi/orientation_test.zig");
+	_ = @import("capi/orientation_crop_test.zig");
+	_ = @import("capi/orientation_allocation_test.zig");
 }

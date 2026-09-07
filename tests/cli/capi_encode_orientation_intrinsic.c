@@ -28,6 +28,10 @@ int main(void) {
 		0, 10, 20, 30, 40, 50,
 		60, 70, 80, 90, 100, 110,
 	};
+	const uint8_t oriented_pixels[12] = {
+		60, 70, 80, 0, 10, 20,
+		90, 100, 110, 30, 40, 50,
+	};
 	JxlPixelFormat format = {3, JXL_TYPE_UINT8, JXL_NATIVE_ENDIAN, 0};
 
 	JxlBasicInfo info;
@@ -170,7 +174,7 @@ int main(void) {
 	}
 
 	if (
-		decoded_info.orientation != JXL_ORIENT_ROTATE_90_CW ||
+		decoded_info.orientation != JXL_ORIENT_IDENTITY ||
 		decoded_info.intrinsic_xsize != 9 ||
 		decoded_info.intrinsic_ysize != 7
 	) {
@@ -180,7 +184,7 @@ int main(void) {
 		free(encoded);
 		return 1;
 	}
-	if (decoded_size != sizeof(pixels) || memcmp(decoded_pixels, pixels, sizeof(pixels)) != 0) {
+	if (decoded_size != sizeof(oriented_pixels) || memcmp(decoded_pixels, oriented_pixels, sizeof(oriented_pixels)) != 0) {
 		fprintf(stderr, "pixel roundtrip mismatch\n");
 		free(decoded_pixels);
 		JxlDecoderDestroy(dec);
