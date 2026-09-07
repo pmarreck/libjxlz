@@ -26,7 +26,8 @@
   tests. Full ./test and ./build passed, including all 102 CLI suites,
   264 required mutation detections and Windows cross-compilation.
   Logs: /tmp/libjxlz-resume-container-{test,build}-20260906.log.
-- [ ] Review Brotli stream allocation-error classification before integrating
+  Shipped b78ad099; exact-commit Mechatron passed at 20:20:34 EDT (2196 s).
+- [x] Review Brotli stream allocation-error classification before integrating
   strict JPEG payload validation. The isolated payload controls pass, but native
   decoder allocation errors currently become GenericError and could be reported
   as corrupt input by the proposed catch. Preserve resource failures separately.
@@ -34,7 +35,13 @@
   witnessed failures, then passed. Six allocation codes now map to OutOfMemory;
   non-format native failures remain indeterminate. Eight Brotli/status checks
   and 21 selected JPEG checks pass, including strict payload verdicts and
-  resource-limit precedence. Integrate after the container bounds commit.
+  resource-limit precedence. Integrated at 19:44 EDT after container bounds
+  commit b78ad099 was pushed and origin verified. Production build and the full
+  Linux unit suite passed. Of 102 CLI suites, only Windows compile-only failed:
+  the native allocation control requires an explicit libc dependency. Added -lc
+  to the Windows commands. Canonical ./test and ./build passed at 20:56 EDT,
+  including all 102 CLI suites, 264 required mutation detections and Windows
+  cross-compilation. Commit and verify exact-commit CI.
   Current sources/logs are preserved under
   /mnt/devcache/projects/libjxlz-0d943c99bed2/in-progress-20260906-resume-1923/.
 - [ ] Integrate the final-frame completion fix after strict JPEG validation.
@@ -43,6 +50,18 @@
   follows is_last, and exhausted unfinished input requests more input while open
   or reports truncation when closed. Five selected tests pass (19:38 EDT).
   Source: /tmp/libjxlz-final-frame-resume-20260906/.
+- [ ] Integrate container grammar and signature checks with final-frame completion.
+  The combined isolated slice passes 25 selected checks. Its external C control
+  passes upstream and native with BOX events enabled to inspect trailing boxes.
+  Source: /tmp/libjxlz-parser-combined-resume-20260906/.
+- [ ] Integrate actual preview decoding, buffers and event handling after parser
+  completion. Twelve selected tests and the shared upstream/native C control
+  pass. Controls cover padding, subscriptions, rewind/reset and preview budgets.
+  Source: /tmp/libjxlz-preview-resume-20260906/.
+- [ ] Integrate orientation handling after previews. Nine selected checks pass
+  against upstream metadata, pixels, aligned buffers, actual previews and frame
+  dimensions. Cropped-origin controls are being tested separately before this
+  slice is ready. Source: /tmp/libjxlz-orientation-resume-20260906/.
 - [ ] Strengthen independent controls after the codec fixes: distinguish crashes
   from clean rejection, enforce mismatch-count bounds, and cover the complete
   labeled-corpus classifier domain. See the retained control-audit report.

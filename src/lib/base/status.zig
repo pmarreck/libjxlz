@@ -13,6 +13,7 @@ pub const JxlError = error{
 	Unsupported,
 	NotEnoughBytes,
 	OutOfMemory,
+	BrotliDecoderFailure,
 };
 
 /// Drop-in replacement for bool that carries an error code.
@@ -50,7 +51,7 @@ pub const Status = struct {
 	/// Convert a JxlError back into a Status.
 	pub fn fromError(err: JxlError) Status {
 		return switch (err) {
-			JxlError.GenericError, JxlError.InvalidColorEncoding => Status{ .code = .generic_error },
+			JxlError.GenericError, JxlError.InvalidColorEncoding, JxlError.BrotliDecoderFailure => Status{ .code = .generic_error },
 			JxlError.Unsupported => Status{ .code = .unsupported },
 			JxlError.NotEnoughBytes => Status{ .code = .not_enough_bytes },
 			JxlError.OutOfMemory => Status{ .code = .generic_error },

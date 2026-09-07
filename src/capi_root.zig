@@ -1302,8 +1302,16 @@ fn validationFailure(
 		error.Unsupported => setValidationResult(result, .JXL_VALIDATION_UNSUPPORTED, .JXL_VALIDATION_FINDING_UNSUPPORTED_FEATURE, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
 		error.NotEnoughBytes => setValidationResult(result, .JXL_VALIDATION_CORRUPT, .JXL_VALIDATION_FINDING_TRUNCATED, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
 		error.OutOfMemory => setValidationResult(result, .JXL_VALIDATION_INDETERMINATE, .JXL_VALIDATION_FINDING_OUT_OF_MEMORY, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
-		error.GenericError => setValidationResult(result, .JXL_VALIDATION_INDETERMINATE, .JXL_VALIDATION_FINDING_UNCLASSIFIED_DECODER_ERROR, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
+		error.GenericError, error.BrotliDecoderFailure => setValidationResult(result, .JXL_VALIDATION_INDETERMINATE, .JXL_VALIDATION_FINDING_UNCLASSIFIED_DECODER_ERROR, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
 	};
+}
+
+test "strict JPEG reconstruction keeps Brotli resource and operational failures indeterminate" {
+	var result: JxlValidationResult = undefined;
+	for ([_]JxlError{ error.OutOfMemory, error.BrotliDecoderFailure }, [_]JxlValidationFindingCode{ .JXL_VALIDATION_FINDING_OUT_OF_MEMORY, .JXL_VALIDATION_FINDING_UNCLASSIFIED_DECODER_ERROR }) |err, code| {
+		try std.testing.expectEqual(JxlValidationVerdict.JXL_VALIDATION_INDETERMINATE, validationFailure(&result, err, 0, 0, false, 0));
+		try std.testing.expectEqual(code, result.code);
+	}
 }
 
 /// Strictly validates a bounded JPEG XL buffer without decoding through an external implementation.
@@ -1360,6 +1368,14 @@ pub export fn JxlValidate(
 		return setValidationResult(result, .JXL_VALIDATION_INDETERMINATE, .JXL_VALIDATION_FINDING_RESOURCE_LIMIT, 0, host_offset, false, 0);
 	if (pixels > options.max_pixels) {
 		return setValidationResult(result, .JXL_VALIDATION_INDETERMINATE, .JXL_VALIDATION_FINDING_RESOURCE_LIMIT, 0, host_offset, false, 0);
+	}
+	const reconstruction = jpegData(dec) catch
+		return setValidationResult(result, .JXL_VALIDATION_CORRUPT, .JXL_VALIDATION_FINDING_MALFORMED, 0, host_offset, false, 0);
+	if (reconstruction) |jpeg| {
+		@import("lib/codec/jpeg_payloads.zig").populate(std.heap.c_allocator, jpeg, dec.owned_icc, dec.owned_boxes) catch |err| {
+			if (err != error.GenericError) return validationFailure(result, err, 0, host_offset, false, 0);
+			return setValidationResult(result, .JXL_VALIDATION_CORRUPT, .JXL_VALIDATION_FINDING_MALFORMED, 0, host_offset, false, 0);
+		};
 	}
 
 	var frames_validated: u32 = 0;

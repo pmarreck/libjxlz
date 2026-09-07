@@ -7,7 +7,6 @@ close=[
 ]
 
 annotate=[
-	 doc/jpeg_reconstruction_controls.md = JPEG reconstruction coverage and fixture reproduction commands
 	.dirtree-state = checked-in dirtree view settings and file-purpose annotations replacing the old CODE_MINIMAP surface
 	.github/workflows/libjxlz_ci.yml = repo-specific GitHub Actions workflow running on pushes to yolo and pull requests, with Linux x86_64 flake/full-suite checks plus native aarch64 test runs on Linux and macOS
 	CODE_REVIEW.md = Current strict-parser release review: blocking memory-safety, verdict, resource, ABI, and documentation findings.
@@ -31,6 +30,7 @@ annotate=[
 	cjxlz_gif_info.zig = tiny Zig codestream inspector plus CLI smoke for GIF-to-JXL animation
 	doc/fixed_arithmetic_performance.md = Fixed arithmetic measurement, exact optimization control, or benchmark regression check
 	doc/float_sample_effects.md = Floating sample controls, integer runtime arithmetic and remaining coverage
+	doc/jpeg_reconstruction_controls.md = JPEG reconstruction coverage and fixture reproduction commands
 	doc/modular_wide_properties.md = Wide Modular property regression evidence and pending filter cases
 	doc/output_color_oracles.md = Upstream color fixtures, numeric bounds and independent controls
 	doc/upstream_optimization_notes.md = upstream-facing summary of kept decode optimizations, including which wins are portable back to C/C++, where Zig aided specialization/layout work, and where Zig still has tradeoffs
@@ -83,7 +83,7 @@ annotate=[
 	src/lib/base/bit_reader.zig = 64-bit buffered bitstream reader with deferred refill, bounds checking
 	src/lib/base/bit_writer.zig = first encoder-side writable primitive: LSB-first bit packing with byte-padding semantics matching BitReader, now with ensureUnusedCapacityBits so hot encode paths can reserve an entire bit burst before repeated write calls, proven by...
 	src/lib/base/bits.zig = CLZ, CTZ, floorLog2, ceilLog2 via @clz/@ctz builtins
-	src/lib/base/brotli.zig = tiny Brotli wrapper around brotli/{decode,encode}.h
+	src/lib/base/brotli.zig = Brotli metadata streams with typed native failures and allocation controls
 	src/lib/base/brotli_bounded_test.zig = Brotli output budgets across empty and multichunk streams
 	src/lib/base/byte_order.zig = Endian load/store for 16/32/64-bit ints and floats via std.mem
 	src/lib/base/common.zig = Constants (pi, bits_per_byte), divCeil, shared signed-shift subsampledSize for chroma/extra-channel plane geometry, roundUp, clamp, safeAdd

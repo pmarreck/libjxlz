@@ -75,7 +75,7 @@ test "public JPEG reconstruction drains into repeated small output buffers" {
 	try std.testing.expectEqual(success, api.JxlDecoderProcessInput(dec));
 }
 
-test "public JPEG reconstruction rejects missing duplicate and mismatched metadata" {
+fn checkMetadataVariants(validate: bool) !void {
 	const container = @import("../lib/codec/container.zig");
 	const allocator = std.testing.allocator;
 	var original = try container.extractCodestreamAndBoxes(allocator, &fixture.bytes_0);
@@ -101,6 +101,16 @@ test "public JPEG reconstruction rejects missing duplicate and mismatched metada
 	for (cases, 0..) |boxes, id| {
 		const input = try container.wrapCodestreamWithBoxes(allocator, original.codestream, boxes);
 		defer allocator.free(input);
+		if (validate) {
+			var result: api.JxlValidationResult = undefined;
+			try std.testing.expectEqual(if (id == 0) api.JxlValidationVerdict.JXL_VALIDATION_VALID else api.JxlValidationVerdict.JXL_VALIDATION_CORRUPT, api.JxlValidate(input.ptr, input.len, null, &result));
+			try std.testing.expectEqual(if (id == 0) api.JxlValidationFindingCode.JXL_VALIDATION_FINDING_NONE else api.JxlValidationFindingCode.JXL_VALIDATION_FINDING_MALFORMED, result.code);
+			var options = api.default_validation_options;
+			options.max_pixels = 0;
+			try std.testing.expectEqual(api.JxlValidationVerdict.JXL_VALIDATION_INDETERMINATE, api.JxlValidate(input.ptr, input.len, &options, &result));
+			try std.testing.expectEqual(api.JxlValidationFindingCode.JXL_VALIDATION_FINDING_RESOURCE_LIMIT, result.code);
+			continue;
+		}
 		const dec = api.JxlDecoderCreate(null) orelse return error.OutOfMemory;
 		defer api.JxlDecoderDestroy(dec);
 		const output = try allocator.alloc(u8, fixture.jpeg_0.len);
@@ -114,6 +124,13 @@ test "public JPEG reconstruction rejects missing duplicate and mismatched metada
 		if (id == 0) try std.testing.expectEqualSlices(u8, &fixture.jpeg_0, output);
 		_ = api.JxlDecoderReleaseJPEGBuffer(dec);
 	}
+}
+
+test "public JPEG reconstruction rejects missing duplicate and mismatched metadata" {
+	try checkMetadataVariants(false);
+}
+test "strict JPEG reconstruction rejects missing duplicate and mismatched metadata" {
+	try checkMetadataVariants(true);
 }
 
 test "public JPEG output buffer preserves pixel fallback when reconstruction metadata is absent" {
