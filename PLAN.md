@@ -41,27 +41,41 @@
   the native allocation control requires an explicit libc dependency. Added -lc
   to the Windows commands. Canonical ./test and ./build passed at 20:56 EDT,
   including all 102 CLI suites, 264 required mutation detections and Windows
-  cross-compilation. Commit and verify exact-commit CI.
+  cross-compilation. Pushed 02b997c8; origin independently matches at 20:57 EDT.
+  Verify exact-commit CI.
   Current sources/logs are preserved under
   /mnt/devcache/projects/libjxlz-0d943c99bed2/in-progress-20260906-resume-1923/.
-- [ ] Integrate the final-frame completion fix after strict JPEG validation.
+- [x] Integrate the final-frame completion fix after strict JPEG validation.
   The 39-byte upstream-checked control falsely passed strict and public decode
   after clearing is_last. Both regressions now pass in isolation; completion
   follows is_last, and exhausted unfinished input requests more input while open
   or reports truncation when closed. Five selected tests pass (19:38 EDT).
   Source: /tmp/libjxlz-final-frame-resume-20260906/.
-- [ ] Integrate container grammar and signature checks with final-frame completion.
+  Integrated and full-tested with container grammar checks (21:32 EDT).
+- [x] Integrate container grammar and signature checks with final-frame completion.
   The combined isolated slice passes 25 selected checks. Its external C control
   passes upstream and native with BOX events enabled to inspect trailing boxes.
   Source: /tmp/libjxlz-parser-combined-resume-20260906/.
+  Integrated at 20:57 EDT after the strict JPEG/Brotli slice was pushed.
+  All 24 integrated selected tests, full ./test (103 CLI suites, 264 required
+  mutation detections, Windows cross-compilation) and ./build passed at 21:32 EDT.
+  Commit and verify exact-commit CI.
+- [ ] Finish strict JPEG/codestream consistency before preview integration.
+  The isolated regression returned VALID for reconstruction metadata attached
+  to a Modular stream; upstream and native JPEG output reject it. Strict
+  validation now prepares reconstruction too, with a typed malformed error for
+  that proven mismatch. All 163 natural/sequential/progressive valid controls
+  and ten focused tests pass. Other decoder errors remain indeterminate.
+  Source: /tmp/libjxlz-jpeg-consistency-resume-20260906/. Run full tests/build.
 - [ ] Integrate actual preview decoding, buffers and event handling after parser
   completion. Twelve selected tests and the shared upstream/native C control
   pass. Controls cover padding, subscriptions, rewind/reset and preview budgets.
   Source: /tmp/libjxlz-preview-resume-20260906/.
 - [ ] Integrate orientation handling after previews. Nine selected checks pass
   against upstream metadata, pixels, aligned buffers, actual previews and frame
-  dimensions. Cropped-origin controls are being tested separately before this
-  slice is ready. Source: /tmp/libjxlz-orientation-resume-20260906/.
+  dimensions. All 32 cropped-origin cases, 16-bit RGBA padding controls and
+  allocation injection pass. The isolated parser/preview/orientation merge
+  passes 42 selected checks. Source: /tmp/libjxlz-orientation-resume-20260906/.
 - [ ] Strengthen independent controls after the codec fixes: distinguish crashes
   from clean rejection, enforce mismatch-count bounds, and cover the complete
   labeled-corpus classifier domain. See the retained control-audit report.

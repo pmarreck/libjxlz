@@ -1060,8 +1060,7 @@ fn ensureCurrentFrameParsed(dec: *DecoderImpl) JxlDecoderStatus {
 		if (parse_status != .JXL_DEC_SUCCESS) return parse_status;
 	}
 	if (dec.frame_offset >= dec.frame_data.len) {
-		dec.decode_complete = true;
-		return .JXL_DEC_SUCCESS;
+		return decoderStatusFromError(dec, error.NotEnoughBytes);
 	}
 
 	var frame_dec = dec_frame.FrameDecoder.init(std.heap.c_allocator, &dec.codec_meta);
@@ -1098,10 +1097,8 @@ fn advanceCurrentFrame(dec: *DecoderImpl) void {
 	dec.frame_decoded = false;
 	dec.full_image_emitted = false;
 	dec.frame_name_len = 0;
+	dec.decode_complete = dec.frame_header.is_last != 0;
 	dec.frame_header = std.mem.zeroes(JxlFrameHeader);
-	if (dec.frame_offset >= dec.frame_data.len) {
-		dec.decode_complete = true;
-	}
 }
 
 fn resetBoxIteration(dec: *DecoderImpl) void {
@@ -1195,6 +1192,8 @@ fn ensureParsed(dec: *DecoderImpl) JxlDecoderStatus {
 		},
 	};
 
+	if (codestream.len < 2) return decoderStatusFromError(dec, error.NotEnoughBytes);
+	if (!std.mem.eql(u8, codestream[0..2], &.{ 0xff, 0x0a })) return decoderStatusFromError(dec, error.InvalidContainer);
 	var br = BitReader.init(codestream[2..]);
 	const size = headers.SizeHeader.readFromBitStream(&br);
 	const metadata = image_metadata.ImageMetadata.readFromBitStream(&br) catch |err| return decoderStatusFromError(dec, bitReaderError(&br, err));
@@ -1298,7 +1297,7 @@ fn validationFailure(
 	frames_validated: u32,
 ) JxlValidationVerdict {
 	return switch (err orelse error.GenericError) {
-		error.InvalidColorEncoding => setValidationResult(result, .JXL_VALIDATION_CORRUPT, .JXL_VALIDATION_FINDING_MALFORMED, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
+		error.InvalidColorEncoding, error.InvalidContainer => setValidationResult(result, .JXL_VALIDATION_CORRUPT, .JXL_VALIDATION_FINDING_MALFORMED, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
 		error.Unsupported => setValidationResult(result, .JXL_VALIDATION_UNSUPPORTED, .JXL_VALIDATION_FINDING_UNSUPPORTED_FEATURE, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
 		error.NotEnoughBytes => setValidationResult(result, .JXL_VALIDATION_CORRUPT, .JXL_VALIDATION_FINDING_TRUNCATED, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
 		error.OutOfMemory => setValidationResult(result, .JXL_VALIDATION_INDETERMINATE, .JXL_VALIDATION_FINDING_OUT_OF_MEMORY, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
@@ -6551,4 +6550,6 @@ test {
 	_ = @import("capi/float_xyb_extra_patch_test.zig");
 	_ = @import("capi/jpeg_reconstruction_metadata_test.zig");
 	_ = @import("capi/jpeg_output_test.zig");
+	_ = @import("capi/container_validation_test.zig");
+	_ = @import("capi/final_frame_test.zig");
 }

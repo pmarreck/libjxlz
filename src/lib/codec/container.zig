@@ -227,6 +227,13 @@ fn validateBrobPayload(allocator: std.mem.Allocator, payload: []const u8) !void 
 /// Extracts the codestream plus the current public BMFF box stream in original
 /// order so the C API can emit `JXL_DEC_BOX` for both metadata and core boxes.
 pub fn extractCodestreamAndBoxes(allocator: std.mem.Allocator, container_bytes: []const u8) !ParsedContainer {
+	return parseContainer(allocator, container_bytes) catch |err| switch (err) {
+		error.GenericError => error.InvalidContainer,
+		else => err,
+	};
+}
+
+fn parseContainer(allocator: std.mem.Allocator, container_bytes: []const u8) !ParsedContainer {
 	if (container_bytes.len < signature_box.len) return error.GenericError;
 	if (!std.mem.eql(u8, container_bytes[0..signature_box.len], &signature_box)) return error.GenericError;
 
@@ -247,6 +254,9 @@ pub fn extractCodestreamAndBoxes(allocator: std.mem.Allocator, container_bytes: 
 	while (offset + 8 <= container_bytes.len) {
 		const header = try parseBoxHeader(container_bytes, offset);
 		const payload = header.payload;
+		const is_ftyp = std.mem.eql(u8, &header.box_type, "ftyp");
+		if ((offset == signature_box.len) != is_ftyp) return error.GenericError;
+		if (is_ftyp and (payload.len < ftyp_payload.len or !std.mem.eql(u8, payload[0..4], "jxl "))) return error.GenericError;
 
 		if (std.mem.eql(u8, &header.box_type, "jxlc")) {
 			if (saw_jxlp) return error.GenericError;
@@ -254,6 +264,7 @@ pub fn extractCodestreamAndBoxes(allocator: std.mem.Allocator, container_bytes: 
 			codestream = try allocator.dupe(u8, payload);
 			try appendOwnedBox(&owned_boxes, allocator, header.box_type, header.raw_size, payload);
 		} else if (std.mem.eql(u8, &header.box_type, "jxlp")) {
+			if (codestream != null) return error.GenericError;
 			if (saw_last_jxlp) return error.GenericError;
 			if (payload.len < 4) return error.GenericError;
 			var index = std.mem.readInt(u32, @ptrCast(payload[0..4]), .big);
@@ -291,6 +302,40 @@ pub fn extractCodestreamAndBoxes(allocator: std.mem.Allocator, container_bytes: 
 }
 
 const testing = std.testing;
+
+test "container requires ftyp second with a JPEG XL major brand" {
+	const allocator = testing.allocator;
+	const stream = [_]u8{ 0xff, 0x0a };
+	const valid = try wrapCodestream(allocator, &stream);
+	defer allocator.free(valid);
+	var good = try extractCodestreamAndBoxes(allocator, valid);
+	defer good.deinit(allocator);
+	try testing.expectEqualSlices(u8, &stream, good.codestream);
+	for (0..5) |variant| {
+		var bytes: std.ArrayListUnmanaged(u8) = .empty;
+		defer bytes.deinit(allocator);
+		try bytes.appendSlice(allocator, &signature_box);
+		if (variant == 1) try appendBox(&bytes, allocator, "xml ".*, "");
+		if (variant != 0) try appendBox(&bytes, allocator, "ftyp".*, if (variant == 2) "junk\x00\x00\x00\x00jxl " else if (variant == 3) ftyp_payload[0..11] else &ftyp_payload);
+		if (variant == 4) try appendBox(&bytes, allocator, "ftyp".*, &ftyp_payload);
+		try appendBox(&bytes, allocator, "jxlc".*, &stream);
+		try testing.expectError(error.InvalidContainer, extractCodestreamAndBoxes(allocator, bytes.items));
+	}
+}
+
+test "container rejects mixing whole and partial codestream boxes in either order" {
+	const allocator = testing.allocator;
+	for ([_]bool{ false, true }) |partial_first| {
+		var bytes: std.ArrayListUnmanaged(u8) = .empty;
+		defer bytes.deinit(allocator);
+		try bytes.appendSlice(allocator, &signature_box);
+		try appendBox(&bytes, allocator, "ftyp".*, &ftyp_payload);
+		if (partial_first) try appendBox(&bytes, allocator, "jxlp".*, &.{ 0x80, 0, 0, 0, 0xff, 0x0a });
+		try appendBox(&bytes, allocator, "jxlc".*, &.{ 0xff, 0x0a });
+		if (!partial_first) try appendBox(&bytes, allocator, "jxlp".*, &.{ 0x80, 0, 0, 0, 0xff, 0x0a });
+		try testing.expectError(error.InvalidContainer, extractCodestreamAndBoxes(allocator, bytes.items));
+	}
+}
 
 test "wrapCodestream and extractCodestream round-trip" {
 	const codestream = [_]u8{ 0xFF, 0x0A, 0x01, 0x02, 0x03, 0x04 };
@@ -433,7 +478,7 @@ test "extractCodestreamAndBoxes validates brob payload integrity" {
 	defer testing.allocator.free(corrupt_wrapped);
 
 	try testing.expectError(
-		error.GenericError,
+		error.InvalidContainer,
 		extractCodestreamAndBoxes(testing.allocator, corrupt_wrapped),
 	);
 }
@@ -446,7 +491,7 @@ test "extractCodestreamAndBoxes rejects a brob box too short to carry an inner t
 	defer testing.allocator.free(wrapped);
 
 	try testing.expectError(
-		error.GenericError,
+		error.InvalidContainer,
 		extractCodestreamAndBoxes(testing.allocator, wrapped),
 	);
 }

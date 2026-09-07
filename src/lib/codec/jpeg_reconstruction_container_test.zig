@@ -17,7 +17,7 @@ test "container rejects truncated JPEG reconstruction metadata" {
 		var parsed = result;
 		parsed.deinit(allocator);
 		return error.AcceptedTruncatedReconstruction;
-	} else |err| try std.testing.expectEqual(error.GenericError, err);
+	} else |err| try std.testing.expectEqual(error.InvalidContainer, err);
 }
 fn allocationCase(memory: std.mem.Allocator, wrapped: []const u8) !void {
 	var parsed = try container.extractCodestreamAndBoxes(memory, wrapped);
