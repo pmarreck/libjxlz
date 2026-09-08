@@ -56,6 +56,12 @@ int main(int argc, char** argv) {
 	};
 	static const uint8_t raw_signature_only[] = {0xff, 0x0a};
 	static const uint8_t truncated_metadata[] = {0xff, 0x0a, 0x00, 0x00};
+	/* Native 1x1 gray sample 42; metadata ends at bit 53 after the signature.
+	 * Byte 8 bits 5..7 must be zero. Keep the accepted base beside its mutants. */
+	uint8_t padding_control[] = {
+		255, 10, 0, 0, 0, 128, 160, 184, 17, 8, 2, 1, 0, 64, 0, 137,
+		160, 86, 21, 64, 2, 0, 194, 141, 120, 155, 2, 255, 170, 50, 0,
+	};
 	JxlValidationOptions options = JXL_VALIDATION_OPTIONS_INIT;
 	JxlValidationResult result;
 	uint8_t* accepted = NULL;
@@ -125,6 +131,14 @@ int main(int argc, char** argv) {
 		JXL_VALIDATION_CORRUPT, JXL_VALIDATION_FINDING_TRUNCATED);
 	ok &= expect_result("truncated metadata", truncated_metadata, sizeof(truncated_metadata), &options,
 		JXL_VALIDATION_CORRUPT, JXL_VALIDATION_FINDING_TRUNCATED);
+	ok &= expect_result("zero metadata padding", padding_control, sizeof(padding_control), &options,
+		JXL_VALIDATION_VALID, JXL_VALIDATION_FINDING_NONE);
+	for (unsigned bit = 5; bit < 8; ++bit) {
+		padding_control[8] ^= (uint8_t)(1u << bit);
+		ok &= expect_result("single-bit nonzero padding", padding_control, sizeof(padding_control), &options,
+			JXL_VALIDATION_CORRUPT, JXL_VALIDATION_FINDING_NONZERO_PADDING);
+		padding_control[8] ^= (uint8_t)(1u << bit);
+	}
 
 	options.host_byte_offset = 41;
 	if (JxlValidate(invalid_signature, sizeof(invalid_signature), &options, &result) != JXL_VALIDATION_CORRUPT ||

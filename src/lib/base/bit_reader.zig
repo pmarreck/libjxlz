@@ -145,7 +145,7 @@ pub const BitReader = struct {
 		if (remainder == 0) return;
 		const padding_bits = kBitsPerByte - remainder;
 		if (self.readBits(padding_bits) != 0) {
-			return JxlError.GenericError;
+			return JxlError.NonzeroPadding;
 		}
 	}
 
@@ -336,6 +336,20 @@ test "jumpToByteBoundary non-zero padding errors" {
 	var data = [_]u8{0xFF};
 	var br = BitReader.init(&data);
 	_ = br.readBits(3);
-	try std.testing.expectError(JxlError.GenericError, br.jumpToByteBoundary());
+	try std.testing.expectError(JxlError.NonzeroPadding, br.jumpToByteBoundary());
 	try br.close();
+}
+
+test "padding classification covers every byte and partial-byte boundary" {
+	for (1..8) |consumed| for (0..256) |byte| {
+		const data = [_]u8{@intCast(byte)};
+		var br = BitReader.init(&data);
+		_ = br.readBits(@intCast(consumed));
+		if (byte >> @as(u6, @intCast(consumed)) == 0) {
+			try br.jumpToByteBoundary();
+		} else {
+			try std.testing.expectError(error.NonzeroPadding, br.jumpToByteBoundary());
+		}
+		try br.close();
+	};
 }

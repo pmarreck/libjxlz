@@ -1,5 +1,78 @@
 # libjxlz Plan
 
+## Validation priority clarification (2026-09-08)
+
+- [x] Annotate every native implementation source file with `dirtree note`
+  (2026-09-08 17:04 EDT). Applied and checked 170 reviewed additions/corrections;
+  no annotation gaps across 284 native sources, 247 test/support sources and
+  11 root sources/scripts. Preserved existing useful notes and annotated selected
+  reference files consulted during the audit. Full reference annotation remains
+  optional follow-up; full-spec implementation remains required.
+- [x] Finish full tests/build for typed nonzero-padding corruption findings and
+  the labeled-corpus classifier repair (2026-09-08 17:39 EDT).
+  Exhaustive bit-reader and public API controls witnessed failures before fixes.
+  First full run exposed a JPEG mutation helper that recognized only GenericError.
+  Its corrected typed-error handling passes the focused exhaustive JPEG mutation
+  and truncation control with every oracle expectation unchanged (17:07 EDT).
+  Corrected canonical `./test` and `./build` both exited 0, including all 106 CLI
+  suites and Windows cross-compilation. Logs are under
+  `/tmp/libjxlz-validation-padding-final-{test,build}-20260908.log`.
+- [ ] Push this tested validation/annotation slice and verify exact-commit
+  Mechatron CI. Full-spec and numerical-boundary follow-ups below remain open.
+
+- [ ] Complete full JPEG XL specification coverage, reaffirmed by Peter during
+  this continuation. Keep pending spot-color/ICC and remaining feature work in
+  scope while prioritizing precise invalidity detection and useful findings.
+
+- [ ] Ground stricter rejection in explicit format constraints and expose useful
+  invalidity details even when upstream accepts the input. Peter clarified that
+  upstream permissiveness is a reason for this rewrite. Treat reference results
+  as evidence; do not equate reference acceptance with validity or operational
+  failure with corruption. Preserve numerical-bound findings until their format
+  requirements are established.
+
+Peter's immediate purpose is JPEG XL validation and corruption detection for
+`../validate`. IEEE 754 computation should require demonstrated necessity;
+integer arithmetic with explicit precision and scale is preferred. Exact
+reference-renderer output is secondary, and justified narrow output bounds may
+be acceptable. The precise representation and bounds remain to be settled.
+
+- [ ] Review pending numerical assertions against this purpose before resolving
+  the floating-reference failure. Preserve the failing evidence; distinguish
+  exact format and lossless reconstruction requirements from output rounding.
+  Check whether reference-layer differences affect later decoding or verdicts.
+- [ ] Define operation-specific numerical bounds and measure arithmetic cost
+  before replacing exact assertions or changing the arithmetic representation.
+  Check overflow, cumulative error and valid-input false rejection.
+- [x] Assess runtime error bounds before adding per-value tracking
+  (2026-09-08 17:04 EDT). Recorded numerical decision paths and measurement limits
+  in `doc/numerical_validation_audit.md`. No demonstrated need justifies general
+  runtime tracking yet. Preserve static/exact checks; revisit bounds where a
+  concrete verdict depends on approximate arithmetic and measure proposed cost.
+
+## Handoff checkpoint (2026-09-08 15:50 EDT)
+
+- [x] Write Peter's requested fresh handoff, preserve current prototypes and
+  regression evidence, then pause implementation for the next session.
+  Saved HANDOFF-20260908155100EDT.md and persistent handoff-20260908 snapshot
+  (2026-09-08 15:56 EDT).
+- [ ] Fix the floating-reference-layer regression before integrating spot color
+  or ICC work. Both full gates exited 1; the expected binary32 bit pattern is
+  1045220557 and the observed pattern is 1045220558. CLI completion did not mean
+  the accumulated full suite passed. Recheck upstream before changing assertions.
+- [ ] Finish ICC export controls: replace inaccurate legacy builtin profiles
+  using independently generated profiles, verify all 28 cases, then run full gates.
+- [ ] Repair reviewed codec allocation cleanup, encoder size/count validation,
+  and CLI output-completion errors with persistent failing regressions. Preserve
+  typed allocation errors through entropy and MA-tree decoding.
+- [ ] Complete remaining independent-control checks, custom allocator custody,
+  review dimensions, ReleaseFast benchmarks and five-platform builds.
+- [x] Verify exact main commit 6d64d6f700331d71c671d2b80f1d604d7263b8e8 passed
+  Mechatron CI at 2026-09-07 00:25:23 EDT (2229 seconds), checked September 8.
+
+This checkpoint supersedes earlier running-gate notes. Existing completed work
+and Peter's arithmetic benchmark history remain intact.
+
 ## Active continuation (2026-09-06 10:24 EDT)
 
 - [ ] Resume from the handoff at Peter's request (2026-09-06 19:23 EDT;
@@ -132,6 +205,13 @@
   alpha production builds passed. Preview units passed and 106 CLI suites are
   running. Current logs use preview-encoder-full, orientation-encoder-full and
   alpha-full prefixes under /tmp; these replace the earlier failed gates.
+- [ ] Export structured ICC profiles beyond the four builtins. Nine upstream
+  controls cover P3, Rec. 2020, custom primaries/white points, gamma, grayscale
+  and rendering intent. The public size query witnessed JXL_DEC_ERROR on a
+  valid P3 stream. Native integer matrix/TRC generation is isolated under
+  /tmp/libjxlz-icc-resume-20260906/. Verify exported color information with an
+  independent CMS and test allocation failures. HDR/XYB profiles need their
+  own controls; do not imply that the initial matrix/TRC slice covers them.
 - [ ] Recheck the three cumulative gates after correcting the old Modular JPEG
   error expectation and exporting pinned upstream submodule sources into their
   detached checkouts (22:02 EDT). Current logs end in full-finaltest and

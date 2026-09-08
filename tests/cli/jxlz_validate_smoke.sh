@@ -117,6 +117,21 @@ status=$?
 [ "${status}" -eq 1 ] || fail "@stdin invalid signature should exit 1, got ${status}"
 grep -q '"verdict": "corrupt"' "${OUT}" || fail "@stdin should be corrupt, got: $(cat "${OUT}")"
 
+# The C API's 1x1 gray control has three metadata padding bits in byte 8.
+# Exercise the named finding through JSON without creating a fixture file.
+padding_prefix='\xff\x0a\x00\x00\x00\x80\xa0\xb8'
+padding_suffix='\x08\x02\x01\x00\x40\x00\x89\xa0\x56\x15\x40\x02\x00\xc2\x8d\x78\x9b\x02\xff\xaa\x32\x00'
+printf '%b' "${padding_prefix}\x11${padding_suffix}" | run_validate - --json
+[ $? -eq 0 ] || fail "zero metadata padding control must validate"
+grep -q '"verdict": "valid"' "${OUT}" || fail "zero padding must report valid"
+for padding_byte in '\x31' '\x51' '\x91'; do
+	printf '%b' "${padding_prefix}${padding_byte}${padding_suffix}" | run_validate - --json
+	[ $? -eq 1 ] || fail "nonzero padding must exit 1"
+	grep -q '"verdict": "corrupt"' "${OUT}" || fail "nonzero padding must report corrupt"
+	grep -q '"finding": "nonzero_padding"' "${OUT}" || fail "nonzero padding must name its finding"
+	[ ! -s "${ERR}" ] || fail "nonzero padding JSON must not emit unexpected stderr"
+done
+
 # Paths containing spaces.
 SPACED_DIR="${TMPDIR:-/tmp}/jxlz validate spaced"
 mkdir -p "${SPACED_DIR}"

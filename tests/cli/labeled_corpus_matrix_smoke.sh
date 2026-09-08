@@ -28,9 +28,11 @@ expect_classify() {
 
 expect_classify accept              good    0 0
 expect_classify unsupported         good    0 1
+expect_classify oracle-disagreement good    1 0
 expect_classify oracle-disagreement good    1 1
 expect_classify accept              corrupt 0 0
 expect_classify reject              corrupt 0 1
+expect_classify accept              corrupt 1 0
 expect_classify reject              corrupt 1 1
 
 expect_manifest_rejected() {

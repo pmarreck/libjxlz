@@ -288,6 +288,7 @@ static const char* finding_name(JxlValidationFindingCode code) {
 	case JXL_VALIDATION_FINDING_OUT_OF_MEMORY: return "out_of_memory";
 	case JXL_VALIDATION_FINDING_INVALID_ARGUMENT: return "invalid_argument";
 	case JXL_VALIDATION_FINDING_UNCLASSIFIED_DECODER_ERROR: return "unclassified_decoder_error";
+	case JXL_VALIDATION_FINDING_NONZERO_PADDING: return "nonzero_padding";
 	}
 	return "unclassified_decoder_error";
 }

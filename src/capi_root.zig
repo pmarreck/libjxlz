@@ -54,6 +54,7 @@ pub const JxlValidationFindingCode = enum(c_int) {
 	JXL_VALIDATION_FINDING_OUT_OF_MEMORY = 6,
 	JXL_VALIDATION_FINDING_INVALID_ARGUMENT = 7,
 	JXL_VALIDATION_FINDING_UNCLASSIFIED_DECODER_ERROR = 8,
+	JXL_VALIDATION_FINDING_NONZERO_PADDING = 9,
 };
 
 pub const JxlValidationOptions = extern struct {
@@ -1333,12 +1334,42 @@ fn validationFailure(
 	frames_validated: u32,
 ) JxlValidationVerdict {
 	return switch (err orelse error.GenericError) {
+		error.NonzeroPadding => setValidationResult(result, .JXL_VALIDATION_CORRUPT, .JXL_VALIDATION_FINDING_NONZERO_PADDING, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
 		error.InvalidColorEncoding, error.InvalidContainer, error.InvalidJpegReconstruction => setValidationResult(result, .JXL_VALIDATION_CORRUPT, .JXL_VALIDATION_FINDING_MALFORMED, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
 		error.Unsupported => setValidationResult(result, .JXL_VALIDATION_UNSUPPORTED, .JXL_VALIDATION_FINDING_UNSUPPORTED_FEATURE, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
 		error.NotEnoughBytes => setValidationResult(result, .JXL_VALIDATION_CORRUPT, .JXL_VALIDATION_FINDING_TRUNCATED, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
 		error.OutOfMemory => setValidationResult(result, .JXL_VALIDATION_INDETERMINATE, .JXL_VALIDATION_FINDING_OUT_OF_MEMORY, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
 		error.GenericError, error.BrotliDecoderFailure => setValidationResult(result, .JXL_VALIDATION_INDETERMINATE, .JXL_VALIDATION_FINDING_UNCLASSIFIED_DECODER_ERROR, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
 	};
+}
+
+test "strict padding validation detects each single-bit metadata padding mutation" {
+	const allocator = std.testing.allocator;
+	const bytes = try enc_api.encodeSimpleInterleavedU8(allocator, .{
+		.width = 1, .height = 1, .num_channels = 1,
+		.row_stride = 1, .pixels = &.{42},
+	}, null);
+	defer allocator.free(bytes);
+	var result: JxlValidationResult = undefined;
+	try std.testing.expectEqual(JxlValidationVerdict.JXL_VALIDATION_VALID, JxlValidate(bytes.ptr, bytes.len, null, &result));
+	var br = BitReader.init(bytes[2..]);
+	_ = headers.SizeHeader.readFromBitStream(&br);
+	const metadata = try image_metadata.ImageMetadata.readFromBitStream(&br);
+	try std.testing.expect(!metadata.color_encoding.want_icc);
+	_ = try image_metadata.CustomTransformData.readFromBitStream(&br, metadata.xyb_encoded);
+	const consumed = br.totalBitsConsumed();
+	try std.testing.expect(consumed % 8 != 0);
+	try br.jumpToByteBoundary();
+	try br.close();
+	const offset = 2 + consumed / 8;
+	for (consumed % 8..8) |bit| {
+		const mask = @as(u8, 1) << @as(u3, @intCast(bit));
+		bytes[offset] ^= mask;
+		try std.testing.expectEqual(JxlValidationVerdict.JXL_VALIDATION_CORRUPT, JxlValidate(bytes.ptr, bytes.len, null, &result));
+		try std.testing.expectEqual(JxlValidationFindingCode.JXL_VALIDATION_FINDING_NONZERO_PADDING, result.code);
+		bytes[offset] ^= mask;
+	}
+	try std.testing.expectEqual(JxlValidationVerdict.JXL_VALIDATION_VALID, JxlValidate(bytes.ptr, bytes.len, null, &result));
 }
 
 test "strict JPEG reconstruction keeps Brotli resource and operational failures indeterminate" {

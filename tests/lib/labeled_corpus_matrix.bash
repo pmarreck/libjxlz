@@ -80,6 +80,11 @@ labeled_corpus_read_manifest() {
 labeled_corpus_classify() {
 	local label="$1" oracle_status="$2" ours_status="$3"
 
+	if [ "${label}" = "good" ] && [ "${oracle_status}" -ne 0 ]; then
+		printf 'oracle-disagreement\n'
+		return 0
+	fi
+
 	if [ "${ours_status}" -eq 0 ]; then
 		printf 'accept\n'
 		return 0
@@ -87,11 +92,6 @@ labeled_corpus_classify() {
 
 	if [ "${label}" = "good" ] && [ "${oracle_status}" -eq 0 ]; then
 		printf 'unsupported\n'
-		return 0
-	fi
-
-	if [ "${label}" = "good" ]; then
-		printf 'oracle-disagreement\n'
 		return 0
 	fi
 

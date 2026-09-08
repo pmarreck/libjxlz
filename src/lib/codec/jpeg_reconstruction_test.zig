@@ -80,7 +80,7 @@ test "JPEG reconstruction restores every upstream metadata payload byte" {
 }
 fn accepts(bytes: []const u8) !bool {
 	var data = jpeg.parse(std.testing.allocator, bytes) catch |err| switch (err) {
-		error.GenericError => return false,
+		error.GenericError, error.NonzeroPadding => return false,
 		else => return err,
 	};
 	data.deinit();

@@ -1,7 +1,7 @@
 # libjxlz
 
-A Zig reimplementation of the JPEG XL (ISO 18181) reference codec, targeting
-equivalent or better performance than the original C++ libjxl.
+The project's purpose, priorities and acceptance evidence are maintained in
+[INTENT.md](INTENT.md). This file retains the project glossary.
 
 ## Terminology
 - **JXL**: JPEG XL image format
