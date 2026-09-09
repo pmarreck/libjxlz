@@ -198,6 +198,25 @@ pub fn writeSingleLeafTree(
 
 const testing = std.testing;
 
+fn decodeTreeAllocationControl(allocator: std.mem.Allocator, bytes: []const u8) !void {
+	var br = @import("../base/bit_reader.zig").BitReader.init(bytes);
+	var tree: dec_ma.Tree = .empty;
+	defer tree.deinit(allocator);
+	try dec_ma.decodeTree(allocator, &br, &tree, 16);
+	try testing.expectEqual(@as(usize, 1), tree.items.len);
+	try testing.expectEqual(Predictor.gradient, tree.items[0].predictor);
+	try br.jumpToByteBoundary();
+	try br.close();
+}
+
+test "MA tree decoding propagates allocation failures through height validation" {
+	var writer = BitWriter.init(testing.allocator);
+	defer writer.deinit();
+	try writeSingleLeafTree(testing.allocator, .gradient, &writer);
+	try writer.zeroPadToByte();
+	try testing.checkAllAllocationFailures(testing.allocator, decodeTreeAllocationControl, .{writer.bytes()});
+}
+
 test "writeSingleLeafTree round-trips through dec_ma.decodeTree" {
 	const allocator = testing.allocator;
 	var writer = BitWriter.init(allocator);

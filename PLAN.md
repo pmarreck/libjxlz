@@ -1,5 +1,70 @@
 # libjxlz Plan
 
+## Full-spec validation execution (2026-09-09)
+
+Peter approved this sequence. Done means each implemented constraint has a
+specific justification, valid and invalid controls, an honest public result,
+passing full tests/build, and a tested commit. Preserve the remaining feature
+work below; existing decoder tests do not establish complete validation coverage.
+
+- [x] Repair the MA-tree height check's silent success on allocation failure
+  (2026-09-09 18:08 EDT).
+  Inject the caller allocator and preserve OutOfMemory. First prove failure
+  injection reaches the check; retain valid-tree and excessive-height controls.
+  Two tests witnessed success on injected allocation failure; the caller-allocator
+  repair now passes height-boundary and full tree-decoder allocation sweeps.
+  Full `./test` and `./build` passed, including 109 CLI suites and Windows
+  cross-compilation. Logs: `/tmp/libjxlz-strict-matrix-full-{test,build}-20260909.log`.
+- [ ] Finish resource correctness: allocator custody, decoded/metadata expansion
+  limits, checked sizes and codec cleanup. A failed check must never become
+  successful validation. Revisit allocation failures at every new boundary.
+- [x] Build the strict-verdict mutation matrix around JxlValidate with VALID
+  bases. Record corrupt, unsupported, indeterminate, operational failure and
+  accepted mutations separately. Verify mutation shapes independently and do
+  not treat every changed stream or reference rejection as proven corruption.
+  Initial strict measurement: 15/15 bases VALID; 270 mutants comprise 38 CORRUPT,
+  226 INDETERMINATE and 6 VALID, with zero unsupported/resource/operational cases.
+  Per-case baseline captured and reproduced. Classifier and byte-shape controls
+  pass, including a witnessed broken-producer integration failure. The matrix
+  verifies all declared mutation bytes before scoring. The full gate reproduced
+  every baseline verdict with the repaired package (2026-09-09 18:08 EDT).
+- [ ] Push the tested allocation/mutation/coverage slice and verify all four
+  Mechatron targets for its exact commit.
+- [ ] Create a requirement-by-requirement codestream/container coverage map:
+  requirement/source, implementation, valid control, invalid control, untested
+  combinations and current limitations. Reconcile stale historical TODOs.
+  Started `doc/validation_coverage.md`; family inventory and six initial constraint
+  records are present. Exact normative clause mapping remains open.
+- [ ] Integrate the official conformance corpus as a scored acceptance gate,
+  with pinned provenance and licence checks. Add malformed-input controls;
+  decoder conformance alone cannot establish complete corruption detection.
+  Exploratory probe of libjxl/conformance b1d0f990b03e57bf6d137c365cd5dc8b470b9191:
+  all 27 distinct inputs across 40 level-5/level-10 cases returned VALID.
+  Three initial 30-second timeouts covered two distinct inputs; both passed
+  separate 180-second retries. Rendering precision was not measured.
+  Pin/hash, licence notes and raw results: `/tmp/libjxlz-official-acceptance-20260909.md`.
+- [ ] Complete typed findings across headers, TOC, entropy, MA trees, transforms,
+  quantization and metadata. Justify each reclassification against its format
+  constraint, preserve resource failures, and improve byte/bit finding locations.
+  A saved public C regression on the accepted 31-byte gray fixture fails for
+  prefixes of lengths 15–30: INDETERMINATE instead of CORRUPT/TRUNCATED.
+  Suspect TOC payload-size checks; trace before changing classification.
+  Test and RED evidence: `/tmp/libjxlz-truncation-followup-20260909.md`.
+- [ ] Investigate omitted MA split-range validation against the format rules.
+  Upstream ValidateTree propagates property ranges and rejects impossible splits;
+  native validateTree currently checks height and child bounds only. Add valid
+  boundary and contradictory-path controls before implementing any rejection.
+- [ ] Audit numerical verdict boundaries, especially structured color metadata
+  and quantization. Establish specification thresholds and static/exact integer
+  checks before considering measured runtime uncertainty handling. Check both
+  sides of each boundary for false rejection and missed invalidity.
+- [ ] Finish remaining spot-color/ICC feature integration and audit container,
+  metadata, extensions and cross-feature semantics. Test the contextual alpha
+  normalization repair with unchanged reference fixtures; trace reference effects.
+- [ ] Make validation depth and limiting reasons explicit in the public result.
+  Distinguish intrinsically unconstrained bytes from implementation shortfalls;
+  unsupported or partially checked content must not imply complete validation.
+
 ## Validation priority clarification (2026-09-08)
 
 - [x] Annotate every native implementation source file with `dirtree note`
@@ -17,8 +82,11 @@
   Corrected canonical `./test` and `./build` both exited 0, including all 106 CLI
   suites and Windows cross-compilation. Logs are under
   `/tmp/libjxlz-validation-padding-final-{test,build}-20260908.log`.
-- [ ] Push this tested validation/annotation slice and verify exact-commit
-  Mechatron CI. Full-spec and numerical-boundary follow-ups below remain open.
+- [x] Push this tested validation/annotation slice and verify exact-commit
+  Mechatron CI (2026-09-08 18:16 EDT). Commit
+  `7b12d9a4433f9c9eede9a2b3d9e8b9e6f9051b23` matches origin. All four targets
+  passed in 2,235 seconds, including ReleaseSafe/ReleaseFast tests and Windows
+  cross-compilation. Full-spec and numerical-boundary follow-ups remain open.
 
 - [ ] Complete full JPEG XL specification coverage, reaffirmed by Peter during
   this continuation. Keep pending spot-color/ICC and remaining feature work in
@@ -41,6 +109,14 @@ be acceptable. The precise representation and bounds remain to be settled.
   the floating-reference failure. Preserve the failing evidence; distinguish
   exact format and lossless reconstruction requirements from output rounding.
   Check whether reference-layer differences affect later decoding or verdicts.
+  Follow-up during CI found that upstream selects extra-channel normalization
+  using the main image bit depth; the spot prototype uses the extra channel's
+  own depth. For floating color with 8-bit alpha, this explains the candidate
+  51/255 mismatch (0x3e4ccccd versus 0x3e4cccce). An integer-only probe found
+  126/256 unsigned 8-bit samples differ, each by one ULP. This bounds only that
+  conversion, not later blending or verdicts. Test the contextual normalization
+  repair with original fixture expectations before considering any tolerance.
+  Evidence: `/tmp/libjxlz-spot-precision-followup-20260908.md`; prototype unchanged.
 - [ ] Define operation-specific numerical bounds and measure arithmetic cost
   before replacing exact assertions or changing the arithmetic representation.
   Check overflow, cumulative error and valid-input false rejection.

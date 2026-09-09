@@ -47,7 +47,7 @@ pub const Tree = std.ArrayList(PropertyDecisionNode);
 
 // ── Tree validation ──
 
-fn validateTree(tree: []const PropertyDecisionNode) JxlError!void {
+fn validateTree(allocator: std.mem.Allocator, tree: []const PropertyDecisionNode) JxlError!void {
     if (tree.len == 0) return error.GenericError;
 
     // Find max property index
@@ -59,8 +59,7 @@ fn validateTree(tree: []const PropertyDecisionNode) JxlError!void {
     }
 
     // Check tree height
-    const allocator = std.heap.page_allocator;
-    const height = allocator.alloc(i32, tree.len) catch return;
+    const height = try allocator.alloc(i32, tree.len);
     defer allocator.free(height);
     @memset(height, 0);
 
@@ -142,7 +141,7 @@ fn decodeTreeInner(
         });
         to_decode += 2;
     }
-    try validateTree(tree.items);
+    try validateTree(allocator, tree.items);
 }
 
 // ── Public DecodeTree ──
@@ -189,6 +188,29 @@ pub fn decodeTree(
 // ── Tests ──
 
 const testing = std.testing;
+
+test "MA tree height validation preserves allocation failure" {
+	const tree = [_]PropertyDecisionNode{PropertyDecisionNode.leaf(.zero, 0, 1)};
+	try validateTree(testing.allocator, &tree);
+	var failing = testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+	try testing.expectError(error.OutOfMemory, validateTree(failing.allocator(), &tree));
+}
+
+test "MA tree height validation checks both sides of the existing depth limit" {
+	for ([_]usize{ 2047, 2048, 2049 }) |depth| {
+		const tree = try testing.allocator.alloc(PropertyDecisionNode, 2 * depth + 1);
+		defer testing.allocator.free(tree);
+		@memset(tree, PropertyDecisionNode.leaf(.zero, 0, 1));
+		for (0..depth) |level| tree[2 * level] = PropertyDecisionNode.split(0, -@as(i32, @intCast(level)), @intCast(2 * level + 1), @intCast(2 * level + 2));
+		if (depth <= 2048) {
+			try validateTree(testing.allocator, tree);
+		} else {
+			try testing.expectError(error.GenericError, validateTree(testing.allocator, tree));
+			var failing = testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+			try testing.expectError(error.OutOfMemory, validateTree(failing.allocator(), tree));
+		}
+	}
+}
 
 test "PropertyDecisionNode leaf default" {
     const node = PropertyDecisionNode{};

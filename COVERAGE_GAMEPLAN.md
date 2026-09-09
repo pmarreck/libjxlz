@@ -1,5 +1,10 @@
 # libjxlz JPEG XL coverage gameplan
 
+Historical measurements and planning follow. Several missing-feature entries
+were completed later. For current validation work, use `PLAN.md` and
+`doc/validation_coverage.md`; do not read the old unchecked boxes or percentages
+as the current implementation state.
+
 Written 2026-08-05. Every number below was measured on this machine against
 `packages.default` (ReleaseSafe) at `5e8f9d68`, not estimated. The measurement
 harness is described in "How these numbers were produced" at the bottom so the
