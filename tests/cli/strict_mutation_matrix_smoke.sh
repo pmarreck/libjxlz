@@ -28,7 +28,7 @@ awk -F '\t' '
 	NR == 1 { next }
 	$2 == "base" { bases++; if ($7 != "valid" || $3 != 0) bad++ ; next }
 	{ mutants++; counts[$7]++ }
-	$2 == "signature" && $7 != "corrupt" { bad++ }
+	($2 == "signature" || $2 == "truncate") && $7 != "corrupt" { bad++ }
 	$7 == "operational_failure" || $7 == "resource_failure" { bad++ }
 	$3 != 0 && $3 != 1 { bad++ }
 	END {

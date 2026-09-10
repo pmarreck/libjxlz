@@ -2036,6 +2036,17 @@ test "writeSimpleContextMapNormalizedHistograms round-trips exact non-flat conte
 	try br.close();
 }
 
+fn decodeHistogramAllocationControl(allocator: std.mem.Allocator, bytes: []const u8, expected_map: []const u8) !void {
+	var br = @import("../base/bit_reader.zig").BitReader.init(bytes);
+	var code = dec_ans.ANSCode.init(allocator);
+	defer code.deinit();
+	const context_map = try dec_ans.decodeHistograms(allocator, &br, expected_map.len, &code);
+	defer allocator.free(context_map);
+	try testing.expectEqualSlices(u8, expected_map, context_map);
+	try br.jumpToByteBoundary();
+	try br.close();
+}
+
 test "writeContextMapNormalizedHistograms round-trips a non-simple 9-histogram context map" {
 	const allocator = testing.allocator;
 	const want_ctx_map = [_]u8{
@@ -2088,6 +2099,7 @@ test "writeContextMapNormalizedHistograms round-trips a non-simple 9-histogram c
 	try testing.expectEqualSlices(u8, &want_ctx_map, context_map);
 	try br.jumpToByteBoundary();
 	try br.close();
+	try testing.checkAllAllocationFailures(allocator, decodeHistogramAllocationControl, .{ writer.bytes(), @as([]const u8, &want_ctx_map) });
 }
 
 test "writeContextualHistogramTokens round-trips a two-histogram stream through ANSSymbolReader" {

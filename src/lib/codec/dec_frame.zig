@@ -60,18 +60,18 @@ fn computeSectionLayout(
     data_len: usize,
     toc_entries: []const TocEntry,
 ) JxlError!SectionLayout {
-    if (header_byte_offset > data_len) return error.GenericError;
+    if (header_byte_offset > data_len) return error.NotEnoughBytes;
 
     const layout = try toc.computeGroupOffsets(allocator, toc_entries);
     errdefer allocator.free(layout.offsets);
 
     const payload_len: u64 = @intCast(data_len - header_byte_offset);
-    if (layout.total_size > payload_len) return error.GenericError;
+    if (layout.total_size > payload_len) return error.NotEnoughBytes;
 
     var i: usize = 0;
     while (i < toc_entries.len) : (i += 1) {
         const end = common.safeAdd(layout.offsets[i], toc_entries[i].size) orelse return error.GenericError;
-        if (end > payload_len) return error.GenericError;
+        if (end > payload_len) return error.NotEnoughBytes;
     }
 
     return .{
@@ -1981,7 +1981,14 @@ test "computeSectionLayout rejects truncated payload" {
         .{ .id = 1, .size = 12 },
     };
 
-    try testing.expectError(error.GenericError, computeSectionLayout(allocator, 5, 16, &entries));
+    try testing.expectError(error.NotEnoughBytes, computeSectionLayout(allocator, 5, 16, &entries));
+    try testing.expectError(error.NotEnoughBytes, computeSectionLayout(allocator, 5, 20, &entries));
+    try testing.expectError(error.NotEnoughBytes, computeSectionLayout(allocator, 6, 5, &entries));
+    const exact = try computeSectionLayout(allocator, 5, 21, &entries);
+    defer allocator.free(exact.offsets);
+    try testing.expectEqual(@as(u64, 16), exact.total_size);
+    var failing = testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
+    try testing.expectError(error.OutOfMemory, computeSectionLayout(failing.allocator(), 5, 21, &entries));
 }
 
 test "fromF16Bits reconstructs 1, 2, and 1/2 as randomz soft-floats" {

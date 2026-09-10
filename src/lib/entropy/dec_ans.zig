@@ -673,7 +673,7 @@ pub fn decodeHistograms(
 
     var num_histograms: usize = 1;
     if (num_contexts > 1) {
-        dec_context_map.decodeContextMapAlloc(context_map, &num_histograms, br, allocator) catch return error.GenericError;
+        try dec_context_map.decodeContextMapAlloc(context_map, &num_histograms, br, allocator);
     } else {
         @memset(context_map, 0);
     }

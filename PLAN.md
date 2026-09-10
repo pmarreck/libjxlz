@@ -7,6 +7,16 @@ specific justification, valid and invalid controls, an honest public result,
 passing full tests/build, and a tested commit. Preserve the remaining feature
 work below; existing decoder tests do not establish complete validation coverage.
 
+- [ ] Finish the full gate and ship the current resource-propagation, typed TOC
+  truncation and official-corpus acceptance work; verify all five CI targets.
+  The first full unit run found one older multi-section truncation assertion
+  still expecting GenericError. Updated that assertion to NotEnoughBytes;
+  retain the failure log `/tmp/libjxlz-resource-full-unit-failure-20260909.log`.
+  Corrected full `./test` and `./build` both passed, including all 111 CLI suites
+  and Windows cross-compilation (2026-09-09 20:28 EDT). Logs:
+  `/tmp/libjxlz-resource-toc-conformance-final-{test,build}-20260909.log`.
+  Commit/push and exact five-target CI verification remain next.
+
 - [x] Repair the MA-tree height check's silent success on allocation failure
   (2026-09-09 18:08 EDT).
   Inject the caller allocator and preserve OutOfMemory. First prove failure
@@ -18,6 +28,21 @@ work below; existing decoder tests do not establish complete validation coverage
 - [ ] Finish resource correctness: allocator custody, decoded/metadata expansion
   limits, checked sizes and codec cleanup. A failed check must never become
   successful validation. Revisit allocation failures at every new boundary.
+  Continuing September 9 at 19:01 EDT: reproduce masked allocation errors in
+  entropy context-map and MA-tree LZ77 reader creation. Keep valid controls and
+  require OutOfMemory throughout the allocation sweep before changing callers.
+  Both valid fixtures pass native and upstream tree decoding. Both sweeps
+  witnessed GenericError before two caller fixes; they now pass, together with
+  an allocation sweep on the nine-histogram ANS context-map fixture. Full tests
+  and build passed with these repairs on September 9 at 20:28 EDT.
+- [ ] Enforce the missing small-context-map LZ77 restriction before recursive
+  histogram decoding. A seven-byte depth-two tree passes natively and fails
+  upstream; depth-zero and depth-one controls pass both. The codec authors'
+  explanatory paper section 8.2.1 describes this restriction; exact ISO clause
+  mapping remains open. Preserve allocation/truncation distinctions and add
+  public finding coverage. Evidence and candidate regression are recorded in
+  `/tmp/libjxlz-context-recursion-followup-20260909.md`. No stack-overflow
+  experiment was performed.
 - [x] Build the strict-verdict mutation matrix around JxlValidate with VALID
   bases. Record corrupt, unsupported, indeterminate, operational failure and
   accepted mutations separately. Verify mutation shapes independently and do
@@ -28,14 +53,18 @@ work below; existing decoder tests do not establish complete validation coverage
   pass, including a witnessed broken-producer integration failure. The matrix
   verifies all declared mutation bytes before scoring. The full gate reproduced
   every baseline verdict with the repaired package (2026-09-09 18:08 EDT).
-- [ ] Push the tested allocation/mutation/coverage slice and verify all four
-  Mechatron targets for its exact commit.
+- [x] Push the tested allocation/mutation/coverage slice and verify all four
+  Mechatron targets for its exact commit (2026-09-09 18:51 EDT).
+  `5da88d48a2382fe9edd7b77d03a40d7536a3b49d` matches origin; package build,
+  ReleaseSafe/ReleaseFast tests and Windows cross-compilation passed in 2,510
+  seconds. Full-spec coverage remains open below.
 - [ ] Create a requirement-by-requirement codestream/container coverage map:
   requirement/source, implementation, valid control, invalid control, untested
   combinations and current limitations. Reconcile stale historical TODOs.
-  Started `doc/validation_coverage.md`; family inventory and six initial constraint
+  Started `doc/validation_coverage.md`; family inventory and initial constraint
   records are present. Exact normative clause mapping remains open.
-- [ ] Integrate the official conformance corpus as a scored acceptance gate,
+- [x] Integrate the official conformance corpus as a scored acceptance gate
+  (2026-09-09 20:28 EDT),
   with pinned provenance and licence checks. Add malformed-input controls;
   decoder conformance alone cannot establish complete corruption detection.
   Exploratory probe of libjxl/conformance b1d0f990b03e57bf6d137c365cd5dc8b470b9191:
@@ -43,17 +72,39 @@ work below; existing decoder tests do not establish complete validation coverage
   Three initial 30-second timeouts covered two distinct inputs; both passed
   separate 180-second retries. Rendering precision was not measured.
   Pin/hash, licence notes and raw results: `/tmp/libjxlz-official-acceptance-20260909.md`.
+  Implemented `checks.<system>.conformance-acceptance`, a `./test` adapter and
+  the fifth Mechatron target. The scorer deduplicates identical inputs while
+  reporting every named case, retains raw outcomes, and requires a known-invalid
+  signature control. Broken-validator/count/missing-file controls witnessed
+  failure before implementation and now pass. The first Nix corpus gate passed
+  all 40 cases/27 distinct inputs and the invalid-signature control; all-system
+  flake evaluation passed. The final full gate passed and retained 40 valid case
+  rows plus the expected corrupt signature control. Exact five-target CI remains
+  in the shipment item above.
 - [ ] Complete typed findings across headers, TOC, entropy, MA trees, transforms,
   quantization and metadata. Justify each reclassification against its format
   constraint, preserve resource failures, and improve byte/bit finding locations.
-  A saved public C regression on the accepted 31-byte gray fixture fails for
-  prefixes of lengths 15–30: INDETERMINATE instead of CORRUPT/TRUNCATED.
-  Suspect TOC payload-size checks; trace before changing classification.
-  Test and RED evidence: `/tmp/libjxlz-truncation-followup-20260909.md`.
+  Permanent public C controls on the accepted 31-byte gray fixture witnessed
+  INDETERMINATE for truncated prefixes 15–30 and ERROR for the same open-input
+  prefixes. TOC boundary controls independently witnessed GenericError where
+  declared payload bytes are missing. Changed only those missing-byte checks to
+  NotEnoughBytes; exact-fit and allocation-failure controls remain separate.
+  Focused bounds and public C controls pass, including open/closed input behavior.
+  Reviewed all 44 changed mutation rows: only INDETERMINATE truncations became
+  CORRUPT/TRUNCATED. All 60 fixed prefix cuts are now typed corruption; totals
+  are 82 CORRUPT, 182 INDETERMINATE and 6 VALID, with process outcomes unchanged.
+  Baseline updated after review; the full gate reproduced these exact counts
+  and passed at 20:28 EDT. Shipment remains in the item above.
 - [ ] Investigate omitted MA split-range validation against the format rules.
   Upstream ValidateTree propagates property ranges and rejects impossible splits;
   native validateTree currently checks height and child bounds only. Add valid
   boundary and contradictory-path controls before implementing any rejection.
+  Native scratch controls witness acceptance of two contradictory ancestor paths,
+  alongside two valid controls. A retained upstream build accepts both valid
+  controls and rejects both contradictions; padding and reader close pass in all
+  four cases. Candidate tests, byte fixtures and independent comparison:
+  `/tmp/libjxlz-ma-range-followup-20260909.md`. Avoid copying the reference's
+  nodes-times-properties storage without considering bounded traversal storage.
 - [ ] Audit numerical verdict boundaries, especially structured color metadata
   and quantization. Establish specification thresholds and static/exact integer
   checks before considering measured runtime uncertainty handling. Check both

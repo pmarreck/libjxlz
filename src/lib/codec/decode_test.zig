@@ -457,7 +457,7 @@ test "decode truncated 600x10 multi-section frame errors" {
     var frame_dec = dec_frame.FrameDecoder.init(allocator, &prepared.codec_meta);
     defer frame_dec.deinit();
 
-    try testing.expectError(error.GenericError, frame_dec.decodeFrame(prepared.frame_data[0 .. prepared.frame_data.len - 1]));
+    try testing.expectError(error.NotEnoughBytes, frame_dec.decodeFrame(prepared.frame_data[0 .. prepared.frame_data.len - 1]));
 }
 
 test "decode lossless 600x300 multi-group rgb fixture" {

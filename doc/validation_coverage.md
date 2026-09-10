@@ -36,9 +36,20 @@ must be reconciled against the implementation and recent `PLAN.md` checkpoints.
 | BIT-PADDING | Required-zero byte-alignment padding must contain zero bits | `base/bit_reader.zig`; upstream `dec_bit_reader.h`; 1,792 byte/boundary cases and three independent bit flips through Zig/C/CLI | Typed `NONZERO_PADDING` shipped in `7b12d9a4`; clause reference pending |
 | MA-HEIGHT | Tree height is checked against the existing 2,048 limit | `modular/dec_ma.zig`; upstream `modular/encoding/dec_ma.cc`; controls immediately below, at and above the limit | Existing bound retained; normative clause review pending |
 | MA-HEIGHT-RESOURCE | Allocation failure must not bypass a required validation check | Injected failing allocator on normal and over-height trees; single-leaf tree-decoder allocation sweep | Witnessed success on allocation failure; caller-allocator/OutOfMemory repair passed focused controls and full tests/build on September 9 |
-| MA-SPLIT-RANGE | Investigate whether each split must leave possible values on both branches under ancestor constraints | Upstream propagates per-property ranges; native validator currently does not | Missing native check identified; specification justification and failing controls pending |
+| MA-SPLIT-RANGE | Investigate whether each split must leave possible values on both branches under ancestor constraints | Upstream propagates per-property ranges; native validator currently does not | Scratch regression witnesses two accepted contradictory paths; upstream rejects both and accepts two valid controls. Implementation and normative justification pending |
+| MA-LZ77-RESOURCE | LZ77 reader allocation failure must remain distinguishable from malformed data | Two three-byte MA fixtures also accepted by upstream; allocation sweeps through native tree decoding | Masked GenericError witnessed; propagation repair passes focused controls and full tests/build on September 9 |
+| CONTEXT-MAP-RESOURCE | Nested entropy allocation failures must propagate through histogram decoding | Prefix-coded context-map fixture and existing nine-histogram ANS fixture; allocation sweeps | Masked GenericError witnessed; propagation repair passes focused controls and full tests/build on September 9 |
+| CONTEXT-MAP-LZ77 | A nested map with at most two contexts cannot itself enable LZ77 | Upstream guard and Sneyers et al. section 8.2.1; depth-zero/one controls accepted by both, depth-two accepted only natively | Missing native guard reproduced; implementation, public finding and exact ISO clause pending |
+| TOC-PAYLOAD | A bounded frame must contain the payload bytes declared by its section table | Exact-fit, short-header and short-payload bounds; all prefixes of a valid 31-byte stream through C validation; open/closed decoder status controls | Generic failures witnessed; NotEnoughBytes repair passes full tests/build and the reviewed matrix. Exact clause reference pending |
 | NUM-COLOR | Structured RGB metadata rejection must follow justified numeric boundaries | `color_matrix.validateRgb`; existing selected invalid-primary controls | Boundary audit pending; see `numerical_validation_audit.md` |
 | NUM-QUANT | Quantization rejection thresholds must follow format requirements | Native exponent fences differ from upstream decimal thresholds | Difference established; specification decision pending |
+
+The context-map restriction is described in the codec authors'
+[explanatory paper, section 8.2.1](https://arxiv.org/html/2506.05987v1#S8.SS2.SSS1).
+This is supporting evidence; exact normative clause mapping remains open.
+The next MA/context-map probes and raw byte controls are recorded in
+`/tmp/libjxlz-ma-range-followup-20260909.md` and
+`/tmp/libjxlz-context-recursion-followup-20260909.md`.
 
 ## Measurement and acceptance
 
@@ -56,6 +67,15 @@ unsupported, resource or operational outcomes. These are strict API results,
 not a claim that all 270 mutations are invalid. The detailed baseline is
 `tests/corpus/strict_mutation_verdicts.tsv`.
 
+The September 9 TOC repair changes exactly 44 rows, all from indeterminate to
+corrupt/truncated. All 60 fixed truncation controls now report corruption.
+Current totals are 82 corrupt, 182 indeterminate and 6 accepted; all process
+statuses, clean-base results and other mutation rows are unchanged. The baseline
+was updated after checking the entire diff. Signature and fixed truncation
+controls now both require corruption. A TRUNCATED finding identifies missing
+required bytes; a damaged length field can produce the same finding as a
+shortened file. Exact finding locations remain separate work.
+
 Reference exit 1 is recorded as reference rejection, not proof of corruption.
 Accepted mutations can be other valid streams. Independent byte-level checks
 verify each declared shape before scoring it. Adversarial controls include
@@ -63,10 +83,18 @@ unchanged bytes, wrong offsets, multi-bit sniper changes, wrong truncation
 lengths, wrong fill and modifications outside the declared region. The finite corpus
 does not establish a universal bit-flip detection probability.
 
-The official conformance corpus is not yet integrated as a scored native gate.
-Use its independently supplied valid streams and declared output requirements,
-then add constraint-specific malformed controls. Passing decoder conformance
-alone would not prove complete corruption detection.
+The official corpus is wired into `checks.<system>.conformance-acceptance`,
+`./test`, and Mechatron. The final full tests and build passed September 9,
+including all 111 CLI suites; exact five-target CI verification follows shipment.
+It checks all 40 named cases, decodes each of the 27 distinct inputs once, and
+requires a known-invalid signature to produce its specific corruption finding.
+Raw statuses/stdout/stderr, per-case results, provenance and credits are retained
+in the Nix output. Timeouts and resource failures fail acceptance; they cannot
+count as corruption. Adversarial controls cover always-accepting/rejecting
+validators, unsupported/resource/unclassified outcomes, contradictory statuses,
+malformed output, stderr, crashes, missing files and incorrect corpus counts.
+This gate measures input acceptance. Rendering precision and constraint-specific
+malformed controls beyond the signature remain separate coverage work.
 
 An exploratory acceptance probe used [libjxl/conformance](https://github.com/libjxl/conformance/tree/b1d0f990b03e57bf6d137c365cd5dc8b470b9191)
 at that pinned commit. Its two level lists contain 40 case names and 27 distinct

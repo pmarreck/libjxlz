@@ -81,6 +81,12 @@
           };
 
           checks = let
+            conformanceCorpus = pkgs.fetchFromGitHub {
+              owner = "libjxl";
+              repo = "conformance";
+              rev = "b1d0f990b03e57bf6d137c365cd5dc8b470b9191";
+              hash = "sha256-tpKnt44FgZUqzvk5YcMBmVsDCdvlA6Cz+KNYMTVUacc=";
+            };
             # The Zig unit tests are the mode-sensitive surface: `undefined`
             # memory reads behave differently per optimize mode, and exactly that
             # produced a ReleaseFast-only encoder failure that a ReleaseSafe-only
@@ -140,6 +146,22 @@
             build = self.packages.${system}.default;
             test = mkTestCheck "ReleaseSafe";
             test-releasefast = mkTestCheck "ReleaseFast";
+            conformance-acceptance = pkgs.runCommand "${pname}-conformance-acceptance" {
+              nativeBuildInputs = [ pkgs.bash pkgs.coreutils pkgs.gawk ];
+            } ''
+              cd ${./.}
+              bash tests/cli/conformance_acceptance_controls_smoke.sh
+              source tests/lib/strict_mutation_matrix.bash
+              source tests/lib/conformance_acceptance.bash
+              mkdir -p "$out"
+              if ! run_conformance_acceptance ${conformanceCorpus}/testcases ${self.packages.${system}.default}/bin/jxlz "$out" 40 27; then
+                cat "$out/results.tsv" >&2
+                exit 1
+              fi
+              cp ${conformanceCorpus}/LICENSE "$out/CORPUS_LICENSE"
+              cp ${conformanceCorpus}/testcases/README.md "$out/CORPUS_CREDITS.md"
+              printf '%s\n' 'https://github.com/libjxl/conformance' 'b1d0f990b03e57bf6d137c365cd5dc8b470b9191' 'sha256-tpKnt44FgZUqzvk5YcMBmVsDCdvlA6Cz+KNYMTVUacc=' > "$out/provenance.txt"
+            '';
           } // lib.optionalAttrs (stdenv.isLinux && stdenv.hostPlatform.isx86_64) {
             windows-x86_64-cross = let
               mingwBrotli = pkgs.pkgsCross.mingwW64.brotli;

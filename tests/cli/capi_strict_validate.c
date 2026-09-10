@@ -6,6 +6,7 @@
 #include <stdlib.h>
 
 #include <jxl/validate.h>
+#include <jxl/decode.h>
 
 static int read_file(const char* path, uint8_t** data, size_t* size) {
 	FILE* file = fopen(path, "rb");
@@ -133,6 +134,31 @@ int main(int argc, char** argv) {
 		JXL_VALIDATION_CORRUPT, JXL_VALIDATION_FINDING_TRUNCATED);
 	ok &= expect_result("zero metadata padding", padding_control, sizeof(padding_control), &options,
 		JXL_VALIDATION_VALID, JXL_VALIDATION_FINDING_NONE);
+	for (size_t size = 0; size < sizeof(padding_control); ++size) {
+		char name[64];
+		snprintf(name, sizeof(name), "truncated prefix %zu/%zu", size, sizeof(padding_control));
+		ok &= expect_result(name, padding_control, size, &options,
+			JXL_VALIDATION_CORRUPT, JXL_VALIDATION_FINDING_TRUNCATED);
+	}
+	for (size_t size = 15; size < sizeof(padding_control); ++size) {
+		JxlDecoder* stream = JxlDecoderCreate(NULL);
+		if (!stream) {
+			fprintf(stderr, "streaming prefix: decoder allocation failed\n");
+			ok = 0;
+			continue;
+		}
+		if (JxlDecoderSetInput(stream, padding_control, size) != JXL_DEC_SUCCESS ||
+			JxlDecoderProcessInput(stream) != JXL_DEC_NEED_MORE_INPUT) {
+			fprintf(stderr, "open prefix %zu: expected NEED_MORE_INPUT\n", size);
+			ok = 0;
+		}
+		JxlDecoderCloseInput(stream);
+		if (JxlDecoderProcessInput(stream) != JXL_DEC_ERROR) {
+			fprintf(stderr, "closed prefix %zu: expected ERROR\n", size);
+			ok = 0;
+		}
+		JxlDecoderDestroy(stream);
+	}
 	for (unsigned bit = 5; bit < 8; ++bit) {
 		padding_control[8] ^= (uint8_t)(1u << bit);
 		ok &= expect_result("single-bit nonzero padding", padding_control, sizeof(padding_control), &options,

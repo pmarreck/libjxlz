@@ -174,7 +174,7 @@ pub fn decodeTree(
         }
     }
 
-    var reader = ANSSymbolReader.create(&tree_code, br, 0, allocator) catch return error.GenericError;
+    var reader = try ANSSymbolReader.create(&tree_code, br, 0, allocator);
     defer reader.deinit();
 
     const limit = @min(tree_size_limit, ma_common.kMaxTreeSize);
@@ -188,6 +188,62 @@ pub fn decodeTree(
 // ── Tests ──
 
 const testing = std.testing;
+
+fn decodeResourceControl(allocator: std.mem.Allocator, bytes: []const u8) !void {
+	var br = BitReader.init(bytes);
+	var tree: Tree = .empty;
+	defer tree.deinit(allocator);
+	try decodeTree(allocator, &br, &tree, 16);
+	try testing.expectEqual(@as(usize, 1), tree.items.len);
+	try testing.expectEqual(@as(i16, -1), tree.items[0].property);
+	try testing.expectEqual(options.Predictor.zero, tree.items[0].predictor);
+	try testing.expectEqual(@as(u32, 1), tree.items[0].multiplier);
+	try br.jumpToByteBoundary();
+	try br.close();
+}
+
+fn writeZeroPrefixHistogram(writer: *@import("../base/bit_writer.zig").BitWriter) !void {
+	try writer.write(1, 1); // Prefix coding.
+	try writer.write(4, 15); // Hybrid uint split exponent equals prefix log alphabet size.
+	try writer.write(1, 0); // Alphabet size one: every token is zero, no payload bits.
+}
+
+fn treeResourceControl(non_simple_context_map: bool, sweep_failures: bool) !void {
+	var writer = @import("../base/bit_writer.zig").BitWriter.init(testing.allocator);
+	defer writer.deinit();
+	try writer.write(1, 1); // LZ77 enabled, even though this tree only uses literals.
+	try writer.write(2, 0); // Minimum LZ77 symbol 224.
+	try writer.write(2, 0); // Minimum match length three.
+	try writer.write(4, 8); // Length hybrid uint split exponent equals log alphabet size.
+	if (non_simple_context_map) {
+		try writer.write(1, 0); // Histogram-coded context map.
+		try writer.write(1, 0); // No move-to-front transform.
+		try writer.write(1, 0); // Nested histogram has no LZ77.
+		try writeZeroPrefixHistogram(&writer);
+	} else {
+		try writer.write(3, 1); // Simple context map, zero bits per entry.
+	}
+	try writeZeroPrefixHistogram(&writer);
+	try writer.zeroPadToByte();
+	// The same three-byte fixtures also pass upstream DecodeTree and padding checks.
+	const expected_bytes: []const u8 = if (non_simple_context_map) &.{ 1, 241, 125 } else &.{ 1, 243, 1 };
+	try testing.expectEqualSlices(u8, expected_bytes, writer.bytes());
+	try decodeResourceControl(testing.allocator, writer.bytes());
+	if (sweep_failures) try testing.checkAllAllocationFailures(testing.allocator, decodeResourceControl, .{writer.bytes()});
+}
+
+test "MA resource control accepts both valid LZ77 trees" {
+	try treeResourceControl(false, false);
+	try treeResourceControl(true, false);
+}
+
+test "MA resource control preserves LZ77 allocation failures" {
+	try treeResourceControl(false, true);
+}
+
+test "MA resource control preserves nested context-map allocation failures" {
+	try treeResourceControl(true, true);
+}
 
 test "MA tree height validation preserves allocation failure" {
 	const tree = [_]PropertyDecisionNode{PropertyDecisionNode.leaf(.zero, 0, 1)};
