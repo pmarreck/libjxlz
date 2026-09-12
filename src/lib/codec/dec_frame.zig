@@ -1926,8 +1926,9 @@ test "VarDCT global tree limit includes color dimensions before omitting modular
 	const nodes = try a.alloc(dec_ma.PropertyDecisionNode, 2047);
 	defer a.free(nodes);
 	for (nodes, 0..) |*node, i| {
+		// Independent properties at each depth keep every ancestor path possible.
 		node.* = if (i < 1023)
-			dec_ma.PropertyDecisionNode.split(0, 0, @intCast(2 * i + 1), @intCast(2 * i + 2))
+			dec_ma.PropertyDecisionNode.split(@intCast(std.math.log2_int(usize, i + 1)), 0, @intCast(2 * i + 1), @intCast(2 * i + 2))
 		else dec_ma.PropertyDecisionNode.leaf(.zero, 0, 1);
 	}
 	var writer = BitWriter.init(a);

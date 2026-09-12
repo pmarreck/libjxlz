@@ -17,6 +17,12 @@ done <<'CASES'
 1 corrupt nonzero_padding 0 corrupt
 1 corrupt invalid_signature 0 corrupt
 1 corrupt truncated 0 corrupt
+1 corrupt invalid_context_map 0 corrupt
+1 corrupt invalid_ma_tree 0 corrupt
+0 corrupt invalid_context_map 0 operational_failure
+0 corrupt invalid_ma_tree 0 operational_failure
+1 indeterminate invalid_context_map 0 operational_failure
+1 corrupt invalid_ma_tree 1 operational_failure
 1 corrupt none 0 operational_failure
 1 unsupported unsupported_feature 0 unsupported
 0 unsupported unsupported_feature 0 operational_failure

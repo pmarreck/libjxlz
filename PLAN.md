@@ -2,12 +2,81 @@
 
 ## Full-spec validation execution (2026-09-09)
 
+- [x] Improve justified corruption findings using an assorted independent corpus
+  (Peter, 2026-09-12). Establish seeded baselines on found and upstream-generated
+  inputs, add failing controls for missing constraints, implement scoped fixes,
+  and compare identical cases. Preserve every clean-input acceptance result and
+  report remaining indeterminate, unsupported and operational outcomes separately.
+  Start with context-map recursion and MA-tree constraints; retain full-spec work.
+  September 12 checkpoint: ten clean sources passed both packages; paired 1,280
+  trials improved 387 to 396 CORRUPT, with 127 VALID unchanged and 757 remaining
+  INDETERMINATE. The final version-fence replay additionally changes one VALID
+  to UNSUPPORTED, leaving 126 VALID. Three improvements are single-bit flips; all 320 sampled
+  truncations are detected. Thirty focused tests and two permanent public CLI
+  controls pass after witnessed failures; the old 270-case matrix is unchanged.
+  Local validation completed September 12, 2026 at 10:46 EDT: full `./test`
+  passed all 112 CLI suites and Windows cross-compilation; `./build` and the
+  40-case/27-input conformance check passed. Logs:
+  `/tmp/libjxlz-constraints-final-test-20260912.log`,
+  `/tmp/libjxlz-constraints-final-version-build-20260912.log`, and
+  `/tmp/libjxlz-constraints-final-conformance-20260912.log`. Report:
+  `doc/corruption_probe_assorted_20260912.md`.
+- [ ] Classify the remaining entropy failures using specific violated constraints,
+  beginning with ANS terminal-state checks; retain truncation and allocation
+  distinctions. Replay the assorted corpus without changing seeds or sources.
+  Do not turn GenericError wholesale into CORRUPT or count unknowns as detection.
+- [x] Diagnose and repair the assorted corpus's single native/upstream acceptance disagreement:
+  upstream-generated 16-bit grayscale, byte 25 XOR 255 (seed 0x20260912, bolter
+  round 8). Native validation and pixel decoding succeed; djxl v0.12.0 rejects.
+  Preserve the original and mutant in the September 12 probe artifact directory;
+  establish the violated constraint with a failing regression before rejecting it.
+  All other 126 native VALID mutations pass djxl; all 396 CORRUPT and 757
+  INDETERMINATE cases fail djxl, without oracle crashes or timeouts.
+  Diagnosed September 12: this is the container `ftyp` version, changed from 0
+  to 16,711,680. Upstream v0.12 checks versions 0 and 1; our older reference
+  snapshot and native parser ignored the field. Unknown versions now return
+  UNSUPPORTED/container_box after witnessed unit and public failures. Versions
+  0 and 1 with a whole codestream remain valid controls. Final replay matches
+  all source/case identities and changes only this one additional verdict.
+  Full tests, build and conformance gate passed September 12 at 10:46 EDT.
+- [ ] Support file-format version 1 out-of-order `jxlp` boxes and distinguish that
+  valid feature from malformed index sequences. The native parser still requires
+  consecutive indices, unlike upstream v0.12. Reconcile the reference snapshot
+  and coverage inventory with the newer container specification.
+
+- [x] Evaluate the executable in `../corruption_probe` for measured JPEG XL
+  validation coverage (Peter, 2026-09-11). Inspect its mutation and verdict
+  contracts, run a bounded reproducible pilot against the strict validator,
+  and preserve raw outcomes, provenance and coverage limitations. Keep the
+  resource, nested-LZ77, MA-range and full-spec work below in scope.
+  Completed September 11, 2026 at approximately 16:43 EDT. A strict-verdict
+  adapter passes ten controls after eight witnessed failures with direct exit
+  forwarding. Two fixtures and 256 trials produced 112 CORRUPT, 43 VALID and
+  101 INDETERMINATE findings; all 64 sampled truncations were detected.
+  Replays with a pinned probe and different concurrency matched all cases and
+  findings. Both final valid controls passed; source hashes were unchanged.
+  Report: `doc/corruption_probe_pilot_20260911.md`.
+- [ ] Investigate the spline fixture's pristine validation cost before adding
+  it to corruption-probe scoring: baseline timed out at two and 15 seconds.
+  Preserve those excluded results; broaden the corpus after the queued resource
+  and typed-constraint fixes, using paired seeded comparisons.
+
+- [x] File Peter's authorized Codex bug report for the flagged read-only probe
+  (2026-09-09 22:28 EDT),
+  using uploaded thread 01a0829e-d6d2-7183-b4c1-9524fc1b98b6 and identifying the
+  reporting agent as gpt-6-astra medium. Preserve the validation work and verify
+  exact-commit CI for c37b27ea after the interruption.
+  Filed https://github.com/openai/codex/issues/44380 using Peter's account;
+  the agent authorship and Peter's explicitly requested frustration are stated
+  in the body. Fetched the published issue and verified its full body against
+  the submitted text. Exact flag wording and trigger remain unverified.
+
 Peter approved this sequence. Done means each implemented constraint has a
 specific justification, valid and invalid controls, an honest public result,
 passing full tests/build, and a tested commit. Preserve the remaining feature
 work below; existing decoder tests do not establish complete validation coverage.
 
-- [ ] Finish the full gate and ship the current resource-propagation, typed TOC
+- [x] Finish the full gate and ship the current resource-propagation, typed TOC
   truncation and official-corpus acceptance work; verify all five CI targets.
   The first full unit run found one older multi-section truncation assertion
   still expecting GenericError. Updated that assertion to NotEnoughBytes;
@@ -15,7 +84,9 @@ work below; existing decoder tests do not establish complete validation coverage
   Corrected full `./test` and `./build` both passed, including all 111 CLI suites
   and Windows cross-compilation (2026-09-09 20:28 EDT). Logs:
   `/tmp/libjxlz-resource-toc-conformance-final-{test,build}-20260909.log`.
-  Commit/push and exact five-target CI verification remain next.
+  Commit c37b27ea4a5930d435e5694367d472c08f5b0c58 matches origin. All five
+  Mechatron targets passed in 2,470 seconds at 21:10:19 EDT; verified after the
+  interrupted session resumed. Full-spec coverage remains open below.
 
 - [x] Repair the MA-tree height check's silent success on allocation failure
   (2026-09-09 18:08 EDT).
@@ -35,14 +106,16 @@ work below; existing decoder tests do not establish complete validation coverage
   witnessed GenericError before two caller fixes; they now pass, together with
   an allocation sweep on the nine-histogram ANS context-map fixture. Full tests
   and build passed with these repairs on September 9 at 20:28 EDT.
-- [ ] Enforce the missing small-context-map LZ77 restriction before recursive
-  histogram decoding. A seven-byte depth-two tree passes natively and fails
+- [x] Enforce the missing small-context-map LZ77 restriction before recursive
+  histogram decoding. Initially a seven-byte depth-two tree passed natively and failed
   upstream; depth-zero and depth-one controls pass both. The codec authors'
   explanatory paper section 8.2.1 describes this restriction; exact ISO clause
   mapping remains open. Preserve allocation/truncation distinctions and add
   public finding coverage. Evidence and candidate regression are recorded in
   `/tmp/libjxlz-context-recursion-followup-20260909.md`. No stack-overflow
   experiment was performed.
+  Implementation and public findings passed the full tests, build and conformance
+  gate September 12 at 10:46 EDT. Exact ISO clause mapping remains open.
 - [x] Build the strict-verdict mutation matrix around JxlValidate with VALID
   bases. Record corrupt, unsupported, indeterminate, operational failure and
   accepted mutations separately. Verify mutation shapes independently and do
@@ -95,9 +168,9 @@ work below; existing decoder tests do not establish complete validation coverage
   are 82 CORRUPT, 182 INDETERMINATE and 6 VALID, with process outcomes unchanged.
   Baseline updated after review; the full gate reproduced these exact counts
   and passed at 20:28 EDT. Shipment remains in the item above.
-- [ ] Investigate omitted MA split-range validation against the format rules.
+- [x] Enforce MA ancestor split-range constraints supported by upstream controls.
   Upstream ValidateTree propagates property ranges and rejects impossible splits;
-  native validateTree currently checks height and child bounds only. Add valid
+  native validateTree initially checked height and child bounds only. Add valid
   boundary and contradictory-path controls before implementing any rejection.
   Native scratch controls witness acceptance of two contradictory ancestor paths,
   alongside two valid controls. A retained upstream build accepts both valid
@@ -105,6 +178,11 @@ work below; existing decoder tests do not establish complete validation coverage
   four cases. Candidate tests, byte fixtures and independent comparison:
   `/tmp/libjxlz-ma-range-followup-20260909.md`. Avoid copying the reference's
   nodes-times-properties storage without considering bounded traversal storage.
+  September 12 implementation uses restored per-property bounds and an explicit
+  depth-first stack. Contradictions, independent properties, siblings, signed
+  limits and allocator sweeps pass; public replay covers an actual single-bit
+  mutation. Full tests, build and conformance passed September 12 at 10:46 EDT.
+  Exact normative clause mapping remains open in the coverage inventory.
 - [ ] Audit numerical verdict boundaries, especially structured color metadata
   and quantization. Establish specification thresholds and static/exact integer
   checks before considering measured runtime uncertainty handling. Check both

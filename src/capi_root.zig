@@ -55,6 +55,8 @@ pub const JxlValidationFindingCode = enum(c_int) {
 	JXL_VALIDATION_FINDING_INVALID_ARGUMENT = 7,
 	JXL_VALIDATION_FINDING_UNCLASSIFIED_DECODER_ERROR = 8,
 	JXL_VALIDATION_FINDING_NONZERO_PADDING = 9,
+	JXL_VALIDATION_FINDING_INVALID_CONTEXT_MAP = 10,
+	JXL_VALIDATION_FINDING_INVALID_MA_TREE = 11,
 };
 
 pub const JxlValidationOptions = extern struct {
@@ -1334,6 +1336,8 @@ fn validationFailure(
 	frames_validated: u32,
 ) JxlValidationVerdict {
 	return switch (err orelse error.GenericError) {
+		error.InvalidContextMap => setValidationResult(result, .JXL_VALIDATION_CORRUPT, .JXL_VALIDATION_FINDING_INVALID_CONTEXT_MAP, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
+		error.InvalidMaTree => setValidationResult(result, .JXL_VALIDATION_CORRUPT, .JXL_VALIDATION_FINDING_INVALID_MA_TREE, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
 		error.NonzeroPadding => setValidationResult(result, .JXL_VALIDATION_CORRUPT, .JXL_VALIDATION_FINDING_NONZERO_PADDING, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
 		error.InvalidColorEncoding, error.InvalidContainer, error.InvalidJpegReconstruction => setValidationResult(result, .JXL_VALIDATION_CORRUPT, .JXL_VALIDATION_FINDING_MALFORMED, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
 		error.Unsupported => setValidationResult(result, .JXL_VALIDATION_UNSUPPORTED, .JXL_VALIDATION_FINDING_UNSUPPORTED_FEATURE, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
@@ -1341,6 +1345,33 @@ fn validationFailure(
 		error.OutOfMemory => setValidationResult(result, .JXL_VALIDATION_INDETERMINATE, .JXL_VALIDATION_FINDING_OUT_OF_MEMORY, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
 		error.GenericError, error.BrotliDecoderFailure => setValidationResult(result, .JXL_VALIDATION_INDETERMINATE, .JXL_VALIDATION_FINDING_UNCLASSIFIED_DECODER_ERROR, byte_offset, host_byte_offset, offset_is_exact, frames_validated),
 	};
+}
+
+test "strict validation classifies known MA and context-map constraints" {
+	var result: JxlValidationResult = undefined;
+	for ([_]JxlError{ error.InvalidContextMap, error.InvalidMaTree }, [_]JxlValidationFindingCode{ .JXL_VALIDATION_FINDING_INVALID_CONTEXT_MAP, .JXL_VALIDATION_FINDING_INVALID_MA_TREE }) |err, code| {
+		try std.testing.expectEqual(JxlValidationVerdict.JXL_VALIDATION_CORRUPT, validationFailure(&result, err, 0, 0, false, 0));
+		try std.testing.expectEqual(code, result.code);
+	}
+}
+
+test "strict validation keeps unknown container versions unsupported" {
+	const allocator = std.testing.allocator;
+	const bytes = try container_mod.wrapCodestream(allocator, @embedFile("lib/testdata/lossless_4x4.jxl"));
+	defer allocator.free(bytes);
+	var result: JxlValidationResult = undefined;
+	for ([_]u32{ 0, 1, 2, 0x00ff0000, std.math.maxInt(u32), 0 }) |version| {
+		std.mem.writeInt(u32, bytes[24..28], version, .big);
+		const verdict = JxlValidate(bytes.ptr, bytes.len, null, &result);
+		if (version <= 1) {
+			try std.testing.expectEqual(JxlValidationVerdict.JXL_VALIDATION_VALID, verdict);
+			try std.testing.expectEqual(JxlValidationFeature.none, result.feature);
+		} else {
+			try std.testing.expectEqual(JxlValidationVerdict.JXL_VALIDATION_UNSUPPORTED, verdict);
+			try std.testing.expectEqual(JxlValidationFindingCode.JXL_VALIDATION_FINDING_UNSUPPORTED_FEATURE, result.code);
+			try std.testing.expectEqual(JxlValidationFeature.container_box, result.feature);
+		}
+	}
 }
 
 test "strict padding validation detects each single-bit metadata padding mutation" {

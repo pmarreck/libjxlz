@@ -71,6 +71,54 @@ fn validateTree(allocator: std.mem.Allocator, tree: []const PropertyDecisionNode
         height[tree[i].lchild] = height[i] + 1;
         height[tree[i].rchild] = height[i] + 1;
     }
+
+    // Depth-first traversal keeps one set of property bounds. Restore the
+    // parent bounds after each subtree so siblings cannot constrain each other.
+    const Range = struct { lower: PropertyVal, upper: PropertyVal };
+    const Frame = struct {
+        index: usize,
+        phase: enum { enter, right, restore } = .enter,
+        saved: Range = .{ .lower = 0, .upper = 0 },
+    };
+    const ranges = try allocator.alloc(Range, num_properties);
+    defer allocator.free(ranges);
+    @memset(ranges, .{ .lower = std.math.minInt(PropertyVal), .upper = std.math.maxInt(PropertyVal) });
+    const stack = try allocator.alloc(Frame, @min(tree.len, @as(usize, kHeightLimit) + 1));
+    defer allocator.free(stack);
+    stack[0] = .{ .index = 0 };
+    var used: usize = 1;
+    while (used != 0) {
+        const frame = &stack[used - 1];
+        const node = tree[frame.index];
+        if (node.property == -1) {
+            used -= 1;
+            continue;
+        }
+        const property: usize = @intCast(node.property);
+        switch (frame.phase) {
+            .enter => {
+                const range = ranges[property];
+                if (node.splitval < range.lower or node.splitval >= range.upper) return error.InvalidMaTree;
+                frame.saved = range;
+                frame.phase = .right;
+                ranges[property].lower = node.splitval + 1;
+                if (used == stack.len) return error.GenericError;
+                stack[used] = .{ .index = node.lchild };
+                used += 1;
+            },
+            .right => {
+                ranges[property] = .{ .lower = frame.saved.lower, .upper = node.splitval };
+                frame.phase = .restore;
+                if (used == stack.len) return error.GenericError;
+                stack[used] = .{ .index = node.rchild };
+                used += 1;
+            },
+            .restore => {
+                ranges[property] = frame.saved;
+                used -= 1;
+            },
+        }
+    }
 }
 
 // ── Inner DecodeTree (with ANS reader) ──
@@ -188,6 +236,73 @@ pub fn decodeTree(
 // ── Tests ──
 
 const testing = std.testing;
+
+test "MA context-map recursion rejects forbidden nested LZ77" {
+	// Byte fixtures independently decoded by upstream DecodeTree.
+	try decodeResourceControl(testing.allocator, &.{ 1, 243, 1 });
+	try decodeResourceControl(testing.allocator, &.{ 1, 9, 152, 239, 3 });
+	var br = BitReader.init(&.{ 1, 9, 72, 192, 124, 223, 7 });
+	var tree: Tree = .empty;
+	defer tree.deinit(testing.allocator);
+	try testing.expectError(error.InvalidContextMap, decodeTree(testing.allocator, &br, &tree, 16));
+}
+
+test "MA ancestor ranges distinguish contradictory and independent splits" {
+	const leaf = PropertyDecisionNode.leaf(.zero, 0, 1);
+	const valid = [_][5]PropertyDecisionNode{
+		.{ .split(0, 0, 1, 2), .split(0, 1, 3, 4), leaf, leaf, leaf },
+		.{ .split(0, 0, 1, 2), .split(1, 0, 3, 4), leaf, leaf, leaf },
+		.{ .split(0, 0, 1, 2), leaf, .split(0, -1, 3, 4), leaf, leaf },
+	};
+	for (valid) |tree| try validateTree(testing.allocator, &tree);
+	const invalid = [_][5]PropertyDecisionNode{
+		.{ .split(0, 0, 1, 2), .split(0, 0, 3, 4), leaf, leaf, leaf },
+		.{ .split(0, 0, 1, 2), leaf, .split(0, 1, 3, 4), leaf, leaf },
+	};
+	for (invalid) |tree| try testing.expectError(error.InvalidMaTree, validateTree(testing.allocator, &tree));
+}
+
+test "MA ancestor ranges restore siblings and preserve allocation failures" {
+	const leaf = PropertyDecisionNode.leaf(.zero, 0, 1);
+	const tree = [_]PropertyDecisionNode{
+		.split(0, 0, 1, 2), .split(0, 1, 3, 4), .split(0, -1, 5, 6),
+		leaf, leaf, leaf, leaf,
+	};
+	try testing.checkAllAllocationFailures(testing.allocator, validateTree, .{@as([]const PropertyDecisionNode, &tree)});
+	try testing.checkAllAllocationFailures(testing.allocator, decodeResourceControl, .{@as([]const u8, &.{ 1, 9, 152, 239, 3 })});
+}
+
+test "MA ancestor ranges preserve signed integer boundaries" {
+	const leaf = PropertyDecisionNode.leaf(.zero, 0, 1);
+	for ([_]PropertyVal{ std.math.minInt(PropertyVal), std.math.maxInt(PropertyVal) - 1 }) |split| {
+		const tree = [_]PropertyDecisionNode{ .split(0, split, 1, 2), leaf, leaf };
+		try validateTree(testing.allocator, &tree);
+	}
+	const empty_upper = [_]PropertyDecisionNode{ .split(0, std.math.maxInt(PropertyVal), 1, 2), leaf, leaf };
+	try testing.expectError(error.InvalidMaTree, validateTree(testing.allocator, &empty_upper));
+}
+
+test "MA ancestor ranges reject independently checked encoded contradictions" {
+	const fixtures = [_][]const u8{
+		&.{ 130, 58, 166, 205, 9, 0, 4, 244, 212, 33, 1 },
+		&.{ 130, 58, 112, 205, 9, 0, 28, 162, 212, 33, 1 },
+		&.{ 130, 26, 0, 9, 152, 0, 0, 0 },
+		&.{ 130, 58, 196, 205, 9, 0, 30, 10, 213, 33, 1 },
+	};
+	for (fixtures, 0..) |bytes, index| {
+		var br = BitReader.init(bytes);
+		var tree: Tree = .empty;
+		defer tree.deinit(testing.allocator);
+		if (index < 2) {
+			try decodeTree(testing.allocator, &br, &tree, 16);
+			try testing.expectEqual(@as(usize, 5), tree.items.len);
+		} else {
+			try testing.expectError(error.InvalidMaTree, decodeTree(testing.allocator, &br, &tree, 16));
+		}
+		try br.jumpToByteBoundary();
+		try br.close();
+	}
+}
 
 fn decodeResourceControl(allocator: std.mem.Allocator, bytes: []const u8) !void {
 	var br = BitReader.init(bytes);

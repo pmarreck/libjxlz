@@ -24,6 +24,7 @@ strict_mutation_classify() {
 	case "$1:$2:$3:$4" in
 		0:valid:none:0) printf 'valid\n' ;;
 		1:corrupt:malformed:0|1:corrupt:nonzero_padding:0|1:corrupt:invalid_signature:0|1:corrupt:truncated:0) printf 'corrupt\n' ;;
+		1:corrupt:invalid_context_map:0|1:corrupt:invalid_ma_tree:0) printf 'corrupt\n' ;;
 		1:unsupported:unsupported_feature:0) printf 'unsupported\n' ;;
 		1:indeterminate:out_of_memory:0|1:indeterminate:resource_limit:0) printf 'resource_failure\n' ;;
 		1:indeterminate:unclassified_decoder_error:0) printf 'indeterminate\n' ;;

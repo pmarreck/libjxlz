@@ -289,6 +289,8 @@ static const char* finding_name(JxlValidationFindingCode code) {
 	case JXL_VALIDATION_FINDING_INVALID_ARGUMENT: return "invalid_argument";
 	case JXL_VALIDATION_FINDING_UNCLASSIFIED_DECODER_ERROR: return "unclassified_decoder_error";
 	case JXL_VALIDATION_FINDING_NONZERO_PADDING: return "nonzero_padding";
+	case JXL_VALIDATION_FINDING_INVALID_CONTEXT_MAP: return "invalid_context_map";
+	case JXL_VALIDATION_FINDING_INVALID_MA_TREE: return "invalid_ma_tree";
 	}
 	return "unclassified_decoder_error";
 }

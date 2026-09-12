@@ -658,10 +658,23 @@ pub fn decodeHistograms(
     num_contexts_in: usize,
     code: *ANSCode,
 ) JxlError![]u8 {
+    return decodeHistogramsWithLz77Policy(allocator, br, num_contexts_in, code, false);
+}
+
+/// Small recursive context maps forbid LZ77 in their own entropy stream.
+pub fn decodeHistogramsWithLz77Policy(
+    allocator: std.mem.Allocator,
+    br: *BitReader,
+    num_contexts_in: usize,
+    code: *ANSCode,
+    disallow_lz77: bool,
+) JxlError![]u8 {
     var num_contexts = num_contexts_in;
 
     // Read LZ77 params
     code.lz77 = LZ77Params.readFromBitStream(br);
+    if (!br.allReadsWithinBounds()) return error.NotEnoughBytes;
+    if (disallow_lz77 and code.lz77.enabled) return error.InvalidContextMap;
     if (code.lz77.enabled) {
         num_contexts += 1;
         code.lz77.length_uint_config = decodeUintConfig(8, br) catch return error.GenericError;

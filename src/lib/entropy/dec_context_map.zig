@@ -15,13 +15,13 @@ fn verifyContextMap(context_map: []const u8, num_htrees: usize) JxlError!void {
     var have_htree = [_]bool{false} ** max_clusters;
     var num_found: usize = 0;
     for (context_map) |htree| {
-        if (htree >= num_htrees) return error.GenericError;
+        if (htree >= num_htrees) return error.InvalidContextMap;
         if (!have_htree[htree]) {
             have_htree[htree] = true;
             num_found += 1;
         }
     }
-    if (num_found != num_htrees) return error.GenericError;
+    if (num_found != num_htrees) return error.InvalidContextMap;
 }
 
 /// Decodes the context map from the bitstream.
@@ -62,11 +62,12 @@ pub fn decodeContextMapAlloc(
         var code = ANSCode.init(allocator);
         defer code.deinit();
 
-        const sink_ctx_map = try dec_ans.decodeHistograms(
+        const sink_ctx_map = try dec_ans.decodeHistogramsWithLz77Policy(
             allocator,
             br,
             1,
             &code,
+            context_map.len <= 2,
         );
         defer allocator.free(sink_ctx_map);
 
@@ -85,6 +86,8 @@ pub fn decodeContextMapAlloc(
             inverse_mtf.inverseMoveToFrontTransform(context_map);
         }
     }
+
+    if (!br.allReadsWithinBounds()) return error.NotEnoughBytes;
 
     // Compute num_htrees = max + 1
     var max_val: u8 = 0;
@@ -106,12 +109,31 @@ test "verifyContextMap valid" {
 
 test "verifyContextMap invalid index" {
     const map = [_]u8{ 0, 3, 0, 1 };
-    try testing.expectError(error.GenericError, verifyContextMap(&map, 2));
+    try testing.expectError(error.InvalidContextMap, verifyContextMap(&map, 2));
 }
 
 test "verifyContextMap incomplete" {
     const map = [_]u8{ 0, 0, 0, 0 };
-    try testing.expectError(error.GenericError, verifyContextMap(&map, 2));
+    try testing.expectError(error.InvalidContextMap, verifyContextMap(&map, 2));
+}
+
+test "context-map typed constraints distinguish holes from truncation" {
+	var map: [2]u8 = undefined;
+	var count: usize = 0;
+	var valid = BitReader.init(&.{0x25}); // Two-bit entries 0,1.
+	try decodeContextMap(&map, &count, &valid);
+	try testing.expectEqualSlices(u8, &.{ 0, 1 }, &map);
+	var gap = BitReader.init(&.{0x65}); // Entries 0,3 leave clusters unused.
+	try testing.expectError(error.InvalidContextMap, decodeContextMap(&map, &count, &gap));
+	var short = BitReader.init(&.{});
+	try testing.expectError(error.NotEnoughBytes, decodeContextMapAlloc(&map, &count, &short, testing.allocator));
+}
+
+test "context-map simple entries reject missing bits" {
+	var map: [3]u8 = undefined;
+	var count: usize = 0;
+	var short = BitReader.init(&.{0x25});
+	try testing.expectError(error.NotEnoughBytes, decodeContextMap(&map, &count, &short));
 }
 
 test "decodeContextMap simple all zeros" {

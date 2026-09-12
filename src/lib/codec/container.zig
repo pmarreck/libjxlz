@@ -1,6 +1,7 @@
 const std = @import("std");
 const brotli = @import("../base/brotli.zig");
 const jpeg = @import("jpeg_reconstruction.zig");
+const unsupported = @import("../base/unsupported.zig");
 
 pub const signature_box = [_]u8{ 0x00, 0x00, 0x00, 0x0C, 0x4A, 0x58, 0x4C, 0x20, 0x0D, 0x0A, 0x87, 0x0A };
 pub const ftyp_payload = [_]u8{ 'j', 'x', 'l', ' ', 0, 0, 0, 0, 'j', 'x', 'l', ' ' };
@@ -256,7 +257,11 @@ fn parseContainer(allocator: std.mem.Allocator, container_bytes: []const u8) !Pa
 		const payload = header.payload;
 		const is_ftyp = std.mem.eql(u8, &header.box_type, "ftyp");
 		if ((offset == signature_box.len) != is_ftyp) return error.GenericError;
-		if (is_ftyp and (payload.len < ftyp_payload.len or !std.mem.eql(u8, payload[0..4], "jxl "))) return error.GenericError;
+		if (is_ftyp) {
+			if (payload.len < ftyp_payload.len or !std.mem.eql(u8, payload[0..4], "jxl ")) return error.GenericError;
+			const version = std.mem.readInt(u32, @ptrCast(payload[4..8]), .big);
+			if (version > 1) return unsupported.unsupported(.container_box);
+		}
 
 		if (std.mem.eql(u8, &header.box_type, "jxlc")) {
 			if (saw_jxlp) return error.GenericError;
@@ -302,6 +307,23 @@ fn parseContainer(allocator: std.mem.Allocator, container_bytes: []const u8) !Pa
 }
 
 const testing = std.testing;
+
+test "container distinguishes known file versions from unsupported versions" {
+	defer unsupported.clear();
+	const allocator = testing.allocator;
+	const bytes = try wrapCodestream(allocator, &.{ 0xff, 0x0a });
+	defer allocator.free(bytes);
+	for ([_]u32{ 0, 1, 2, 0x00ff0000, std.math.maxInt(u32) }) |version| {
+		std.mem.writeInt(u32, bytes[24..28], version, .big);
+		if (version <= 1) {
+			var parsed = try extractCodestreamAndBoxes(allocator, bytes);
+			defer parsed.deinit(allocator);
+			try testing.expectEqualSlices(u8, &.{ 0xff, 0x0a }, parsed.codestream);
+		} else {
+			try testing.expectError(error.Unsupported, extractCodestreamAndBoxes(allocator, bytes));
+		}
+	}
+}
 
 test "container requires ftyp second with a JPEG XL major brand" {
 	const allocator = testing.allocator;
